@@ -1,0 +1,17 @@
+-- 001_create_admin_users_table.sql
+-- Tenant-scoped table. Executed inside each tenant's schema via SET search_path.
+-- DO NOT prefix table names with a schema here.
+
+CREATE TABLE IF NOT EXISTS admin_users (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     UUID NOT NULL,
+    email         VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    name          VARCHAR(255) NOT NULL,
+    status        VARCHAR(32)  NOT NULL DEFAULT 'active'
+                  CHECK (status IN ('active', 'suspended')),
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_users_email     ON admin_users (email);
+CREATE INDEX IF NOT EXISTS idx_admin_users_tenant_id ON admin_users (tenant_id);

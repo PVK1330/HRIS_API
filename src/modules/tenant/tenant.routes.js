@@ -1,0 +1,48 @@
+'use strict';
+
+const { Router } = require('express');
+const { body } = require('express-validator');
+
+const validate = require('../../middlewares/validate.middleware');
+const { authenticate, requireRole } = require('../../middlewares/auth.middleware');
+const controller = require('./tenant.controller');
+
+const router = Router();
+
+/**
+ * POST /api/v1/tenants/create
+ * SuperAdmin-only endpoint that provisions a brand new tenant + admin user.
+ */
+router.post(
+  '/create',
+  authenticate,
+  requireRole('superadmin'),
+  [
+    body('name')
+      .exists({ checkFalsy: true }).withMessage('name is required').bail()
+      .isString().withMessage('name must be a string')
+      .trim()
+      .isLength({ min: 2, max: 255 }).withMessage('name must be between 2 and 255 characters'),
+
+    body('adminEmail')
+      .exists({ checkFalsy: true }).withMessage('adminEmail is required').bail()
+      .isEmail().withMessage('adminEmail must be a valid email')
+      .trim()
+      .normalizeEmail(),
+
+    body('adminName')
+      .exists({ checkFalsy: true }).withMessage('adminName is required').bail()
+      .isString().withMessage('adminName must be a string')
+      .trim()
+      .isLength({ min: 2, max: 255 }).withMessage('adminName must be between 2 and 255 characters'),
+
+    body('adminPassword')
+      .exists({ checkFalsy: true }).withMessage('adminPassword is required').bail()
+      .isString().withMessage('adminPassword must be a string')
+      .isLength({ min: 8, max: 128 }).withMessage('adminPassword must be between 8 and 128 characters'),
+  ],
+  validate,
+  controller.createTenant
+);
+
+module.exports = router;

@@ -25,6 +25,8 @@ async function bootstrap() {
     logger.info('Available routes:');
     logger.info('  POST /api/v1/superadmin/login');
     logger.info('  POST /api/v1/tenants/create   (Bearer SuperAdmin JWT)');
+    logger.info('  GET  /api/v1/settings/*       (Bearer SuperAdmin JWT)');
+    logger.info('  GET  /uploads/logos/*         (static logo files)');
     logger.info('  GET  /health');
   });
 

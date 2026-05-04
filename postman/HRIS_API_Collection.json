@@ -1,0 +1,293 @@
+{
+  "info": {
+    "name": "HRIS Multitenant API",
+    "description": "Complete API collection for HRIS multitenant application with Superadmin and Admin endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000/api/v1",
+      "type": "string"
+    },
+    {
+      "key": "superadminToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "adminToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "tenantId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "http://localhost:5000/health",
+              "host": ["localhost"],
+              "port": "5000",
+              "path": ["health"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Superadmin",
+      "item": [
+        {
+          "name": "Authentication",
+          "item": [
+            {
+              "name": "Superadmin Login",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"superadmin@hris.com\",\n  \"password\": \"SuperAdmin123\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/login",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "login"]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Subscription Plans",
+          "item": [
+            {
+              "name": "Get All Plans",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/plans",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "plans"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Get Plan by ID",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/plans/:planId",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "plans", ":planId"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Create Plan",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Starter\",\n  \"code\": \"starter\",\n  \"description\": \"Perfect for small teams\",\n  \"maxUsers\": 10,\n  \"maxStorageMb\": 1024,\n  \"priceMonthly\": 99,\n  \"priceYearly\": 990,\n  \"features\": [\"Employee Management\", \"Attendance Tracking\", \"Leave Management\"],\n  \"isActive\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/plans",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "plans"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Update Plan",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Starter\",\n  \"code\": \"starter\",\n  \"description\": \"Perfect for small teams\",\n  \"maxUsers\": 15,\n  \"maxStorageMb\": 2048,\n  \"priceMonthly\": 149,\n  \"priceYearly\": 1490,\n  \"features\": [\"Employee Management\", \"Attendance Tracking\", \"Leave Management\", \"Document Management\"],\n  \"isActive\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/plans/:planId",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "plans", ":planId"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Delete Plan",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/plans/:planId",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "plans", ":planId"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Add Feature to Plan",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"feature\": \"Performance Reviews\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/plans/:planId/features",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "plans", ":planId", "features"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Remove Feature from Plan",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/plans/:planId/features/:feature",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "plans", ":planId", "features", ":feature"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Update Features List",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"features\": [\"Employee Management\", \"Attendance Tracking\", \"Leave Management\", \"Document Management\", \"Performance Reviews\"]\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/plans/:planId/features",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "plans", ":planId", "features"]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Tenant Management",
+          "item": [
+            {
+              "name": "Create Tenant",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"companyName\": \"Acme Corporation\",\n  \"companyLegalName\": \"Acme Corp LLC\",\n  \"industry\": \"Technology\",\n  \"companySize\": \"51-200\",\n  \"businessType\": \"LLC\",\n  \"taxId\": \"TAX123456\",\n  \"registrationNumber\": \"REG789\",\n  \"website\": \"https://acme.com\",\n  \"addressLine1\": \"123 Business Street\",\n  \"addressLine2\": \"Suite 100\",\n  \"city\": \"Dubai\",\n  \"state\": \"Dubai\",\n  \"country\": \"United Arab Emirates\",\n  \"postalCode\": \"12345\",\n  \"adminName\": \"John Smith\",\n  \"adminEmail\": \"john@acme.com\",\n  \"adminPhone\": \"+971501234567\",\n  \"planId\": \"\",\n  \"timezone\": \"Asia/Dubai\",\n  \"dateFormat\": \"DD/MM/YYYY\",\n  \"timeFormat\": \"24h\",\n  \"trialDays\": 14\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/tenants/create",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["tenants", "create"]
+                }
+              },
+              "response": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

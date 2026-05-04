@@ -9,6 +9,7 @@ const ApiResponse = require('./utils/ApiResponse');
 const { notFoundHandler, errorHandler } = require('./middlewares/error.middleware');
 
 const superadminRoutes = require('./modules/superadmin/superadmin.routes');
+const plansRoutes = require('./modules/superadmin/plans.routes');
 const tenantRoutes = require('./modules/tenant/tenant.routes');
 
 const app = express();
@@ -37,6 +38,7 @@ app.get('/health', (_req, res) => {
 /* -------------------- API v1 -------------------- */
 
 app.use('/api/v1/superadmin', superadminRoutes);
+app.use('/api/v1/superadmin/plans', plansRoutes);
 app.use('/api/v1/tenants', tenantRoutes);
 
 /* -------------------- 404 + Errors -------------------- */

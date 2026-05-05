@@ -12,6 +12,7 @@ const { notFoundHandler, errorHandler } = require('./middlewares/error.middlewar
 
 const superadminRoutes = require('./modules/superadmin/superadmin.routes');
 const plansRoutes = require('./modules/superadmin/plans.routes');
+const featuresRoutes = require('./modules/superadmin/features.routes');
 const tenantRoutes = require('./modules/tenant/tenant.routes');
 const settingsRoutes = require('./modules/settings/settings.routes');
 
@@ -59,6 +60,7 @@ app.get('/health', (_req, res) => {
 
 app.use('/api/v1/superadmin', superadminRoutes);
 app.use('/api/v1/superadmin/plans', plansRoutes);
+app.use('/api/v1/superadmin/features', featuresRoutes);
 app.use('/api/v1/tenants', tenantRoutes);
 app.use('/api/v1/settings', settingsRoutes);
 

@@ -28,4 +28,17 @@ router.post(
   controller.login
 );
 
+/**
+ * POST /api/v1/superadmin/verify-2fa
+ */
+router.post(
+  '/verify-2fa',
+  [
+    body('userId').exists().withMessage('userId is required'),
+    body('code').isLength({ min: 6, max: 6 }).withMessage('code must be 6 digits'),
+  ],
+  validate,
+  controller.verify2FA
+);
+
 module.exports = router;

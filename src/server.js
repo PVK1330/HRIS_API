@@ -7,33 +7,33 @@ const logger = require('./utils/logger');
 const { runSuperAdminMigrations } = require('./scripts/runMigrations');
 
 async function bootstrap() {
-  logger.info(`Starting HRS backend (env=${env.NODE_ENV})...`);
+  logger.debug(`Starting HRS backend (env=${env.NODE_ENV})...`);
 
   // 1. Verify DB connectivity early.
   await db.assertDbConnection();
 
   // 2. Auto-run SuperAdmin migrations on startup.
-  logger.info('Running SuperAdmin migrations...');
+  logger.debug('Running SuperAdmin migrations...');
   const result = await runSuperAdminMigrations();
-  logger.info(
+  logger.debug(
     `SuperAdmin migrations finished (applied=${result.applied}, skipped=${result.skipped}).`
   );
 
   // 3. Start HTTP server.
   const server = app.listen(env.PORT, () => {
-    logger.info(`HRS backend listening on http://localhost:${env.PORT}`);
-    logger.info('Available routes:');
-    logger.info('  POST /api/v1/superadmin/login');
-    logger.info('  POST /api/v1/tenants/create   (Bearer SuperAdmin JWT)');
-    logger.info('  GET  /api/v1/settings/*       (Bearer SuperAdmin JWT)');
-    logger.info('  GET  /uploads/logos/*         (static logo files)');
-    logger.info('  GET  /health');
+    logger.info(`Running on port ${env.PORT}`);
+    logger.debug('Available routes:');
+    logger.debug('  POST /api/v1/superadmin/login');
+    logger.debug('  POST /api/v1/tenants/create   (Bearer SuperAdmin JWT)');
+    logger.debug('  GET  /api/v1/settings/*       (Bearer SuperAdmin JWT)');
+    logger.debug('  GET  /uploads/logos/*         (static logo files)');
+    logger.debug('  GET  /health');
   });
 
   /* -------- graceful shutdown -------- */
 
   const shutdown = async (signal) => {
-    logger.info(`Received ${signal}. Shutting down gracefully...`);
+    logger.debug(`Received ${signal}. Shutting down gracefully...`);
     server.close(async (err) => {
       if (err) {
         logger.error('Error closing HTTP server', err);
@@ -42,7 +42,7 @@ async function bootstrap() {
       try {
         await db.closeAllTenantPools();
         await db.pool.end();
-        logger.info('All PG pools closed. Bye.');
+        logger.debug('All PG pools closed. Bye.');
         process.exit(0);
       } catch (e) {
         logger.error('Error closing PG pools', e);

@@ -16,6 +16,8 @@ const plansRoutes = require('./modules/superadmin/plans.routes');
 const featuresRoutes = require('./modules/superadmin/features.routes');
 const tenantRoutes = require('./modules/tenant/tenant.routes');
 const settingsRoutes = require('./modules/settings/settings.routes');
+const authRoutes = require('./modules/auth/auth.routes');
+const publicOnboardingRoutes = require('./routes/public/onboardingRoutes');
 
 const { generalLimiter } = require('./middlewares/rateLimit.middleware');
 
@@ -77,6 +79,8 @@ app.use('/api/v1/superadmin/plans', plansRoutes);
 app.use('/api/v1/superadmin/features', featuresRoutes);
 app.use('/api/v1/tenants', tenantRoutes);
 app.use('/api/v1/settings', settingsRoutes);
+app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
 
 /* -------------------- 404 + Errors -------------------- */
 

@@ -100,9 +100,7 @@ async function assertDbConnection() {
   const client = await superAdminPool.connect();
   try {
     await client.query("SELECT 1");
-    logger.info(
-      `Database connected: ${env.DB.database}@${env.DB.host}:${env.DB.port}`,
-    );
+    logger.info('Database connected successfully');
   } finally {
     client.release();
   }

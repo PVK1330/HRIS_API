@@ -2,8 +2,8 @@
 -- Daily attendance records
 
 CREATE TABLE IF NOT EXISTS attendance (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    employee_id         UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    id                  SERIAL PRIMARY KEY,
+    employee_id         INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     date                DATE NOT NULL,
     check_in_time       TIME,
     check_out_time      TIME,
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS attendance (
     early_departure     BOOLEAN NOT NULL DEFAULT false,
     notes               TEXT,
     supporting_document_url VARCHAR(500),
-    regularized_by      UUID REFERENCES employees(id) ON DELETE SET NULL,
+    regularized_by      INTEGER REFERENCES employees(id) ON DELETE SET NULL,
     regularized_at      TIMESTAMPTZ,
     regularization_status VARCHAR(50) DEFAULT 'N/A', -- N/A, Pending, Approved, Rejected
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),

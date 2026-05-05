@@ -2,11 +2,11 @@
 -- Performance management and reviews
 
 CREATE TABLE IF NOT EXISTS performance_reviews (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    employee_id         UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    id                  SERIAL PRIMARY KEY,
+    employee_id         INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     review_period       VARCHAR(50) NOT NULL, -- H1 2026, Q4 2025, etc.
     review_type         VARCHAR(50) NOT NULL, -- Annual, Quarterly, Probation, Promotion
-    reviewer_id         UUID NOT NULL REFERENCES employees(id) ON DELETE SET NULL,
+    reviewer_id         INTEGER NOT NULL REFERENCES employees(id) ON DELETE SET NULL,
     review_date         DATE NOT NULL,
     
     -- Ratings (1-5 scale)

@@ -1,11 +1,11 @@
 CREATE TABLE IF NOT EXISTS public.tenants (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id           SERIAL PRIMARY KEY,
     name         VARCHAR(255) NOT NULL,
     db_name      VARCHAR(63)  UNIQUE NOT NULL,
     admin_email  VARCHAR(255) UNIQUE NOT NULL,
     status       VARCHAR(32)  NOT NULL DEFAULT 'active'
                  CHECK (status IN ('active', 'suspended')),
-    created_by   UUID REFERENCES public.superadmins(id) ON DELETE SET NULL,
+    created_by   INTEGER REFERENCES public.superadmins(id) ON DELETE SET NULL,
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 

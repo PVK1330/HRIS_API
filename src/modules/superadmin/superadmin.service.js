@@ -52,6 +52,7 @@ async function login({ email, password }) {
       id: record.id,
       name: record.name,
       email: record.email,
+      role: 'superadmin',
     },
   };
 }
@@ -91,6 +92,7 @@ async function verify2FA({ userId, code }) {
       id: record.id,
       name: record.name,
       email: record.email,
+      role: 'superadmin',
     },
   };
 }

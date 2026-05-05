@@ -3,8 +3,8 @@
 -- DO NOT prefix table names with a schema here.
 
 CREATE TABLE IF NOT EXISTS admin_users (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id     UUID NOT NULL,
+    id            SERIAL PRIMARY KEY,
+    tenant_id     INTEGER NOT NULL,
     email         VARCHAR(255) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     name          VARCHAR(255) NOT NULL,

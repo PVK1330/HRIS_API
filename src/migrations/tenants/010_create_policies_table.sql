@@ -2,7 +2,7 @@
 -- Policy management and acknowledgements
 
 CREATE TABLE IF NOT EXISTS policies (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                  SERIAL PRIMARY KEY,
     policy_title        VARCHAR(255) NOT NULL,
     policy_category     VARCHAR(100), -- HR, IT, Finance, Compliance, etc.
     policy_code         VARCHAR(50) UNIQUE NOT NULL,
@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS policies (
     file_url            VARCHAR(500) NOT NULL,
     file_name           VARCHAR(255) NOT NULL,
     status              VARCHAR(50) NOT NULL DEFAULT 'Draft', -- Draft, Review, Published, Archived
-    owner_id            UUID REFERENCES employees(id) ON DELETE SET NULL,
+    owner_id            INTEGER REFERENCES employees(id) ON DELETE SET NULL,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -30,9 +30,9 @@ CREATE TRIGGER update_policies_updated_at BEFORE UPDATE ON policies
 
 -- Policy acknowledgements
 CREATE TABLE IF NOT EXISTS policy_acknowledgements (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    policy_id           UUID NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
-    employee_id         UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    id                  SERIAL PRIMARY KEY,
+    policy_id           INTEGER NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+    employee_id         INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     acknowledged_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ip_address          VARCHAR(50),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),

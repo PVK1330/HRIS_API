@@ -2,9 +2,9 @@
 -- Tracks manual payments for tenant subscriptions
 
 CREATE TABLE IF NOT EXISTS public.payments (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id           UUID NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
-    subscription_id     UUID REFERENCES public.tenant_subscriptions(id) ON DELETE SET NULL,
+    id                  SERIAL PRIMARY KEY,
+    tenant_id           INTEGER NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+    subscription_id     INTEGER REFERENCES public.tenant_subscriptions(id) ON DELETE SET NULL,
     
     -- Payment Details
     amount              DECIMAL(12,2) NOT NULL,
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS public.payments (
     status              VARCHAR(32) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed', 'refunded')),
     
     -- Processing
-    processed_by        UUID REFERENCES public.superadmins(id) ON DELETE SET NULL,
+    processed_by        INTEGER REFERENCES public.superadmins(id) ON DELETE SET NULL,
     processed_at        TIMESTAMPTZ,
     notes               TEXT,
     receipt_url         VARCHAR(500),

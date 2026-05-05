@@ -2,12 +2,12 @@
 -- Departments and organizational structure
 
 CREATE TABLE IF NOT EXISTS departments (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              SERIAL PRIMARY KEY,
     name            VARCHAR(255) NOT NULL,
     code            VARCHAR(50) UNIQUE NOT NULL,
     description     TEXT,
-    parent_id       UUID REFERENCES departments(id) ON DELETE SET NULL,
-    manager_id      UUID REFERENCES employees(id) ON DELETE SET NULL,
+    parent_id       INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+    manager_id      INTEGER REFERENCES employees(id) ON DELETE SET NULL,
     location        VARCHAR(255),
     budget          DECIMAL(15,2),
     is_active       BOOLEAN NOT NULL DEFAULT true,

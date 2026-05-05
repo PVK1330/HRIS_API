@@ -2,7 +2,7 @@
 -- Tenant-scoped roles table. Executed inside each tenant's schema.
 
 CREATE TABLE IF NOT EXISTS roles (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id          SERIAL PRIMARY KEY,
     name        VARCHAR(64) NOT NULL,
     permissions JSONB       NOT NULL DEFAULT '{}'::jsonb,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()

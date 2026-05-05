@@ -4,14 +4,13 @@ const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const speakeasy = require('speakeasy');
 const QRCode = require('qrcode');
-const { superadminPool } = require('../../config/db');
+const { superAdminPool } = require('../../config/db');
 const { sendMail } = require('../../utils/mail');
+const jwt = require('jsonwebtoken');
 const env = require('../../config/env');
 const ApiError = require('../../utils/ApiError');
 
-/**
- * Auth Service: Handles OTP, 2FA and Password Reset logic
- */
+const { renderEmail } = require('../../utils/emailTemplate');
 
 /**
  * Request Password Reset OTP
@@ -19,7 +18,7 @@ const ApiError = require('../../utils/ApiError');
 async function requestPasswordReset(email) {
   // 1. Check if user exists in SuperAdmin or Tenants
   // For simplicity, we search in public.tenants (admin_email) first
-  const result = await superadminPool.query(
+  const result = await superAdminPool.query(
     'SELECT id, name FROM public.tenants WHERE admin_email = $1',
     [email]
   );
@@ -34,28 +33,24 @@ async function requestPasswordReset(email) {
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
 
   // 2. Store OTP in DB
-  await superadminPool.query(
+  await superAdminPool.query(
     `UPDATE public.tenants 
      SET otp_code = $1, otp_expires_at = $2 
      WHERE id = $3`,
     [otp, expiresAt, tenant.id]
   );
 
-  // 3. Send Email
+  // 3. Render and Send Email
+  const html = await renderEmail('forgot-password', {
+    otp,
+    name: tenant.name
+  });
+
   await sendMail({
     to: email,
     subject: 'HRIS - Password Reset Code',
     text: `Your password reset code is: ${otp}. It will expire in 10 minutes.`,
-    html: `
-      <div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-        <h2 style="color: #0F766E;">Password Reset</h2>
-        <p>You requested a password reset for your HRIS account.</p>
-        <div style="background: #f0fdfa; padding: 20px; text-align: center; border-radius: 10px; margin: 20px 0;">
-          <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #0F766E;">${otp}</span>
-        </div>
-        <p style="color: #666; font-size: 14px;">This code will expire in 10 minutes.</p>
-      </div>
-    `
+    html
   });
 
   return { success: true };
@@ -65,7 +60,7 @@ async function requestPasswordReset(email) {
  * Verify OTP
  */
 async function verifyOTP(email, otp) {
-  const result = await superadminPool.query(
+  const result = await superAdminPool.query(
     `SELECT id, otp_code, otp_expires_at 
      FROM public.tenants 
      WHERE admin_email = $1`,
@@ -93,15 +88,40 @@ async function verifyOTP(email, otp) {
  * Reset Password
  */
 async function resetPassword(email, otp, newPassword) {
-  await verifyOTP(email, otp);
+  const normalizedEmail = String(email).trim().toLowerCase();
+  await verifyOTP(normalizedEmail, otp);
 
   const passwordHash = await bcrypt.hash(newPassword, env.BCRYPT_SALT_ROUNDS);
 
-  await superadminPool.query(
+  // 1. Get tenant info to find their DB
+  const result = await superAdminPool.query(
+    'SELECT id, db_name FROM public.tenants WHERE admin_email = $1',
+    [normalizedEmail]
+  );
+
+  if (result.rows.length === 0) {
+    throw ApiError.notFound('User not found');
+  }
+
+  const tenant = result.rows[0];
+
+  // 2. Update Central DB
+  await superAdminPool.query(
     `UPDATE public.tenants 
      SET password_hash = $1, otp_code = NULL, otp_expires_at = NULL 
-     WHERE admin_email = $2`,
-    [passwordHash, email]
+     WHERE id = $2`,
+    [passwordHash, tenant.id]
+  );
+
+  // 3. Update Tenant DB
+  const { getTenantPool } = require('../../config/db');
+  const tenantPool = getTenantPool(tenant.db_name);
+
+  await tenantPool.query(
+    `UPDATE admin_users 
+     SET password_hash = $1 
+     WHERE email = $2`,
+    [passwordHash, normalizedEmail]
   );
 
   return { success: true };
@@ -111,7 +131,7 @@ async function resetPassword(email, otp, newPassword) {
  * Verify 2FA Code during Login
  */
 async function verify2FA(userId, code) {
-  const result = await superadminPool.query(
+  const result = await superAdminPool.query(
     'SELECT two_factor_secret FROM public.tenants WHERE id = $1',
     [userId]
   );
@@ -135,9 +155,80 @@ async function verify2FA(userId, code) {
   return { success: true };
 }
 
+/**
+ * Login for Tenant Admins
+ */
+async function login(email, password) {
+  const normalizedEmail = String(email).trim().toLowerCase();
+
+  // 1. Find tenant in central DB to get their specific DB name
+  const centralResult = await superAdminPool.query(
+    'SELECT id, name, db_name, status FROM public.tenants WHERE admin_email = $1',
+    [normalizedEmail]
+  );
+
+  if (centralResult.rows.length === 0) {
+    throw ApiError.unauthorized('Invalid email or password');
+  }
+
+  const tenant = centralResult.rows[0];
+  if (tenant.status !== 'active') {
+    throw ApiError.unauthorized('Account is suspended or inactive');
+  }
+
+  // 2. Connect to Tenant DB and verify user
+  const { getTenantPool } = require('../../config/db');
+  const tenantPool = getTenantPool(tenant.db_name);
+
+  const userResult = await tenantPool.query(
+    'SELECT id, email, password_hash, name, status FROM admin_users WHERE email = $1',
+    [normalizedEmail]
+  );
+
+  if (userResult.rows.length === 0) {
+    throw ApiError.unauthorized('Invalid email or password');
+  }
+
+  const user = userResult.rows[0];
+  if (user.status !== 'active') {
+    throw ApiError.unauthorized('User account is inactive');
+  }
+
+  const passwordMatches = await bcrypt.compare(password, user.password_hash);
+  if (!passwordMatches) {
+    throw ApiError.unauthorized('Invalid email or password');
+  }
+
+  // 3. Generate JWT
+  const token = jwt.sign(
+    {
+      id: user.id,
+      email: user.email,
+      role: 'admin',
+      tenant_id: tenant.id,
+      db_name: tenant.db_name
+    },
+    env.JWT.secret,
+    { expiresIn: env.JWT.expiresIn }
+  );
+
+  return {
+    token,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: 'admin',
+      tenantId: tenant.id,
+      tenantName: tenant.name
+    }
+  };
+}
+
 module.exports = {
   requestPasswordReset,
   verifyOTP,
   resetPassword,
-  verify2FA
+  verify2FA,
+  login
 };

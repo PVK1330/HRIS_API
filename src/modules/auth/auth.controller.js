@@ -31,7 +31,17 @@ const resetPassword = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, result, 'Password has been reset successfully.');
 });
 
+/**
+ * Login
+ */
+const login = asyncHandler(async (req, res) => {
+  const { email, password } = req.body;
+  const result = await authService.login(email, password);
+  return ApiResponse.ok(res, result, 'Login successful.');
+});
+
 module.exports = {
+  login,
   forgotPassword,
   verifyOtp,
   resetPassword

@@ -2,17 +2,17 @@
 -- Onboarding task management
 
 CREATE TABLE IF NOT EXISTS onboarding_tasks (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    employee_id         UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    id                  SERIAL PRIMARY KEY,
+    employee_id         INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     task_name           VARCHAR(255) NOT NULL,
     task_category       VARCHAR(100), -- HR, IT, Manager, Admin
     due_date            DATE,
-    assigned_to         UUID REFERENCES employees(id) ON DELETE SET NULL,
+    assigned_to         INTEGER REFERENCES employees(id) ON DELETE SET NULL,
     priority            VARCHAR(20) NOT NULL DEFAULT 'Medium', -- High, Medium, Low
     description         TEXT,
     status              VARCHAR(50) NOT NULL DEFAULT 'Pending', -- Pending, In Progress, Done, Overdue
     completed_at        TIMESTAMPTZ,
-    completed_by        UUID REFERENCES employees(id) ON DELETE SET NULL,
+    completed_by        INTEGER REFERENCES employees(id) ON DELETE SET NULL,
     notes               TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()

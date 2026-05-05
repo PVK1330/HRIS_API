@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { adminSelfOnboard } = require('../../services/onboardingService');
-const { superadminPool } = require('../../config/db');
+const { superAdminPool } = require('../../config/db');
 const { registrationLimiter } = require('../../middlewares/rateLimit.middleware');
 const asyncHandler = require('../../utils/asyncHandler');
 const ApiResponse = require('../../utils/ApiResponse');
@@ -26,7 +26,7 @@ router.post('/self', registrationLimiter, asyncHandler(async (req, res) => {
  * Get available subscription plans (public endpoint)
  */
 router.get('/subscription-plans', asyncHandler(async (req, res) => {
-  const result = await superadminPool.query(
+  const result = await superAdminPool.query(
     `SELECT id, name, code, description, max_users, max_storage_mb,
             price_monthly, price_yearly, features, is_active
      FROM public.subscription_plans
@@ -46,7 +46,7 @@ router.post('/check-email', asyncHandler(async (req, res) => {
     throw ApiError.badRequest('Email is required');
   }
 
-  const result = await superadminPool.query(
+  const result = await superAdminPool.query(
     'SELECT id FROM public.tenants WHERE admin_email = $1',
     [email]
   );

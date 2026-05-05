@@ -3,7 +3,7 @@
 -- This runs in each tenant's schema
 
 CREATE TABLE IF NOT EXISTS employees (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id                  SERIAL PRIMARY KEY,
     emp_id              VARCHAR(20) UNIQUE NOT NULL,
     full_name           VARCHAR(255) NOT NULL,
     first_name          VARCHAR(100),
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS employees (
     department          VARCHAR(255) NOT NULL,
     employment_type     VARCHAR(50) NOT NULL, -- Full-time, Part-time, Contract
     work_location       VARCHAR(255),
-    reporting_manager_id UUID REFERENCES employees(id) ON DELETE SET NULL,
+    reporting_manager_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
     join_date           DATE NOT NULL,
     probation_end_date  DATE,
     work_email          VARCHAR(255) UNIQUE,
@@ -42,8 +42,8 @@ CREATE TABLE IF NOT EXISTS employees (
     bio                 TEXT,
     
     -- Audit
-    created_by          UUID,
-    updated_by          UUID,
+    created_by          INTEGER,
+    updated_by          INTEGER,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at          TIMESTAMPTZ

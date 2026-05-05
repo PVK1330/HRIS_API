@@ -13,6 +13,17 @@ const router = Router();
  */
 
 router.post(
+  '/login',
+  authLimiter,
+  [
+    body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
+    body('password').notEmpty().withMessage('Password is required'),
+  ],
+  validate,
+  controller.login
+);
+
+router.post(
   '/forgot-password',
   authLimiter,
   [

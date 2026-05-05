@@ -2,8 +2,8 @@
 -- Leave and absence management
 
 CREATE TABLE IF NOT EXISTS leave_requests (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    employee_id         UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    id                  SERIAL PRIMARY KEY,
+    employee_id         INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     leave_type          VARCHAR(50) NOT NULL, -- Annual Leave, Sick Leave, Casual Leave, Maternity, Paternity, Emergency, Unpaid, Compensatory Off, Study Leave
     from_date           DATE NOT NULL,
     to_date             DATE NOT NULL,
@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS leave_requests (
     alternate_contact   VARCHAR(255),
     supporting_document_url VARCHAR(500),
     status              VARCHAR(50) NOT NULL DEFAULT 'Pending', -- Pending, Approved, Rejected, Cancelled
-    approved_by         UUID REFERENCES employees(id) ON DELETE SET NULL,
+    approved_by         INTEGER REFERENCES employees(id) ON DELETE SET NULL,
     approved_at         TIMESTAMPTZ,
     rejection_reason    TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -29,8 +29,8 @@ CREATE TRIGGER update_leave_requests_updated_at BEFORE UPDATE ON leave_requests
 
 -- Leave balance tracking
 CREATE TABLE IF NOT EXISTS leave_balances (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    employee_id         UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    id                  SERIAL PRIMARY KEY,
+    employee_id         INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     leave_type          VARCHAR(50) NOT NULL,
     total_allocated     INTEGER NOT NULL DEFAULT 0,
     used               INTEGER NOT NULL DEFAULT 0,

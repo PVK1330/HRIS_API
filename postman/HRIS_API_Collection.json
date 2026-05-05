@@ -72,6 +72,28 @@
                 }
               },
               "response": []
+            },
+            {
+              "name": "Verify 2FA",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"userId\": 1,\n  \"code\": \"123456\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/verify-2fa",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "verify-2fa"]
+                }
+              },
+              "response": []
             }
           ]
         },
@@ -458,7 +480,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"companyName\": \"Acme Corporation\",\n  \"companyLegalName\": \"Acme Corp LLC\",\n  \"industry\": \"Technology\",\n  \"companySize\": \"51-200\",\n  \"businessType\": \"LLC\",\n  \"taxId\": \"TAX123456\",\n  \"registrationNumber\": \"REG789\",\n  \"website\": \"https://acme.com\",\n  \"addressLine1\": \"123 Business Street\",\n  \"addressLine2\": \"Suite 100\",\n  \"city\": \"Dubai\",\n  \"state\": \"Dubai\",\n  \"country\": \"United Arab Emirates\",\n  \"postalCode\": \"12345\",\n  \"adminName\": \"John Smith\",\n  \"adminEmail\": \"john@acme.com\",\n  \"adminPhone\": \"+971501234567\",\n  \"planId\": \"\",\n  \"timezone\": \"Asia/Dubai\",\n  \"dateFormat\": \"DD/MM/YYYY\",\n  \"timeFormat\": \"24h\",\n  \"trialDays\": 14\n}"
+                  "raw": "{\n  \"companyName\": \"Acme Corporation\",\n  \"companyLegalName\": \"Acme Corp LLC\",\n  \"industry\": \"Technology\",\n  \"companySize\": \"51-200\",\n  \"businessType\": \"LLC\",\n  \"taxId\": \"TAX123456\",\n  \"registrationNumber\": \"REG789\",\n  \"website\": \"https://acme.com\",\n  \"addressLine1\": \"123 Business Street\",\n  \"addressLine2\": \"Suite 100\",\n  \"city\": \"Dubai\",\n  \"state\": \"Dubai\",\n  \"country\": \"United Arab Emirates\",\n  \"postalCode\": \"12345\",\n  \"adminName\": \"John Smith\",\n  \"adminEmail\": \"john@acme.com\",\n  \"adminPhone\": \"+971501234567\",\n  \"planId\": 1,\n  \"timezone\": \"Asia/Dubai\",\n  \"dateFormat\": \"DD/MM/YYYY\",\n  \"timeFormat\": \"24h\",\n  \"trialDays\": 14\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/tenants/create",

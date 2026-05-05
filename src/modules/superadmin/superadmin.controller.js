@@ -25,9 +25,8 @@ const login = asyncHandler(async (req, res) => {
 
   return ApiResponse.ok(
     res,
-    { superadmin },
-    'Login successful',
-    { token, superadmin }
+    { token, superadmin },
+    'Login successful'
   );
 });
 
@@ -41,9 +40,8 @@ const verify2FA = asyncHandler(async (req, res) => {
 
   return ApiResponse.ok(
     res,
-    { superadmin },
-    'Verification successful',
-    { token, superadmin }
+    { token, superadmin },
+    'Verification successful'
   );
 });
 

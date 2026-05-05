@@ -2,7 +2,7 @@
 -- Creates the features table for managing subscription plan features
 
 CREATE TABLE IF NOT EXISTS public.features (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id          SERIAL PRIMARY KEY,
     name        VARCHAR(255) NOT NULL UNIQUE,
     code        VARCHAR(100) NOT NULL UNIQUE,
     description TEXT,

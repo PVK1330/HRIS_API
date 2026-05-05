@@ -2,9 +2,9 @@
 -- Tracks tenant subscriptions and billing
 
 CREATE TABLE IF NOT EXISTS public.tenant_subscriptions (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id           UUID NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
-    plan_id             UUID NOT NULL REFERENCES public.subscription_plans(id) ON DELETE RESTRICT,
+    id                  SERIAL PRIMARY KEY,
+    tenant_id           INTEGER NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+    plan_id             INTEGER NOT NULL REFERENCES public.subscription_plans(id) ON DELETE RESTRICT,
     status              VARCHAR(32) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'trial', 'past_due', 'cancelled', 'expired')),
     billing_cycle       VARCHAR(20) NOT NULL DEFAULT 'monthly' CHECK (billing_cycle IN ('monthly', 'yearly')),
     current_period_start TIMESTAMPTZ NOT NULL,

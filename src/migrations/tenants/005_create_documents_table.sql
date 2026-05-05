@@ -2,8 +2,8 @@
 -- Document management and approval
 
 CREATE TABLE IF NOT EXISTS documents (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    employee_id         UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    id                  SERIAL PRIMARY KEY,
+    employee_id         INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     document_type       VARCHAR(100) NOT NULL, -- Passport, Emirates ID, Visa, Educational Certificate, Employment Contract, etc.
     document_title      VARCHAR(255) NOT NULL,
     document_number     VARCHAR(100),
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS documents (
     version             INTEGER NOT NULL DEFAULT 1,
     status              VARCHAR(50) NOT NULL DEFAULT 'Pending', -- Pending, Approved, Rejected, Expired
     notes               TEXT,
-    approved_by         UUID REFERENCES employees(id) ON DELETE SET NULL,
+    approved_by         INTEGER REFERENCES employees(id) ON DELETE SET NULL,
     approved_at         TIMESTAMPTZ,
     rejection_reason    TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -34,10 +34,10 @@ CREATE TRIGGER update_documents_updated_at BEFORE UPDATE ON documents
 
 -- Document audit log
 CREATE TABLE IF NOT EXISTS document_audit_log (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    document_id         UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    id                  SERIAL PRIMARY KEY,
+    document_id         INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     action              VARCHAR(50) NOT NULL, -- Uploaded, Viewed, Approved, Rejected, Replaced, Deleted
-    actor_id            UUID REFERENCES employees(id) ON DELETE SET NULL,
+    actor_id            INTEGER REFERENCES employees(id) ON DELETE SET NULL,
     actor_name          VARCHAR(255),
     detail              TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()

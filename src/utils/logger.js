@@ -11,7 +11,7 @@ if (!fs.existsSync(logDir)) {
 }
 
 const logger = winston.createLogger({
-  level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+  level: 'info',
   format: winston.format.combine(
     winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
     winston.format.errors({ stack: true }),
@@ -41,8 +41,7 @@ const logger = winston.createLogger({
 if (process.env.NODE_ENV !== 'production') {
   logger.add(new winston.transports.Console({
     format: winston.format.combine(
-      winston.format.colorize(),
-      winston.format.simple()
+      winston.format.printf(({ message }) => `${message}`)
     ),
   }));
 }

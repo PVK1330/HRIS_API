@@ -53,10 +53,10 @@ async function tenantResolver(req, _res, next) {
     if (tenant.status !== 'active') return next(new ApiError(403, 'Tenant account is not active'));
 
     req.tenant = {
-      id:         tenant.id,
-      dbName:     tenant.db_name,       // used by getTenantPool()
+      id: tenant.id,
+      dbName: tenant.db_name,       // used by getTenantPool()
       schemaName: tenant.schema_name,
-      timezone:   tenant.timezone || 'UTC',
+      timezone: tenant.timezone || 'UTC',
       dateFormat: tenant.date_format || 'DD/MM/YYYY',
       timeFormat: tenant.time_format || '24h',
     };

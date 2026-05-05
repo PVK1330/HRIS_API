@@ -74,7 +74,7 @@ async function runSuperAdminMigrations() {
     for (const file of files) {
       if (alreadyApplied.has(file)) {
         skipped += 1;
-        logger.info(`[migrate] skip (already applied): ${file}`);
+        logger.debug(`[migrate] skip (already applied): ${file}`);
         continue;
       }
 
@@ -88,7 +88,7 @@ async function runSuperAdminMigrations() {
         await recordApplied(client, file);
         await client.query('COMMIT');
         applied += 1;
-        logger.info(`[migrate] done:     ${file}`);
+        logger.debug(`[migrate] done:     ${file}`);
       } catch (err) {
         await client.query('ROLLBACK');
         logger.error(`[migrate] FAILED:   ${file}`, err.message);
@@ -96,7 +96,7 @@ async function runSuperAdminMigrations() {
       }
     }
 
-    logger.info(`[migrate] superadmin migrations complete (applied=${applied}, skipped=${skipped})`);
+    logger.debug(`[migrate] superadmin migrations complete (applied=${applied}, skipped=${skipped})`);
     return { applied, skipped };
   } finally {
     client.release();

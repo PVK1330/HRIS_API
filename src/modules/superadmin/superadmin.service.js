@@ -26,6 +26,54 @@ async function login({ email, password }) {
     throw ApiError.unauthorized('Invalid email or password');
   }
 
+  // 2FA Challenge
+  if (record.two_factor_enabled) {
+    return {
+      mfaRequired: true,
+      userId: record.id,
+      email: record.email,
+    };
+  }
+
+  const token = jwt.sign(
+    {
+      id: record.id,
+      email: record.email,
+      role: 'superadmin',
+      tenant_id: null,
+    },
+    env.JWT.secret,
+    { expiresIn: env.JWT.expiresIn }
+  );
+
+  return {
+    token,
+    superadmin: {
+      id: record.id,
+      name: record.name,
+      email: record.email,
+    },
+  };
+}
+
+const speakeasy = require('speakeasy');
+
+async function verify2FA({ userId, code }) {
+  const record = await repo.findById(userId);
+  if (!record) {
+    throw ApiError.notFound('User not found');
+  }
+
+  const verified = speakeasy.totp.verify({
+    secret: record.two_factor_secret,
+    encoding: 'base32',
+    token: code,
+  });
+
+  if (!verified) {
+    throw ApiError.unauthorized('Invalid verification code');
+  }
+
   const token = jwt.sign(
     {
       id: record.id,
@@ -49,4 +97,5 @@ async function login({ email, password }) {
 
 module.exports = {
   login,
+  verify2FA,
 };

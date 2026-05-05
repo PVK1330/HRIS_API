@@ -9,7 +9,7 @@ const db = require('../../config/db');
 
 async function findByEmail(email) {
   const sql = `
-    SELECT id, email, password_hash, name, created_at
+    SELECT id, email, password_hash, name, two_factor_enabled, two_factor_secret, created_at
     FROM public.superadmins
     WHERE email = $1
     LIMIT 1
@@ -20,7 +20,7 @@ async function findByEmail(email) {
 
 async function findById(id) {
   const sql = `
-    SELECT id, email, name, created_at
+    SELECT id, email, name, two_factor_secret, created_at
     FROM public.superadmins
     WHERE id = $1
     LIMIT 1

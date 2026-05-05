@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const { superadminPool } = require('../config/db');
-const { createTenantSchema } = require('./tenantService');
+const { createTenantSchema } = require('../modules/tenant/tenant.service');
 const { isValidTimezone } = require('../utils/timezone');
 const env = require('../config/env');
 const ApiError = require('../utils/ApiError');

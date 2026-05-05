@@ -11,7 +11,17 @@ const service = require('./superadmin.service');
 const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
 
-  const { token, superadmin } = await service.login({ email, password });
+  const result = await service.login({ email, password });
+
+  if (result.mfaRequired) {
+    return ApiResponse.ok(
+      res,
+      { mfaRequired: true, userId: result.userId, email: result.email },
+      'Two-factor authentication required'
+    );
+  }
+
+  const { token, superadmin } = result;
 
   return ApiResponse.ok(
     res,
@@ -21,6 +31,23 @@ const login = asyncHandler(async (req, res) => {
   );
 });
 
+/**
+ * POST /api/v1/superadmin/verify-2fa
+ */
+const verify2FA = asyncHandler(async (req, res) => {
+  const { userId, code } = req.body;
+
+  const { token, superadmin } = await service.verify2FA({ userId, code });
+
+  return ApiResponse.ok(
+    res,
+    { superadmin },
+    'Verification successful',
+    { token, superadmin }
+  );
+});
+
 module.exports = {
   login,
+  verify2FA,
 };

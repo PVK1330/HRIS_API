@@ -1,4 +1,4 @@
-// src/middleware/tenant.js
+// src/middlewares/tenant.middleware.js
 const { superadminPool } = require('../config/db');
 
 /**

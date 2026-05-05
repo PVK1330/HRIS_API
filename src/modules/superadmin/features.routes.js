@@ -3,8 +3,7 @@ const express = require('express');
 const router = express.Router();
 const {
   getAllFeatures,
-  getCategories,
-  getFeaturesByCategory,
+  getActiveFeatures,
   getFeatureById,
   createFeature,
   updateFeature,
@@ -20,16 +19,10 @@ const {
 router.get('/', getAllFeatures);
 
 /**
- * GET /api/v1/superadmin/features/categories
- * Get all feature categories
+ * GET /api/v1/superadmin/features/active
+ * Get active features
  */
-router.get('/categories', getCategories);
-
-/**
- * GET /api/v1/superadmin/features/category/:category
- * Get features by category
- */
-router.get('/category/:category', getFeaturesByCategory);
+router.get('/active', getActiveFeatures);
 
 /**
  * GET /api/v1/superadmin/features/:id

@@ -15,8 +15,8 @@ const ApiError = require('../../utils/ApiError');
 router.post('/self', registrationLimiter, asyncHandler(async (req, res) => {
   const result = await adminSelfOnboard(req.body);
   return ApiResponse.created(
-    res, 
-    result, 
+    res,
+    result,
     'Account created successfully. Please log in to complete setup.'
   );
 }));
@@ -31,7 +31,7 @@ router.get('/subscription-plans', asyncHandler(async (req, res) => {
             price_monthly, price_yearly, features, is_active
      FROM public.subscription_plans
      WHERE is_active = true
-     ORDER BY price_monthly ASC`
+     ORDER BY monthly_price ASC`
   );
   return ApiResponse.ok(res, result.rows);
 }));
@@ -52,7 +52,7 @@ router.post('/check-email', asyncHandler(async (req, res) => {
   );
 
   const available = result.rows.length === 0;
-  return ApiResponse.ok(res, { 
+  return ApiResponse.ok(res, {
     available,
     message: available ? 'Email available' : 'Email already registered'
   });

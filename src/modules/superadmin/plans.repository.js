@@ -7,8 +7,8 @@ class PlansRepository {
    */
   async findAll(filters = {}) {
     let query = `
-      SELECT id, name, code, description, max_users, max_storage_mb,
-             price_monthly, price_yearly, features, is_active, created_at, updated_at
+      SELECT id, plan_name, plan_code, plan_description, monthly_price, annual_price, user_quota,
+             storage_quota_gb, company_quota, trial_days, support_level, is_popular, is_custom, is_active, created_at, updated_at
       FROM public.subscription_plans
       WHERE 1=1
     `;
@@ -21,7 +21,7 @@ class PlansRepository {
       paramIndex++;
     }
 
-    query += ' ORDER BY price_monthly ASC';
+    query += ' ORDER BY monthly_price ASC';
 
     const result = await superadminPool.query(query, params);
     return result.rows;
@@ -32,8 +32,8 @@ class PlansRepository {
    */
   async findById(id) {
     const result = await superadminPool.query(
-      `SELECT id, name, code, description, max_users, max_storage_mb,
-              price_monthly, price_yearly, features, is_active, created_at, updated_at
+      `SELECT id, plan_name, plan_code, plan_description, monthly_price, annual_price, user_quota,
+              storage_quota_gb, company_quota, trial_days, support_level, is_popular, is_custom, is_active, created_at, updated_at
        FROM public.subscription_plans
        WHERE id = $1`,
       [id]
@@ -46,10 +46,10 @@ class PlansRepository {
    */
   async findByCode(code) {
     const result = await superadminPool.query(
-      `SELECT id, name, code, description, max_users, max_storage_mb,
-              price_monthly, price_yearly, features, is_active, created_at, updated_at
+      `SELECT id, plan_name, plan_code, plan_description, monthly_price, annual_price, user_quota,
+              storage_quota_gb, company_quota, trial_days, support_level, is_popular, is_custom, is_active, created_at, updated_at
        FROM public.subscription_plans
-       WHERE code = $1`,
+       WHERE plan_code = $1`,
       [code]
     );
     return result.rows[0];
@@ -60,32 +60,41 @@ class PlansRepository {
    */
   async create(planData) {
     const {
-      name,
-      code,
-      description,
-      maxUsers,
-      maxStorageMb,
-      priceMonthly,
-      priceYearly,
-      features,
+      plan_name,
+      plan_code,
+      plan_description,
+      monthly_price,
+      annual_price,
+      user_quota,
+      storage_quota_gb,
+      company_quota,
+      trial_days,
+      support_level,
+      is_popular = false,
+      is_custom = false,
       isActive = true
     } = planData;
 
     const result = await superadminPool.query(
       `INSERT INTO public.subscription_plans (
-        name, code, description, max_users, max_storage_mb,
-        price_monthly, price_yearly, features, is_active
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        plan_name, plan_code, plan_description, monthly_price, annual_price,
+        user_quota, storage_quota_gb, company_quota, trial_days, support_level,
+        is_popular, is_custom, is_active
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING *`,
       [
-        name,
-        code,
-        description || null,
-        maxUsers || null,
-        maxStorageMb || null,
-        priceMonthly || 0,
-        priceYearly || 0,
-        features || [],
+        plan_name,
+        plan_code,
+        plan_description || null,
+        monthly_price || 0,
+        annual_price || 0,
+        user_quota || 0,
+        storage_quota_gb || 0,
+        company_quota || 1,
+        trial_days || 0,
+        support_level || null,
+        is_popular,
+        is_custom,
         isActive
       ]
     );
@@ -97,40 +106,52 @@ class PlansRepository {
    */
   async update(id, planData) {
     const {
-      name,
-      code,
-      description,
-      maxUsers,
-      maxStorageMb,
-      priceMonthly,
-      priceYearly,
-      features,
+      plan_name,
+      plan_code,
+      plan_description,
+      monthly_price,
+      annual_price,
+      user_quota,
+      storage_quota_gb,
+      company_quota,
+      trial_days,
+      support_level,
+      is_popular,
+      is_custom,
       isActive
     } = planData;
 
     const result = await superadminPool.query(
       `UPDATE public.subscription_plans
-       SET name = COALESCE($1, name),
-           code = COALESCE($2, code),
-           description = COALESCE($3, description),
-           max_users = COALESCE($4, max_users),
-           max_storage_mb = COALESCE($5, max_storage_mb),
-           price_monthly = COALESCE($6, price_monthly),
-           price_yearly = COALESCE($7, price_yearly),
-           features = COALESCE($8, features),
-           is_active = COALESCE($9, is_active),
+       SET plan_name = COALESCE($1, plan_name),
+           plan_code = COALESCE($2, plan_code),
+           plan_description = COALESCE($3, plan_description),
+           monthly_price = COALESCE($4, monthly_price),
+           annual_price = COALESCE($5, annual_price),
+           user_quota = COALESCE($6, user_quota),
+           storage_quota_gb = COALESCE($7, storage_quota_gb),
+           company_quota = COALESCE($8, company_quota),
+           trial_days = COALESCE($9, trial_days),
+           support_level = COALESCE($10, support_level),
+           is_popular = COALESCE($11, is_popular),
+           is_custom = COALESCE($12, is_custom),
+           is_active = COALESCE($13, is_active),
            updated_at = NOW()
-       WHERE id = $10
+       WHERE id = $14
        RETURNING *`,
       [
-        name,
-        code,
-        description,
-        maxUsers,
-        maxStorageMb,
-        priceMonthly,
-        priceYearly,
-        features,
+        plan_name,
+        plan_code,
+        plan_description,
+        monthly_price,
+        annual_price,
+        user_quota,
+        storage_quota_gb,
+        company_quota,
+        trial_days,
+        support_level,
+        is_popular,
+        is_custom,
         isActive,
         id
       ]
@@ -163,64 +184,7 @@ class PlansRepository {
     return result.rowCount > 0;
   }
 
-  /**
-   * Add feature to plan
-   */
-  async addFeature(planId, feature) {
-    const plan = await this.findById(planId);
-    if (!plan) {
-      throw new Error('Plan not found');
-    }
 
-    const features = plan.features || [];
-    if (!features.includes(feature)) {
-      features.push(feature);
-    }
-
-    const result = await superadminPool.query(
-      `UPDATE public.subscription_plans
-       SET features = $1, updated_at = NOW()
-       WHERE id = $2
-       RETURNING *`,
-      [features, planId]
-    );
-    return result.rows[0];
-  }
-
-  /**
-   * Remove feature from plan
-   */
-  async removeFeature(planId, feature) {
-    const plan = await this.findById(planId);
-    if (!plan) {
-      throw new Error('Plan not found');
-    }
-
-    const features = (plan.features || []).filter(f => f !== feature);
-
-    const result = await superadminPool.query(
-      `UPDATE public.subscription_plans
-       SET features = $1, updated_at = NOW()
-       WHERE id = $2
-       RETURNING *`,
-      [features, planId]
-    );
-    return result.rows[0];
-  }
-
-  /**
-   * Update features list
-   */
-  async updateFeatures(planId, features) {
-    const result = await superadminPool.query(
-      `UPDATE public.subscription_plans
-       SET features = $1, updated_at = NOW()
-       WHERE id = $2
-       RETURNING *`,
-      [features, planId]
-    );
-    return result.rows[0];
-  }
 }
 
 module.exports = new PlansRepository();

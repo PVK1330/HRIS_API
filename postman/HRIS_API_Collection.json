@@ -76,6 +76,189 @@
           ]
         },
         {
+          "name": "Features",
+          "item": [
+            {
+              "name": "Get All Features",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/features",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "features"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Get Feature by ID",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/features/:featureId",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "features", ":featureId"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Get Features by Category",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/features/category/:category",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "features", "category", ":category"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Get Categories",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/features/categories",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "features", "categories"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Create Feature",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Custom Feature\",\n  \"code\": \"custom_feature\",\n  \"description\": \"A custom feature for specific needs\",\n  \"category\": \"Custom\",\n  \"isActive\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/features",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "features"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Update Feature",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Custom Feature\",\n  \"code\": \"custom_feature\",\n  \"description\": \"Updated description\",\n  \"category\": \"Custom\",\n  \"isActive\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/features/:featureId",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "features", ":featureId"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Delete Feature",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/features/:featureId",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "features", ":featureId"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Activate Feature",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/features/:featureId/activate",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "features", ":featureId", "activate"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Deactivate Feature",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/features/:featureId/deactivate",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "features", ":featureId", "deactivate"]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
           "name": "Subscription Plans",
           "item": [
             {

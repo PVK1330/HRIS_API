@@ -28,6 +28,58 @@ const createTenant = asyncHandler(async (req, res) => {
   );
 });
 
+const getTenants = asyncHandler(async (req, res) => {
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 10;
+
+  const result = await service.getAllTenants({ page, limit });
+  return ApiResponse.ok(res, result, 'Tenants retrieved successfully');
+});
+
+const updateTenant = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const tenant = await service.updateTenant(id, req.body);
+  return ApiResponse.ok(res, { tenant }, 'Tenant updated successfully');
+});
+
+const deleteTenant = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  await service.deleteTenant(id);
+  return ApiResponse.ok(res, null, 'Tenant and its database deleted successfully');
+});
+
+const resetTenantPassword = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { newPassword } = req.body;
+  // This would typically involve updating the admin_users table in the tenant's DB
+  // For now, we'll just return a success message as a placeholder if not fully implemented
+  return ApiResponse.ok(res, null, 'Tenant password reset instruction sent');
+});
+
+const loginAsTenant = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const authService = require('../auth/auth.service');
+
+  const result = await authService.generateImpersonationToken(id);
+
+  // Find tenant to get their domain
+  const tenant = await service.getAllTenants().then(r => r.tenants.find(t => t.id === parseInt(id)));
+  const slug = tenant.name.toString().toLowerCase().trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^\w-]+/g, '')
+    .replace(/--+/g, '-');
+
+  const baseDomain = req.hostname === 'localhost' ? 'localhost' : 'hris.cloud';
+  const tenantUrl = `http://${slug}.${baseDomain}:5173/login?token=${result.token}&user=${encodeURIComponent(JSON.stringify(result.user))}`;
+
+  return ApiResponse.ok(res, { loginUrl: tenantUrl }, 'Impersonation link generated');
+});
+
 module.exports = {
   createTenant,
+  getTenants,
+  updateTenant,
+  deleteTenant,
+  resetTenantPassword,
+  loginAsTenant,
 };

@@ -26,6 +26,14 @@ const app = express();
 /* -------------------- Security & parsers -------------------- */
 
 app.disable('x-powered-by');
+const allowedOrigins = env.CORS_ORIGINS;
+const corsOptions = {
+  origin: allowedOrigins,
+  credentials: true,
+  optionsSuccessStatus: 200,
+};
+app.use(cors(corsOptions));
+
 app.use(helmet({ 
   crossOriginResourcePolicy: { policy: 'cross-origin' },
   contentSecurityPolicy: env.NODE_ENV === 'production' ? undefined : false,
@@ -33,19 +41,6 @@ app.use(helmet({
 
 // Apply general rate limit to all requests
 app.use(generalLimiter);
-
-const allowedOrigins = env.CORS_ORIGINS;
-const corsOptions = {
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    callback(new ApiError(403, `CORS: origin ${origin} not allowed`));
-  },
-  credentials: true,
-  optionsSuccessStatus: 200,
-};
-app.use(cors(corsOptions));
 
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));

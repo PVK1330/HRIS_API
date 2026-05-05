@@ -71,6 +71,24 @@ async function deleteTenantByDbName(dbName, client = db) {
   await client.query("DELETE FROM public.tenants WHERE db_name = $1", [dbName]);
 }
 
+async function updateTenant(id, { name, status, adminEmail }, client = db) {
+  const sql = `
+    UPDATE public.tenants
+    SET name = COALESCE($1, name),
+        status = COALESCE($2, status),
+        admin_email = COALESCE($3, admin_email),
+        updated_at = NOW()
+    WHERE id = $4
+    RETURNING *
+  `;
+  const { rows } = await client.query(sql, [name, status, adminEmail, id]);
+  return rows[0];
+}
+
+async function deleteTenantById(id, client = db) {
+  await client.query("DELETE FROM public.tenants WHERE id = $1", [id]);
+}
+
 /* -------------------- per-tenant DB: admin_users -------------------- */
 
 /**
@@ -95,6 +113,22 @@ async function insertAdminUser(
   return rows[0];
 }
 
+async function findAll({ limit = 10, offset = 0 } = {}, client = db) {
+  const sql = `
+    SELECT id, name, db_name, admin_email, status, created_by, created_at
+    FROM public.tenants
+    ORDER BY created_at DESC
+    LIMIT $1 OFFSET $2
+  `;
+  const { rows } = await client.query(sql, [limit, offset]);
+  return rows;
+}
+
+async function countAll(client = db) {
+  const { rows } = await client.query("SELECT COUNT(*) as total FROM public.tenants");
+  return parseInt(rows[0].total, 10);
+}
+
 module.exports = {
   // public.tenants
   findTenantByAdminEmail,
@@ -102,6 +136,10 @@ module.exports = {
   findTenantById,
   insertTenant,
   deleteTenantByDbName,
+  updateTenant,
+  deleteTenantById,
+  findAll,
+  countAll,
   // per-tenant
   insertAdminUser,
   // helpers

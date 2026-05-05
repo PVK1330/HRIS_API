@@ -45,4 +45,43 @@ router.post(
   controller.createTenant
 );
 
+/**
+ * GET /api/v1/tenants
+ * SuperAdmin-only: list all tenants.
+ */
+router.get(
+  '/',
+  authenticate,
+  requireRole('superadmin'),
+  controller.getTenants
+);
+
+router.patch(
+  '/:id',
+  authenticate,
+  requireRole('superadmin'),
+  controller.updateTenant
+);
+
+router.delete(
+  '/:id',
+  authenticate,
+  requireRole('superadmin'),
+  controller.deleteTenant
+);
+
+router.post(
+  '/:id/reset-password',
+  authenticate,
+  requireRole('superadmin'),
+  controller.resetTenantPassword
+);
+
+router.post(
+  '/:id/login-as',
+  authenticate,
+  requireRole('superadmin'),
+  controller.loginAsTenant
+);
+
 module.exports = router;

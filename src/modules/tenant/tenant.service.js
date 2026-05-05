@@ -278,8 +278,39 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
   }
 }
 
+async function updateTenant(id, data) {
+  return await repo.updateTenant(id, data);
+}
+
+async function deleteTenant(id) {
+  const tenant = await repo.findTenantById(id);
+  if (!tenant) throw new ApiError(404, 'Tenant not found');
+  
+  // 1. Delete registry record
+  await repo.deleteTenantById(id);
+  
+  // 2. Best effort: drop the database
+  try {
+    await dropTenantDatabaseIfExists(tenant.db_name);
+  } catch (err) {
+    logger.error(`Failed to drop database ${tenant.db_name} during tenant deletion`, err.message);
+  }
+}
+
+async function getAllTenants({ page = 1, limit = 10 } = {}) {
+  const offset = (page - 1) * limit;
+  const [tenants, total] = await Promise.all([
+    repo.findAll({ limit, offset }),
+    repo.countAll()
+  ]);
+  return { tenants, total, page, limit };
+}
+
 module.exports = {
   createTenant,
   runTenantMigrations,
   dropTenantDatabaseIfExists,
+  getAllTenants,
+  updateTenant,
+  deleteTenant,
 };

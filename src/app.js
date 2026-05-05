@@ -16,6 +16,11 @@ const plansRoutes = require('./modules/superadmin/plans.routes');
 const featuresRoutes = require('./modules/superadmin/features.routes');
 const tenantRoutes = require('./modules/tenant/tenant.routes');
 const settingsRoutes = require('./modules/settings/settings.routes');
+const paymentGatewaysRoutes = require('./modules/paymentGateways/paymentGateways.routes');
+const recaptchaRoutes = require('./modules/recaptcha/recaptcha.routes');
+const freeTrialRoutes = require('./modules/freeTrial/freeTrial.routes');
+const accountSettingsRoutes = require('./modules/accountSettings/accountSettings.routes');
+const currencyRoutes = require('./modules/currency/currency.routes');
 const authRoutes = require('./modules/auth/auth.routes');
 const publicOnboardingRoutes = require('./routes/public/onboardingRoutes');
 
@@ -74,6 +79,11 @@ app.use('/api/v1/superadmin/plans', plansRoutes);
 app.use('/api/v1/superadmin/features', featuresRoutes);
 app.use('/api/v1/tenants', tenantRoutes);
 app.use('/api/v1/settings', settingsRoutes);
+app.use('/api/v1/payment-gateways', paymentGatewaysRoutes);
+app.use('/api/v1/recaptcha', recaptchaRoutes);
+app.use('/api/v1/free-trial', freeTrialRoutes);
+app.use('/api/v1/account-settings', accountSettingsRoutes);
+app.use('/api/v1/currency', currencyRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
 

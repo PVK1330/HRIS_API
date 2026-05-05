@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
+const env = require('../../config/env');
 const ApiError = require('../../utils/ApiError');
 const logger = require('../../utils/logger');
 const repo = require('./settings.repository');
@@ -162,7 +163,10 @@ const LOGO_KEY_BY_TYPE = {
   favicon: 'logo_favicon',
 };
 
-const LOGO_DIR = path.join(__dirname, '..', '..', 'uploads', 'logos');
+// Resolve from the same env.UPLOAD.dir source-of-truth that multer + the
+// /uploads static server use. Otherwise a wrong-path delete-on-overwrite would
+// silently no-op while real files pile up.
+const LOGO_DIR = path.join(path.resolve(env.UPLOAD.dir), 'logos');
 
 function publicLogoPath(filename) {
   return `/uploads/logos/${filename}`;

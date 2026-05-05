@@ -62,7 +62,9 @@ const env = Object.freeze({
   BCRYPT_SALT_ROUNDS: parseInt(process.env.BCRYPT_SALT_ROUNDS, 10) || 12,
 
   UPLOAD: {
-    dir: process.env.UPLOAD_DIR || './uploads',
+    // Default points inside src/ so that files written by multer match what
+    // express.static serves under /uploads. Override via UPLOAD_DIR if needed.
+    dir: process.env.UPLOAD_DIR || './src/uploads',
     maxSize: (parseInt(process.env.UPLOAD_MAX_SIZE_MB, 10) || 2) * 1024 * 1024,
   },
 

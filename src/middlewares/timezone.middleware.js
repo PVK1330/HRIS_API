@@ -1,4 +1,5 @@
-// src/middleware/timezone.js
+'use strict';
+
 const { toTenantTime, nowInTenantTime, todayInTenantTime } = require('../utils/timezone');
 
 /**

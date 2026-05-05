@@ -26,7 +26,7 @@ function authenticate(req, _res, next) {
 
     let decoded;
     try {
-      decoded = jwt.verify(token, env.JWT_SECRET);
+      decoded = jwt.verify(token, env.JWT.secret);
     } catch (err) {
       const msg =
         err && err.name === "TokenExpiredError"

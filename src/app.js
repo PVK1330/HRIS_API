@@ -8,6 +8,7 @@ const cors = require('cors');
 
 const env = require('./config/env');
 const ApiResponse = require('./utils/ApiResponse');
+const ApiError = require('./utils/ApiError');
 const { notFoundHandler, errorHandler } = require('./middlewares/error.middleware');
 
 const superadminRoutes = require('./modules/superadmin/superadmin.routes');
@@ -15,20 +16,32 @@ const plansRoutes = require('./modules/superadmin/plans.routes');
 const tenantRoutes = require('./modules/tenant/tenant.routes');
 const settingsRoutes = require('./modules/settings/settings.routes');
 
+const { generalLimiter } = require('./middlewares/rateLimit.middleware');
+
 const app = express();
 
 /* -------------------- Security & parsers -------------------- */
 
 app.disable('x-powered-by');
-// crossOriginResourcePolicy needs to be relaxed so logos/favicons served
-// from /uploads can be embedded by the SuperAdmin frontend on a different origin.
-app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+app.use(helmet({ 
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: env.NODE_ENV === 'production' ? undefined : false,
+}));
 
-const corsOrigins = env.CORS_ORIGINS;
-const corsOptions =
-  corsOrigins.includes('*')
-    ? { origin: true, credentials: true }
-    : { origin: corsOrigins, credentials: true };
+// Apply general rate limit to all requests
+app.use(generalLimiter);
+
+const allowedOrigins = env.CORS_ORIGINS;
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new ApiError(403, `CORS: origin ${origin} not allowed`));
+  },
+  credentials: true,
+  optionsSuccessStatus: 200,
+};
 app.use(cors(corsOptions));
 
 app.use(express.json({ limit: '1mb' }));
@@ -36,7 +49,7 @@ app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 /* -------------------- Static uploads -------------------- */
 
-const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const UPLOADS_DIR = path.resolve(env.UPLOAD.dir);
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
@@ -47,6 +60,7 @@ if (!fs.existsSync(LOGOS_DIR)) {
 app.use('/uploads', express.static(UPLOADS_DIR, {
   fallthrough: true,
   maxAge: '1d',
+  index: false,
 }));
 
 /* -------------------- Health -------------------- */

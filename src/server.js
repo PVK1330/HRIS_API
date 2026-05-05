@@ -40,11 +40,12 @@ async function bootstrap() {
         process.exit(1);
       }
       try {
+        await db.closeAllTenantPools();
         await db.pool.end();
-        logger.info('PG pool closed. Bye.');
+        logger.info('All PG pools closed. Bye.');
         process.exit(0);
       } catch (e) {
-        logger.error('Error closing PG pool', e);
+        logger.error('Error closing PG pools', e);
         process.exit(1);
       }
     });

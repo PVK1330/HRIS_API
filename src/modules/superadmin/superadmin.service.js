@@ -33,8 +33,8 @@ async function login({ email, password }) {
       role: 'superadmin',
       tenant_id: null,
     },
-    env.JWT_SECRET,
-    { expiresIn: env.JWT_EXPIRES_IN }
+    env.JWT.secret,
+    { expiresIn: env.JWT.expiresIn }
   );
 
   return {

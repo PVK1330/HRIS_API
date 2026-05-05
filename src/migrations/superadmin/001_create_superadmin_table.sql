@@ -4,7 +4,7 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 CREATE TABLE IF NOT EXISTS public.superadmins (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id            SERIAL PRIMARY KEY,
     email         VARCHAR(255) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     name          VARCHAR(255) NOT NULL,

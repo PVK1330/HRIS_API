@@ -1,8 +1,10 @@
-// src/services/onboardingService.js
-const { superadminPool, getTenantPool } = require('../config/db');
+const crypto = require('crypto');
+const bcrypt = require('bcrypt');
+const { superadminPool } = require('../config/db');
 const { createTenantSchema } = require('./tenantService');
 const { isValidTimezone } = require('../utils/timezone');
-const bcrypt = require('bcrypt');
+const env = require('../config/env');
+const ApiError = require('../utils/ApiError');
 
 /**
  * Superadmin onboards a new tenant (Admin company)
@@ -17,21 +19,22 @@ async function superadminOnboardTenant(tenantData, superadminId) {
     const required = ['companyName', 'adminEmail', 'planId'];
     for (const field of required) {
       if (!tenantData[field]) {
-        throw new Error(`Missing required field: ${field}`);
+        throw ApiError.badRequest(`Missing required field: ${field}`);
       }
     }
 
     // Validate timezone
     if (tenantData.timezone && !isValidTimezone(tenantData.timezone)) {
-      throw new Error('Invalid timezone');
+      throw ApiError.badRequest('Invalid timezone');
     }
 
-    // Generate schema name
-    const schemaName = `tenant_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    // Generate secure schema name
+    const tenantSuffix = crypto.randomBytes(6).toString('hex');
+    const schemaName = `tenant_${Date.now()}_${tenantSuffix}`;
 
-    // Generate temporary password
+    // Generate secure temporary password
     const tempPassword = generateTempPassword();
-    const passwordHash = await bcrypt.hash(tempPassword, 10);
+    const passwordHash = await bcrypt.hash(tempPassword, env.BCRYPT_SALT_ROUNDS);
 
     // Insert tenant record
     const tenantResult = await client.query(
@@ -130,7 +133,7 @@ async function adminSelfOnboard(onboardingData) {
     const required = ['companyName', 'adminName', 'adminEmail', 'password', 'planId'];
     for (const field of required) {
       if (!onboardingData[field]) {
-        throw new Error(`Missing required field: ${field}`);
+        throw ApiError.badRequest(`Missing required field: ${field}`);
       }
     }
 
@@ -140,19 +143,17 @@ async function adminSelfOnboard(onboardingData) {
       [onboardingData.adminEmail]
     );
     if (existingTenant.rows.length > 0) {
-      throw new Error('Email already registered');
+      throw ApiError.conflict('Email already registered');
     }
 
     // Validate timezone
     if (onboardingData.timezone && !isValidTimezone(onboardingData.timezone)) {
-      throw new Error('Invalid timezone');
+      throw ApiError.badRequest('Invalid timezone');
     }
 
-    // Hash password
-    const passwordHash = await bcrypt.hash(onboardingData.password, 10);
-
-    // Generate schema name
-    const schemaName = `tenant_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    // Generate secure schema name
+    const tenantSuffix = crypto.randomBytes(6).toString('hex');
+    const schemaName = `tenant_${Date.now()}_${tenantSuffix}`;
 
     // Insert tenant record
     const tenantResult = await client.query(
@@ -250,16 +251,18 @@ async function completeOnboarding(tenantId) {
 }
 
 /**
- * Generate temporary password
+ * Generate secure temporary password
  */
-function generateTempPassword() {
-  const length = 12;
-  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-  let password = '';
-  for (let i = 0; i < length; i++) {
-    password += charset.charAt(Math.floor(Math.random() * charset.length));
-  }
-  return password;
+function generateTempPassword(length = 16) {
+  const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const lower = 'abcdefghijklmnopqrstuvwxyz';
+  const digits = '0123456789';
+  const special = '!@#$%^&*';
+  const all = upper + lower + digits + special;
+  const bytes = crypto.randomBytes(length);
+  return Array.from(bytes)
+    .map(b => all[b % all.length])
+    .join('');
 }
 
 module.exports = {

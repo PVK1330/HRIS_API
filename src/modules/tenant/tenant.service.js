@@ -12,7 +12,7 @@ const ApiError = require('../../utils/ApiError');
 const logger = require('../../utils/logger');
 const repo = require('./tenant.repository');
 
-const SALT_ROUNDS = 12;
+const SALT_ROUNDS = env.BCRYPT_SALT_ROUNDS;
 const TENANT_MIGRATIONS_DIR = path.join(__dirname, '..', '..', 'migrations', 'tenants');
 
 const TENANT_TRACKING_TABLE_SQL = `

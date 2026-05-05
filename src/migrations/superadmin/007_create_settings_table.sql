@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS public.settings (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id          SERIAL PRIMARY KEY,
     key         VARCHAR(100) UNIQUE NOT NULL,
     value       TEXT,
     "group"     VARCHAR(50)  NOT NULL,

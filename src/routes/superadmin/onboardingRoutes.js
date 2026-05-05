@@ -72,11 +72,11 @@ router.put('/:tenantId/complete', async (req, res) => {
 router.get('/subscription-plans', async (req, res) => {
   try {
     const result = await superadminPool.query(
-      `SELECT id, name, code, description, max_users, max_storage_mb,
-              price_monthly, price_yearly, features, is_active
+      `SELECT id, plan_name, plan_code, plan_description, monthly_price, annual_price, user_quota,
+              storage_quota_gb, company_quota, trial_days, support_level, is_popular, is_custom, is_active
        FROM public.subscription_plans
        WHERE is_active = true
-       ORDER BY price_monthly ASC`
+       ORDER BY monthly_price ASC`
     );
     res.json({ data: result.rows });
   } catch (error) {

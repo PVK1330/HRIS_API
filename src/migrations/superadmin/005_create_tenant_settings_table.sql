@@ -2,8 +2,8 @@
 -- Stores tenant-specific configuration settings
 
 CREATE TABLE IF NOT EXISTS public.tenant_settings (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id       UUID NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+    id              SERIAL PRIMARY KEY,
+    tenant_id       INTEGER NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
     key             VARCHAR(100) NOT NULL,
     value           TEXT,
     category        VARCHAR(50),

@@ -89,9 +89,45 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{baseUrl}}/superadmin/features",
+                  "raw": "{{baseUrl}}/superadmin/features?page=1&limit=10&search=&isActive=",
                   "host": ["{{baseUrl}}"],
-                  "path": ["superadmin", "features"]
+                  "path": ["superadmin", "features"],
+                  "query": [
+                    {
+                      "key": "page",
+                      "value": "1"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "10"
+                    },
+                    {
+                      "key": "search",
+                      "value": ""
+                    },
+                    {
+                      "key": "isActive",
+                      "value": ""
+                    }
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Get Active Features",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{superadminToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/features/active",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "features", "active"]
                 }
               },
               "response": []
@@ -114,42 +150,7 @@
               },
               "response": []
             },
-            {
-              "name": "Get Features by Category",
-              "request": {
-                "method": "GET",
-                "header": [
-                  {
-                    "key": "Authorization",
-                    "value": "Bearer {{superadminToken}}"
-                  }
-                ],
-                "url": {
-                  "raw": "{{baseUrl}}/superadmin/features/category/:category",
-                  "host": ["{{baseUrl}}"],
-                  "path": ["superadmin", "features", "category", ":category"]
-                }
-              },
-              "response": []
-            },
-            {
-              "name": "Get Categories",
-              "request": {
-                "method": "GET",
-                "header": [
-                  {
-                    "key": "Authorization",
-                    "value": "Bearer {{superadminToken}}"
-                  }
-                ],
-                "url": {
-                  "raw": "{{baseUrl}}/superadmin/features/categories",
-                  "host": ["{{baseUrl}}"],
-                  "path": ["superadmin", "features", "categories"]
-                }
-              },
-              "response": []
-            },
+
             {
               "name": "Create Feature",
               "request": {
@@ -166,7 +167,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"name\": \"Custom Feature\",\n  \"code\": \"custom_feature\",\n  \"description\": \"A custom feature for specific needs\",\n  \"category\": \"Custom\",\n  \"isActive\": true\n}"
+                  "raw": "{\n  \"feature_name\": \"Custom Feature\",\n  \"feature_code\": \"custom_feature\",\n  \"feature_description\": \"A custom feature for specific needs\",\n  \"feature_sort_order\": 21,\n  \"feature_is_active\": true\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/superadmin/features",
@@ -192,7 +193,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"name\": \"Custom Feature\",\n  \"code\": \"custom_feature\",\n  \"description\": \"Updated description\",\n  \"category\": \"Custom\",\n  \"isActive\": true\n}"
+                  "raw": "{\n  \"feature_name\": \"Custom Feature\",\n  \"feature_code\": \"custom_feature\",\n  \"feature_description\": \"Updated description\",\n  \"feature_sort_order\": 21,\n  \"feature_is_active\": true\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/superadmin/features/:featureId",

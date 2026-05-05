@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS public.email_templates (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id          SERIAL PRIMARY KEY,
     slug        VARCHAR(100) UNIQUE NOT NULL,
     name        VARCHAR(100) NOT NULL,
     subject     VARCHAR(255) NOT NULL,

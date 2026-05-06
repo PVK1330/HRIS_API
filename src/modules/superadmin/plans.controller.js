@@ -7,7 +7,8 @@ const plansRepository = require('./plans.repository');
 const getAllPlans = async (req, res, next) => {
   try {
     const filters = {
-      isActive: req.query.isActive !== undefined ? req.query.isActive === 'true' : undefined
+      isActive: req.query.isActive !== undefined ? req.query.isActive === 'true' : undefined,
+      search: req.query.search
     };
     const plans = await plansRepository.findAll(filters);
     

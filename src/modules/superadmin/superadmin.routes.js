@@ -8,6 +8,7 @@ const { authenticate, requireRole } = require('../../middlewares/auth.middleware
 const controller = require('./superadmin.controller');
 const featuresRouter = require('./features.routes');
 const plansRouter = require('./plans.routes');
+const paymentsRouter = require('./payments.routes');
 
 const router = Router();
 
@@ -178,5 +179,6 @@ router.delete(
  */
 router.use('/features', authenticate, requireRole('superadmin'), featuresRouter);
 router.use('/plans', authenticate, requireRole('superadmin'), plansRouter);
+router.use('/payments', authenticate, requireRole('superadmin'), paymentsRouter);
 
 module.exports = router;

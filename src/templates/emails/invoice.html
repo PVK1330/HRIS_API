@@ -1,0 +1,49 @@
+<div style="padding: 20px; font-family: sans-serif;">
+    <h1 style="color: #0F766E; border-bottom: 2px solid #0F766E; padding-bottom: 10px;">INVOICE</h1>
+    
+    <div style="margin-top: 20px; display: flex; justify-content: space-between;">
+        <div>
+            <p><strong>To:</strong></p>
+            <p>{{name}}</p>
+            <p>{{email}}</p>
+        </div>
+        <div style="text-align: right;">
+            <p><strong>Invoice Number:</strong> INV-{{invoiceId}}</p>
+            <p><strong>Date:</strong> {{date}}</p>
+        </div>
+    </div>
+
+    <table style="width: 100%; border-collapse: collapse; margin-top: 30px;">
+        <thead>
+            <tr style="background-color: #F8FAFC;">
+                <th style="border: 1px solid #E2E8F0; padding: 12px; text-align: left;">Description</th>
+                <th style="border: 1px solid #E2E8F0; padding: 12px; text-align: right;">Amount</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td style="border: 1px solid #E2E8F0; padding: 12px;">
+                    <strong>{{planName}}</strong><br>
+                    <span style="font-size: 12px; color: #64748B;">Billing Cycle: {{billingCycle}}</span>
+                </td>
+                <td style="border: 1px solid #E2E8F0; padding: 12px; text-align: right;">{{currency}} {{amount}}</td>
+            </tr>
+        </tbody>
+        <tfoot>
+            <tr style="background-color: #F8FAFC; font-weight: bold;">
+                <td style="border: 1px solid #E2E8F0; padding: 12px; text-align: right;">Total</td>
+                <td style="border: 1px solid #E2E8F0; padding: 12px; text-align: right;">{{currency}} {{amount}}</td>
+            </tr>
+        </tfoot>
+    </table>
+
+    <div style="margin-top: 40px; padding: 20px; background-color: #F0FDFA; border-radius: 8px;">
+        <p style="margin: 0; color: #0F766E; font-weight: bold;">Status: {{status}}</p>
+        <p style="margin: 5px 0 0 0; font-size: 13px; color: #134E4A;">{{statusMessage}}</p>
+    </div>
+
+    <div style="margin-top: 30px; font-size: 12px; color: #64748B;">
+        <p>If you have any questions regarding this invoice, please contact our support team.</p>
+        <p>Thank you for choosing HRIS!</p>
+    </div>
+</div>

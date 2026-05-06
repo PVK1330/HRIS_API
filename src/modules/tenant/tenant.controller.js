@@ -32,8 +32,9 @@ const createTenant = asyncHandler(async (req, res) => {
 const getTenants = asyncHandler(async (req, res) => {
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 10;
+  const { search, plan, status } = req.query;
 
-  const result = await service.getAllTenants({ page, limit });
+  const result = await service.getAllTenants({ page, limit, search, plan, status });
   return ApiResponse.ok(res, result, 'Tenants retrieved successfully');
 });
 

@@ -21,6 +21,12 @@ class PlansRepository {
       paramIndex++;
     }
 
+    if (filters.search) {
+      query += ` AND (plan_name ILIKE $${paramIndex} OR plan_code ILIKE $${paramIndex})`;
+      params.push(`%${filters.search}%`);
+      paramIndex++;
+    }
+
     query += ' ORDER BY monthly_price ASC';
 
     const result = await superAdminPool.query(query, params);

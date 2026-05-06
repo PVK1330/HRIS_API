@@ -235,19 +235,20 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
     }
 
     // 6. Create initial subscription record
+    let subscriptionRow = null;
     if (plan_id) {
       try {
-        await db.superAdminPool.query(
+        const subResult = await db.superAdminPool.query(
           `INSERT INTO public.tenant_subscriptions (
             tenant_id, plan_id, status, billing_cycle,
             current_period_start, current_period_end, trial_end
-          ) VALUES ($1, $2, 'trial', 'monthly', NOW(), NOW() + INTERVAL '14 days', $3)`,
+          ) VALUES ($1, $2, 'trial', 'monthly', NOW(), NOW() + INTERVAL '14 days', $3)
+          RETURNING id`,
           [tenantRow.id, plan_id, trialEndsAt]
         );
+        subscriptionRow = subResult.rows[0];
       } catch (subErr) {
         logger.error(`Failed to create subscription record for tenant ${tenantRow.id}:`, subErr.message);
-        // We don't necessarily want to fail the whole tenant creation if subscription row fails,
-        // but it's better to be consistent.
       }
     }
 
@@ -290,6 +291,63 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
       });
     } catch (mailErr) {
       logger.error('Failed to send welcome email:', mailErr.message);
+    }
+
+    // 10. Create and Send Invoice
+    if (plan_id && subscriptionRow) {
+      try {
+        const plansRepo = require('../superadmin/plans.repository');
+        const planDetails = await plansRepo.findById(plan_id);
+
+        if (planDetails) {
+          // Create a payment record as an "invoice"
+          const paymentResult = await db.superAdminPool.query(
+            `INSERT INTO public.payments (
+              tenant_id, subscription_id, amount, currency, 
+              payment_method, status, billing_start_date, billing_end_date, notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id`,
+            [
+              tenantRow.id,
+              subscriptionRow.id,
+              planDetails.monthly_price || 0,
+              'AED', // Default currency
+              'Manual',
+              planDetails.monthly_price > 0 ? 'pending' : 'completed',
+              new Date(),
+              trialEndsAt,
+              `Onboarding Invoice for ${planDetails.plan_name}`
+            ]
+          );
+
+          const paymentId = paymentResult.rows[0].id;
+
+          // Send Invoice Email
+          const invoiceHtml = await renderEmail('invoice', {
+            name: cleanAdminName,
+            email: normalizedEmail,
+            invoiceId: paymentId,
+            date: new Date().toLocaleDateString(),
+            planName: planDetails.plan_name,
+            billingCycle: 'Monthly',
+            currency: 'AED',
+            amount: planDetails.monthly_price || 0,
+            status: planDetails.monthly_price > 0 ? 'PENDING PAYMENT' : 'PAID (FREE TRIAL)',
+            statusMessage: planDetails.monthly_price > 0 
+              ? 'This invoice is currently pending payment. Please complete the payment to avoid service interruption after the trial period.'
+              : 'This is a complimentary invoice for your free trial period.'
+          });
+
+          await sendMail({
+            to: adminEmail,
+            subject: `Invoice INV-${paymentId} - ${planDetails.plan_name}`,
+            text: `Please find your invoice for ${planDetails.plan_name} attached.`,
+            html: invoiceHtml
+          });
+        }
+      } catch (invErr) {
+        logger.error('Failed to generate or send invoice:', invErr.message);
+      }
     }
 
     return tenant;
@@ -344,11 +402,11 @@ async function deleteTenant(id) {
   }
 }
 
-async function getAllTenants({ page = 1, limit = 10 } = {}) {
+async function getAllTenants({ page = 1, limit = 10, search = '', plan = '', status = '' } = {}) {
   const offset = (page - 1) * limit;
   const [tenants, total] = await Promise.all([
-    repo.findAll({ limit, offset }),
-    repo.countAll()
+    repo.findAll({ limit, offset, search, plan, status }),
+    repo.countAll({ search, plan, status })
   ]);
   return { tenants, total, page, limit };
 }

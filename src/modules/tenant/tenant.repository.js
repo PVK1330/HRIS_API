@@ -131,22 +131,73 @@ async function updateAdminPassword(tenantPool, email, passwordHash) {
   return rows[0];
 }
 
-async function findAll({ limit = 10, offset = 0 } = {}, client = db) {
-  const sql = `
+async function findAll({ limit = 10, offset = 0, search = '', plan = '', status = '' } = {}, client = db) {
+  let query = `
     SELECT t.id, t.name, t.db_name, t.admin_email, t.status, t.created_by, t.created_at,
            sp.plan_name as plan
     FROM public.tenants t
-    LEFT JOIN public.tenant_subscriptions ts ON t.id = ts.tenant_id AND ts.status = 'active'
+    LEFT JOIN public.tenant_subscriptions ts ON t.id = ts.tenant_id AND ts.status IN ('active', 'trial')
     LEFT JOIN public.subscription_plans sp ON ts.plan_id = sp.id
-    ORDER BY t.created_at DESC
-    LIMIT $1 OFFSET $2
+    WHERE 1=1
   `;
-  const { rows } = await client.query(sql, [limit, offset]);
+  const params = [];
+  let paramIndex = 1;
+
+  if (search) {
+    query += ` AND (t.name ILIKE $${paramIndex} OR t.admin_email ILIKE $${paramIndex} OR t.db_name ILIKE $${paramIndex})`;
+    params.push(`%${search}%`);
+    paramIndex++;
+  }
+
+  if (plan && plan !== 'all') {
+    query += ` AND sp.plan_name = $${paramIndex}`;
+    params.push(plan);
+    paramIndex++;
+  }
+
+  if (status && status !== 'all') {
+    query += ` AND t.status = $${paramIndex}`;
+    params.push(status.toLowerCase());
+    paramIndex++;
+  }
+
+  query += ` ORDER BY t.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+  params.push(limit, offset);
+
+  const { rows } = await client.query(query, params);
   return rows;
 }
 
-async function countAll(client = db) {
-  const { rows } = await client.query("SELECT COUNT(*) as total FROM public.tenants");
+async function countAll({ search = '', plan = '', status = '' } = {}, client = db) {
+  let query = `
+    SELECT COUNT(*) as total 
+    FROM public.tenants t
+    LEFT JOIN public.tenant_subscriptions ts ON t.id = ts.tenant_id AND ts.status IN ('active', 'trial')
+    LEFT JOIN public.subscription_plans sp ON ts.plan_id = sp.id
+    WHERE 1=1
+  `;
+  const params = [];
+  let paramIndex = 1;
+
+  if (search) {
+    query += ` AND (t.name ILIKE $${paramIndex} OR t.admin_email ILIKE $${paramIndex} OR t.db_name ILIKE $${paramIndex})`;
+    params.push(`%${search}%`);
+    paramIndex++;
+  }
+
+  if (plan && plan !== 'all') {
+    query += ` AND sp.plan_name = $${paramIndex}`;
+    params.push(plan);
+    paramIndex++;
+  }
+
+  if (status && status !== 'all') {
+    query += ` AND t.status = $${paramIndex}`;
+    params.push(status.toLowerCase());
+    paramIndex++;
+  }
+
+  const { rows } = await client.query(query, params);
   return parseInt(rows[0].total, 10);
 }
 

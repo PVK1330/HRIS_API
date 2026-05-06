@@ -1,0 +1,48 @@
+{
+  "name": "hrs_backend",
+  "version": "1.0.0",
+  "description": "Multi-Tenant SaaS HRS Backend (PERN) - Phase 1",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "migrate": "node src/scripts/runMigrations.js",
+    "seed:superadmin": "node src/scripts/seedSuperAdmin.js",
+    "seed:tenants": "node src/scripts/seedTenants.js",
+    "db:reset": "node src/scripts/resetDb.js",
+    "db:setup": "npm run db:reset && npm run migrate && npm run seed:superadmin && npm run seed:tenants"
+  },
+  "keywords": [
+    "pern",
+    "multi-tenant",
+    "saas",
+    "hrs",
+    "express",
+    "postgres"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.16.0",
+    "bcrypt": "^5.1.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^8.5.0",
+    "express-validator": "^7.2.0",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "moment-timezone": "^0.6.2",
+    "multer": "^2.1.1",
+    "nodemailer": "^8.0.7",
+    "pg": "^8.13.1",
+    "qrcode": "^1.5.4",
+    "speakeasy": "^2.0.0",
+    "stripe": "^22.1.0",
+    "uuid": "^10.0.0",
+    "winston": "^3.19.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  }
+}

@@ -7,7 +7,7 @@ const service = require('./tenant.service');
 /**
  * POST /api/v1/tenants/create
  * Protected: superadmin only.
- * Body: { name, adminEmail, adminName, adminPassword }
+ * Body: { name, adminEmail, adminName, adminPassword, plan_id }
  */
 const createTenant = asyncHandler(async (req, res) => {
   const { name, adminEmail, adminName, adminPassword, plan_id } = req.body;

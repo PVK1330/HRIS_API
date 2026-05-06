@@ -274,7 +274,7 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
       createdAt: tenantRow.created_at,
     };
 
-    // 6. Send Credentials Email
+    // 9. Send Credentials Email
     try {
       const html = await renderEmail('tenant-welcome', {
         name: name,

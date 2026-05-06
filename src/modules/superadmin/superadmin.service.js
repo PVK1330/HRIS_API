@@ -35,6 +35,8 @@ async function login({ email, password }) {
     };
   }
 
+  await repo.touchLastLogin(record.id);
+
   const token = jwt.sign(
     {
       id: record.id,
@@ -52,7 +54,7 @@ async function login({ email, password }) {
       id: record.id,
       name: record.name,
       email: record.email,
-      role: 'superadmin',
+      role: record.role || 'superadmin',
     },
   };
 }
@@ -75,6 +77,8 @@ async function verify2FA({ userId, code }) {
     throw ApiError.unauthorized('Invalid verification code');
   }
 
+  await repo.touchLastLogin(record.id);
+
   const token = jwt.sign(
     {
       id: record.id,
@@ -92,12 +96,169 @@ async function verify2FA({ userId, code }) {
       id: record.id,
       name: record.name,
       email: record.email,
-      role: 'superadmin',
+      role: record.role || 'superadmin',
     },
   };
+}
+
+function normalizeRoleKey(input) {
+  return String(input || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_]/g, '');
+}
+
+function normalizeStatus(input) {
+  const status = String(input || 'active').trim().toLowerCase();
+  if (!['active', 'inactive', 'pending'].includes(status)) {
+    throw ApiError.badRequest('Invalid status value');
+  }
+  return status;
+}
+
+async function getAdminUsers() {
+  const rows = await repo.listAdminUsers();
+  return rows.map((row) => ({
+    ...row,
+    role: row.role || 'superadmin',
+  }));
+}
+
+async function createAdminUser({ name, email, password, role, status }) {
+  const cleanName = String(name || '').trim();
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const cleanRole = normalizeRoleKey(role || 'superadmin');
+  const cleanStatus = normalizeStatus(status || 'pending');
+
+  if (!cleanName || !cleanEmail || !password) {
+    throw ApiError.badRequest('name, email and password are required');
+  }
+
+  const passwordHash = await bcrypt.hash(password, env.BCRYPT_SALT_ROUNDS);
+  return repo.createAdminUser({
+    name: cleanName,
+    email: cleanEmail,
+    passwordHash,
+    role: cleanRole,
+    status: cleanStatus,
+  });
+}
+
+async function updateAdminUser(id, input) {
+  const updates = {};
+  if (input.name != null) updates.name = String(input.name).trim();
+  if (input.role != null) updates.role = normalizeRoleKey(input.role);
+  if (input.status != null) updates.status = normalizeStatus(input.status);
+  const updated = await repo.updateAdminUser(id, updates);
+  if (!updated) throw ApiError.notFound('Admin user not found');
+  return updated;
+}
+
+async function getRoles() {
+  return repo.listRoles();
+}
+
+async function createRole({ name, description, permissions }) {
+  const roleName = String(name || '').trim();
+  if (!roleName) throw ApiError.badRequest('Role name is required');
+  const roleKey = normalizeRoleKey(roleName);
+  return repo.createRole({ roleKey, roleName, description, permissions });
+}
+
+async function updateRole(roleKey, { name, description, permissions }) {
+  const normalizedRoleKey = normalizeRoleKey(roleKey);
+  const updated = await repo.updateRole(normalizedRoleKey, {
+    roleName: name ? String(name).trim() : undefined,
+    description: description == null ? undefined : String(description),
+    permissions,
+  });
+  if (!updated) throw ApiError.notFound('Role not found');
+  return updated;
+}
+
+function normalizeModuleKey(input) {
+  return String(input || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_]/g, '');
+}
+
+async function getModules() {
+  return repo.listModules();
+}
+
+async function updateModule(moduleKey, { isEnabled }) {
+  const normalizedModuleKey = normalizeModuleKey(moduleKey);
+  const updated = await repo.updateModule(normalizedModuleKey, {
+    isEnabled: Boolean(isEnabled),
+  });
+  if (!updated) throw ApiError.notFound('Module not found');
+  return updated;
+}
+
+function normalizeAnnouncementType(type) {
+  const normalized = String(type || 'Info').trim();
+  const valid = ['Info', 'Warning', 'Critical', 'Update'];
+  if (!valid.includes(normalized)) {
+    throw ApiError.badRequest('Invalid announcement type');
+  }
+  return normalized;
+}
+
+async function getAnnouncements() {
+  return repo.listAnnouncements();
+}
+
+async function createAnnouncement({ title, message, audience, type }) {
+  const cleanTitle = String(title || '').trim();
+  const cleanMessage = String(message || '').trim();
+  const cleanAudience = String(audience || 'All Organizations').trim();
+  const cleanType = normalizeAnnouncementType(type);
+
+  if (!cleanTitle || !cleanMessage) {
+    throw ApiError.badRequest('title and message are required');
+  }
+
+  return repo.createAnnouncement({
+    title: cleanTitle,
+    message: cleanMessage,
+    audience: cleanAudience,
+    type: cleanType,
+    recipients: 48,
+  });
+}
+
+async function updateAnnouncement(id, { title, message, audience, type }) {
+  const updated = await repo.updateAnnouncement(id, {
+    title: title == null ? undefined : String(title).trim(),
+    message: message == null ? undefined : String(message).trim(),
+    audience: audience == null ? undefined : String(audience).trim(),
+    type: type == null ? undefined : normalizeAnnouncementType(type),
+  });
+  if (!updated) throw ApiError.notFound('Announcement not found');
+  return updated;
+}
+
+async function deleteAnnouncement(id) {
+  const deleted = await repo.deleteAnnouncement(id);
+  if (!deleted) throw ApiError.notFound('Announcement not found');
 }
 
 module.exports = {
   login,
   verify2FA,
+  getAdminUsers,
+  createAdminUser,
+  updateAdminUser,
+  getRoles,
+  createRole,
+  updateRole,
+  getModules,
+  updateModule,
+  getAnnouncements,
+  createAnnouncement,
+  updateAnnouncement,
+  deleteAnnouncement,
 };

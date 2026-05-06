@@ -113,6 +113,17 @@ async function insertAdminUser(
   return rows[0];
 }
 
+async function updateAdminPassword(tenantPool, email, passwordHash) {
+  const sql = `
+    UPDATE admin_users
+    SET password_hash = $1
+    WHERE email = $2
+    RETURNING id, email
+  `;
+  const { rows } = await tenantPool.query(sql, [passwordHash, email]);
+  return rows[0];
+}
+
 async function findAll({ limit = 10, offset = 0 } = {}, client = db) {
   const sql = `
     SELECT id, name, db_name, admin_email, status, created_by, created_at
@@ -142,6 +153,7 @@ module.exports = {
   countAll,
   // per-tenant
   insertAdminUser,
+  updateAdminPassword,
   // helpers
   assertSafeDbName,
   _assertSafeDbName: assertSafeDbName,

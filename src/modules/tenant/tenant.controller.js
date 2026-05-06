@@ -50,10 +50,9 @@ const deleteTenant = asyncHandler(async (req, res) => {
 
 const resetTenantPassword = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { newPassword } = req.body;
-  // This would typically involve updating the admin_users table in the tenant's DB
-  // For now, we'll just return a success message as a placeholder if not fully implemented
-  return ApiResponse.ok(res, null, 'Tenant password reset instruction sent');
+  const { password } = req.body;
+  await service.resetTenantPassword(id, password);
+  return ApiResponse.ok(res, null, 'Administrator password has been updated and emailed to the organization.');
 });
 
 const loginAsTenant = asyncHandler(async (req, res) => {

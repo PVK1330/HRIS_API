@@ -6,8 +6,11 @@ const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const { v4: uuidv4 } = require('uuid');
 
+const crypto = require('crypto');
 const db = require('../../config/db');
 const env = require('../../config/env');
+const { sendMail } = require('../../utils/mail');
+const { renderEmail } = require('../../utils/emailTemplate');
 const ApiError = require('../../utils/ApiError');
 const logger = require('../../utils/logger');
 const repo = require('./tenant.repository');
@@ -238,7 +241,7 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
 
     logger.info(`Tenant created: ${tenantRow.name} (db=${tenantRow.db_name})`);
 
-    return {
+    const tenant = {
       id: tenantRow.id,
       name: tenantRow.name,
       dbName: tenantRow.db_name,
@@ -246,6 +249,26 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
       status: tenantRow.status,
       createdAt: tenantRow.created_at,
     };
+
+    // 6. Send Credentials Email
+    try {
+      const html = await renderEmail('tenant-welcome', {
+        name: name,
+        email: adminEmail,
+        password: adminPassword
+      });
+
+      await sendMail({
+        to: adminEmail,
+        subject: 'Welcome to HRIS - Your Account Credentials',
+        text: `Your organization "${name}" has been created.\nEmail: ${adminEmail}\nPassword: ${adminPassword}`,
+        html
+      });
+    } catch (mailErr) {
+      logger.error('Failed to send welcome email:', mailErr.message);
+    }
+
+    return tenant;
   } catch (err) {
     // ---- Cleanup / rollback ----
     if (tenantInserted) {
@@ -306,6 +329,37 @@ async function getAllTenants({ page = 1, limit = 10 } = {}) {
   return { tenants, total, page, limit };
 }
 
+async function resetTenantPassword(id, manualPassword = null) {
+  const tenant = await repo.findTenantById(id);
+  if (!tenant) throw new ApiError(404, 'Tenant not found');
+
+  // 1. Generate or use manual password
+  const passwordToUse = manualPassword || crypto.randomBytes(6).toString('hex');
+  const passwordHash = await bcrypt.hash(passwordToUse, SALT_ROUNDS);
+
+  // 2. Update Tenant DB
+  const tenantPool = db.getTenantPool(tenant.db_name);
+  await repo.updateAdminPassword(tenantPool, tenant.admin_email, passwordHash);
+
+  // 3. Send Email
+  try {
+    const html = await renderEmail('tenant-password-reset', {
+      name: tenant.name,
+      email: tenant.admin_email,
+      password: passwordToUse
+    });
+
+    await sendMail({
+      to: tenant.admin_email,
+      subject: 'HRIS - Password Reset Notification',
+      text: `Your password for organization "${tenant.name}" has been reset.\nNew Password: ${passwordToUse}`,
+      html
+    });
+  } catch (mailErr) {
+    logger.error('Failed to send reset password email:', mailErr.message);
+  }
+}
+
 module.exports = {
   createTenant,
   runTenantMigrations,
@@ -313,4 +367,5 @@ module.exports = {
   getAllTenants,
   updateTenant,
   deleteTenant,
+  resetTenantPassword,
 };

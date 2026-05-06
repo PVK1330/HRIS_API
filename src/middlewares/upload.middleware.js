@@ -4,11 +4,16 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 
+const env = require('../config/env');
 const ApiError = require('../utils/ApiError');
 
-const LOGO_DIR = path.join(__dirname, '..', 'uploads', 'logos');
-const MAX_SIZE_MB = Number(process.env.UPLOAD_MAX_SIZE_MB) || 2;
-const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
+// Resolve the logos dir from the same source of truth as express.static in
+// app.js (env.UPLOAD.dir), so multer writes to exactly the directory that
+// /uploads serves. Without this, files land somewhere static can't see.
+const UPLOADS_DIR = path.resolve(env.UPLOAD.dir);
+const LOGO_DIR = path.join(UPLOADS_DIR, 'logos');
+const MAX_SIZE_MB = Math.round(env.UPLOAD.maxSize / (1024 * 1024)) || 2;
+const MAX_SIZE_BYTES = env.UPLOAD.maxSize;
 
 const ALLOWED_EXT = new Set(['.png', '.jpg', '.jpeg', '.svg', '.ico']);
 const ALLOWED_MIME = new Set([

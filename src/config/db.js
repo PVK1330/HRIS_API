@@ -13,7 +13,7 @@ const superAdminPool = new Pool({
   max: 20,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 10_000,
-  ssl: { rejectUnauthorized: false },
+  ssl: env.DB.ssl ? { rejectUnauthorized: false } : false,
 });
 
 superAdminPool.on("error", (err) => {
@@ -51,7 +51,7 @@ function getTenantPool(databaseName) {
     max: 10,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
-    ssl: { rejectUnauthorized: false },
+    ssl: env.DB.ssl ? { rejectUnauthorized: false } : false,
   });
 
   pool.on("error", (err) => {

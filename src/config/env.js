@@ -49,6 +49,7 @@ const env = Object.freeze({
     database: process.env.DB_NAME,
     host: process.env.DB_HOST,
     port: parseInt(process.env.DB_PORT, 10) || 5432,
+    ssl: process.env.DB_SSL === 'true',
   },
 
   JWT: {

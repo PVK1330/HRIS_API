@@ -1,16 +1,18 @@
 'use strict';
 
 /**
- * SuperAdmin migrations runner.
+ * Database migrations runner (SuperAdmin registry DB + tenant databases).
  *
- * Runs every *.sql file in src/migrations/superadmin/ in lexicographic order
- * (001_, 002_, ...). Tracks applied filenames in public.schema_migrations so
- * that already-applied files are skipped on subsequent runs.
+ * SuperAdmin: runs every *.sql file in src/migrations/superadmin/ in lexicographic order.
+ * Tracks applied filenames in public.schema_migrations.
  *
- * Can be invoked two ways:
- *   1. As a CLI:   `node src/scripts/runMigrations.js`
- *   2. From code:  `await require('./scripts/runMigrations').runSuperAdminMigrations()`
- *      (the server invokes this at startup)
+ * Tenants: pending files from src/migrations/tenants/ (001–014+, e.g.
+ * tenant_admin_settings, attendance_settings, asset_categories, asset_rules)
+ *
+ * invocation:
+ *   1. CLI:   `node src/scripts/runMigrations.js`
+ *   2. Code:  `runSuperAdminMigrations()` / `runPendingTenantMigrationsForAllActiveTenants()`
+ *             (server calls both at startup)
  */
 
 const fs = require('fs');
@@ -103,12 +105,31 @@ async function runSuperAdminMigrations() {
   }
 }
 
+/**
+ * Runs pending SQL migrations from src/migrations/tenants/ for every active
+ * tenant database (tracked per-tenant in tenant_migrations).
+ */
+async function runPendingTenantMigrationsForAllActiveTenants() {
+  const tenantService = require('../modules/tenant/tenant.service');
+  const { rows } = await db.superAdminPool.query(
+    `SELECT db_name FROM public.tenants WHERE status = 'active'`
+  );
+
+  for (const row of rows) {
+    await tenantService.runTenantMigrations(row.db_name);
+    logger.info(`Tenant settings migration complete for ${row.db_name}`);
+  }
+
+  return { tenantsProcessed: rows.length };
+}
+
 // CLI entrypoint
 if (require.main === module) {
   (async () => {
     try {
       await db.assertDbConnection();
       await runSuperAdminMigrations();
+      await runPendingTenantMigrationsForAllActiveTenants();
       await db.pool.end();
       process.exit(0);
     } catch (err) {
@@ -119,4 +140,7 @@ if (require.main === module) {
   })();
 }
 
-module.exports = { runSuperAdminMigrations };
+module.exports = {
+  runSuperAdminMigrations,
+  runPendingTenantMigrationsForAllActiveTenants,
+};

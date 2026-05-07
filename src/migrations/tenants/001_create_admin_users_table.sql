@@ -1,7 +1,3 @@
--- 001_create_admin_users_table.sql
--- Tenant-scoped table. Executed inside each tenant's schema via SET search_path.
--- DO NOT prefix table names with a schema here.
-
 CREATE TABLE IF NOT EXISTS admin_users (
     id            SERIAL PRIMARY KEY,
     tenant_id     INTEGER NOT NULL,

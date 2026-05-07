@@ -76,6 +76,20 @@ const loginAsTenant = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, { loginUrl: tenantUrl }, 'Impersonation link generated');
 });
 
+const getTenantFeatures = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const features = await service.getTenantFeatures(id);
+  return ApiResponse.ok(res, { features }, 'Tenant features retrieved successfully');
+});
+
+const updateTenantFeature = asyncHandler(async (req, res) => {
+  const { id, featureId } = req.params;
+  const { isEnabled } = req.body;
+
+  const access = await service.updateTenantFeature(id, featureId, isEnabled);
+  return ApiResponse.ok(res, { access }, 'Tenant feature updated successfully');
+});
+
 module.exports = {
   createTenant,
   getTenants,
@@ -83,4 +97,6 @@ module.exports = {
   deleteTenant,
   resetTenantPassword,
   loginAsTenant,
+  getTenantFeatures,
+  updateTenantFeature,
 };

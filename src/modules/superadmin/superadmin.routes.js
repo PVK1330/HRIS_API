@@ -113,6 +113,13 @@ router.patch(
   controller.updateRole
 );
 
+router.delete(
+  '/permissions/:roleKey',
+  authenticate,
+  requireRole('superadmin'),
+  controller.deleteRole
+);
+
 router.get(
   '/modules',
   authenticate,

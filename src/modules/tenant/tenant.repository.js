@@ -14,6 +14,28 @@ function assertSafeDbName(dbName) {
   }
 }
 
+let accessControlsSchemaPromise = null;
+function ensureAccessControlsSchema() {
+  if (!accessControlsSchemaPromise) {
+    accessControlsSchemaPromise = db.query(`
+      CREATE TABLE IF NOT EXISTS public.tenant_access_controls (
+        id SERIAL PRIMARY KEY,
+        tenant_id INTEGER NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+        plan_id INTEGER NOT NULL REFERENCES public.subscription_plans(id),
+        feature_id INTEGER NOT NULL REFERENCES public.platform_features(id),
+        is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(tenant_id, feature_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tenant_access_tenant_id ON public.tenant_access_controls(tenant_id);
+    `).catch((err) => {
+      accessControlsSchemaPromise = null;
+      throw err;
+    });
+  }
+  return accessControlsSchemaPromise;
+}
+
 /* -------------------- public.tenants (in hrs_backend) -------------------- */
 
 async function findTenantByAdminEmail(adminEmail, client = db) {
@@ -131,6 +153,18 @@ async function updateAdminPassword(tenantPool, email, passwordHash) {
   return rows[0];
 }
 
+async function insertAccessControl(tenantId, planId, featureId, client = db) {
+  await ensureAccessControlsSchema();
+  const sql = `
+    INSERT INTO public.tenant_access_controls (tenant_id, plan_id, feature_id)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (tenant_id, feature_id) DO NOTHING
+    RETURNING id
+  `;
+  const { rows } = await client.query(sql, [tenantId, planId, featureId]);
+  return rows[0];
+}
+
 async function findAll({ limit = 10, offset = 0, search = '', plan = '', status = '' } = {}, client = db) {
   let query = `
     SELECT t.id, t.name, t.db_name, t.admin_email, t.status, t.created_by, t.created_at,
@@ -201,6 +235,65 @@ async function countAll({ search = '', plan = '', status = '' } = {}, client = d
   return parseInt(rows[0].total, 10);
 }
 
+async function findFeatureById(featureId, client = db) {
+  const sql = `
+    SELECT id, feature_name, feature_code, feature_description, feature_sort_order, feature_is_active
+    FROM public.platform_features
+    WHERE id = $1
+    LIMIT 1
+  `;
+  const { rows } = await client.query(sql, [featureId]);
+  return rows[0] || null;
+}
+
+async function listTenantFeatureAccess(tenantId, client = db) {
+  await ensureAccessControlsSchema();
+  const sql = `
+    SELECT
+      pf.id,
+      pf.feature_name,
+      pf.feature_code,
+      pf.feature_description,
+      pf.feature_sort_order,
+      pf.feature_is_active,
+      tac.id AS access_control_id,
+      COALESCE(tac.is_enabled, false) AS is_enabled
+    FROM public.platform_features pf
+    LEFT JOIN public.tenant_access_controls tac
+      ON tac.feature_id = pf.id
+      AND tac.tenant_id = $1
+    ORDER BY pf.feature_sort_order ASC, pf.feature_name ASC
+  `;
+  const { rows } = await client.query(sql, [tenantId]);
+  return rows;
+}
+
+async function upsertTenantFeatureAccess(tenantId, featureId, isEnabled, client = db) {
+  await ensureAccessControlsSchema();
+
+  const tenantSql = `
+    SELECT plan_id
+    FROM public.tenants
+    WHERE id = $1
+    LIMIT 1
+  `;
+  const tenantResult = await client.query(tenantSql, [tenantId]);
+  const planId = tenantResult.rows[0]?.plan_id || null;
+
+  const sql = `
+    INSERT INTO public.tenant_access_controls (tenant_id, plan_id, feature_id, is_enabled)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (tenant_id, feature_id)
+    DO UPDATE
+      SET is_enabled = EXCLUDED.is_enabled,
+          plan_id = EXCLUDED.plan_id
+    RETURNING id, tenant_id, plan_id, feature_id, is_enabled, created_at
+  `;
+
+  const { rows } = await client.query(sql, [tenantId, planId, featureId, isEnabled]);
+  return rows[0] || null;
+}
+
 module.exports = {
   // public.tenants
   findTenantByAdminEmail,
@@ -212,9 +305,13 @@ module.exports = {
   deleteTenantById,
   findAll,
   countAll,
+  findFeatureById,
+  listTenantFeatureAccess,
+  upsertTenantFeatureAccess,
   // per-tenant
   insertAdminUser,
   updateAdminPassword,
+  insertAccessControl,
   // helpers
   assertSafeDbName,
   _assertSafeDbName: assertSafeDbName,

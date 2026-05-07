@@ -86,6 +86,20 @@ function ensurePlatformSchema() {
   return platformSchemaEnsurePromise;
 }
 
+let rolesSchemaEnsurePromise = null;
+function ensureRolesSchema() {
+  if (!rolesSchemaEnsurePromise) {
+    rolesSchemaEnsurePromise = db.query(`
+      ALTER TABLE public.superadmin_roles
+      ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+    `).catch((err) => {
+      rolesSchemaEnsurePromise = null;
+      throw err;
+    });
+  }
+  return rolesSchemaEnsurePromise;
+}
+
 async function findByEmail(email) {
   await ensureSchema();
   const sql = `
@@ -169,8 +183,9 @@ async function updateAdminUser(id, { name, role, status }) {
 }
 
 async function listRoles() {
+  await ensureRolesSchema();
   const sql = `
-    SELECT id, role_key, role_name, description, permissions, is_system, created_at, updated_at
+    SELECT id, role_key, role_name, description, permissions, is_system, is_active, created_at, updated_at
     FROM public.superadmin_roles
     ORDER BY is_system DESC, role_name ASC
   `;
@@ -178,30 +193,42 @@ async function listRoles() {
   return rows;
 }
 
-async function createRole({ roleKey, roleName, description, permissions }) {
+async function createRole({ roleKey, roleName, description, permissions, isActive = true }) {
+  await ensureRolesSchema();
   const sql = `
-    INSERT INTO public.superadmin_roles (role_key, role_name, description, permissions, is_system)
-    VALUES ($1, $2, $3, $4::jsonb, false)
-    RETURNING id, role_key, role_name, description, permissions, is_system, created_at, updated_at
+    INSERT INTO public.superadmin_roles (role_key, role_name, description, permissions, is_system, is_active)
+    VALUES ($1, $2, $3, $4::jsonb, false, $5)
+    RETURNING id, role_key, role_name, description, permissions, is_system, is_active, created_at, updated_at
   `;
-  const { rows } = await db.query(sql, [roleKey, roleName, description || null, JSON.stringify(permissions || {})]);
+  const { rows } = await db.query(sql, [roleKey, roleName, description || null, JSON.stringify(permissions || {}), isActive]);
   return rows[0];
 }
 
-async function updateRole(roleKey, { roleName, description, permissions }) {
+async function updateRole(roleKey, { roleName, description, permissions, isActive }) {
+  await ensureRolesSchema();
   const sql = `
     UPDATE public.superadmin_roles
     SET
       role_name = COALESCE($1, role_name),
       description = COALESCE($2, description),
       permissions = COALESCE($3::jsonb, permissions),
+      is_active = COALESCE($4, is_active),
       updated_at = NOW()
-    WHERE role_key = $4
-    RETURNING id, role_key, role_name, description, permissions, is_system, created_at, updated_at
+    WHERE role_key = $5
+    RETURNING id, role_key, role_name, description, permissions, is_system, is_active, created_at, updated_at
   `;
   const jsonPermissions = permissions == null ? null : JSON.stringify(permissions);
-  const { rows } = await db.query(sql, [roleName, description, jsonPermissions, roleKey]);
+  const { rows } = await db.query(sql, [roleName, description, jsonPermissions, isActive, roleKey]);
   return rows[0] || null;
+}
+
+async function deleteRole(roleKey) {
+  const sql = `
+    DELETE FROM public.superadmin_roles
+    WHERE role_key = $1 AND is_system = false
+  `;
+  const result = await db.query(sql, [roleKey]);
+  return result.rowCount > 0;
 }
 
 async function listModules() {
@@ -251,6 +278,37 @@ async function createAnnouncement({ title, message, audience, type, recipients }
   return rows[0];
 }
 
+async function listAnnouncementRecipients(audience) {
+  await ensurePlatformSchema();
+
+  let filterClause = '';
+  const params = [];
+
+  if (audience === 'Trial Only') {
+    filterClause = ` AND ts.status = 'trial'`;
+  } else if (audience === 'Enterprise Only') {
+    filterClause = ` AND sp.plan_name ILIKE 'enterprise'`;
+  }
+
+  const sql = `
+    SELECT DISTINCT t.id, t.name, t.admin_email
+    FROM public.tenants t
+    LEFT JOIN public.tenant_subscriptions ts
+      ON ts.tenant_id = t.id
+      AND ts.status IN ('active', 'trial')
+    LEFT JOIN public.subscription_plans sp
+      ON sp.id = ts.plan_id
+    WHERE t.admin_email IS NOT NULL
+      AND TRIM(t.admin_email) <> ''
+      AND t.status <> 'suspended'
+      ${filterClause}
+    ORDER BY t.id DESC
+  `;
+
+  const { rows } = await db.query(sql, params);
+  return rows;
+}
+
 async function updateAnnouncement(id, { title, message, audience, type }) {
   await ensurePlatformSchema();
   const sql = `
@@ -292,6 +350,7 @@ module.exports = {
   listModules,
   updateModule,
   listAnnouncements,
+  listAnnouncementRecipients,
   createAnnouncement,
   updateAnnouncement,
   deleteAnnouncement,

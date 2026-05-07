@@ -6,6 +6,8 @@ const jwt = require('jsonwebtoken');
 const env = require('../../config/env');
 const ApiError = require('../../utils/ApiError');
 const repo = require('./superadmin.repository');
+const { sendMail } = require('../../utils/mail');
+const { renderEmail } = require('../../utils/emailTemplate');
 
 /**
  * Authenticates a superadmin and returns a signed JWT plus public profile.
@@ -136,13 +138,35 @@ async function createAdminUser({ name, email, password, role, status }) {
   }
 
   const passwordHash = await bcrypt.hash(password, env.BCRYPT_SALT_ROUNDS);
-  return repo.createAdminUser({
+  const user = await repo.createAdminUser({
     name: cleanName,
     email: cleanEmail,
     passwordHash,
     role: cleanRole,
     status: cleanStatus,
   });
+
+  // Send invitation email
+  try {
+    const html = await renderEmail('admin-invite', {
+      name: cleanName,
+      email: cleanEmail,
+      password: password,
+      role: role || 'Super Admin',
+      adminUrl: process.env.ADMIN_URL || 'http://localhost:5173/superadmin/login'
+    });
+
+    await sendMail({
+      to: cleanEmail,
+      subject: 'HRIS Internal Administration - Invitation',
+      html
+    });
+  } catch (error) {
+    // We don't want to fail user creation if email fails, but we should log it
+    console.error('Failed to send admin invitation email:', error);
+  }
+
+  return user;
 }
 
 async function updateAdminUser(id, input) {
@@ -159,22 +183,36 @@ async function getRoles() {
   return repo.listRoles();
 }
 
-async function createRole({ name, description, permissions }) {
+async function createRole({ name, description, permissions, isActive }) {
   const roleName = String(name || '').trim();
   if (!roleName) throw ApiError.badRequest('Role name is required');
   const roleKey = normalizeRoleKey(roleName);
-  return repo.createRole({ roleKey, roleName, description, permissions });
+  return repo.createRole({ 
+    roleKey, 
+    roleName, 
+    description, 
+    permissions, 
+    isActive: isActive === undefined ? true : Boolean(isActive) 
+  });
 }
 
-async function updateRole(roleKey, { name, description, permissions }) {
+async function updateRole(roleKey, { name, description, permissions, isActive }) {
   const normalizedRoleKey = normalizeRoleKey(roleKey);
   const updated = await repo.updateRole(normalizedRoleKey, {
     roleName: name ? String(name).trim() : undefined,
     description: description == null ? undefined : String(description),
     permissions,
+    isActive: isActive === undefined ? undefined : Boolean(isActive)
   });
   if (!updated) throw ApiError.notFound('Role not found');
   return updated;
+}
+
+async function deleteRole(roleKey) {
+  const normalizedRoleKey = normalizeRoleKey(roleKey);
+  const deleted = await repo.deleteRole(normalizedRoleKey);
+  if (!deleted) throw ApiError.notFound('Role not found or cannot be deleted (system role)');
+  return true;
 }
 
 function normalizeModuleKey(input) {
@@ -221,13 +259,44 @@ async function createAnnouncement({ title, message, audience, type }) {
     throw ApiError.badRequest('title and message are required');
   }
 
-  return repo.createAnnouncement({
+  const recipients = await repo.listAnnouncementRecipients(cleanAudience);
+
+  const announcement = await repo.createAnnouncement({
     title: cleanTitle,
     message: cleanMessage,
     audience: cleanAudience,
     type: cleanType,
-    recipients: 48,
+    recipients: recipients.length,
   });
+
+  if (recipients.length > 0) {
+    const subject = `[HRIS Announcement] ${cleanTitle}`;
+    const sendResults = await Promise.allSettled(
+      recipients.map((recipient) => {
+        const text = `${cleanMessage}\n\nAudience: ${cleanAudience}\nType: ${cleanType}`;
+        const html = `
+          <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
+            <h2 style="margin-bottom: 8px;">${cleanTitle}</h2>
+            <p style="margin-top: 0; color: #6b7280;">Audience: ${cleanAudience} | Type: ${cleanType}</p>
+            <div style="white-space: pre-wrap;">${cleanMessage}</div>
+          </div>
+        `;
+        return sendMail({
+          to: recipient.admin_email,
+          subject,
+          text,
+          html,
+        });
+      })
+    );
+
+    const failed = sendResults.filter((result) => result.status === 'rejected').length;
+    if (failed > 0) {
+      console.error(`Announcement email send failures: ${failed}/${recipients.length}`);
+    }
+  }
+
+  return announcement;
 }
 
 async function updateAnnouncement(id, { title, message, audience, type }) {

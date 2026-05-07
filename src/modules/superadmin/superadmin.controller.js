@@ -75,6 +75,11 @@ const updateRole = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, { role }, 'Role updated successfully');
 });
 
+const deleteRole = asyncHandler(async (req, res) => {
+  await service.deleteRole(req.params.roleKey);
+  return ApiResponse.ok(res, null, 'Role deleted successfully');
+});
+
 const getModules = asyncHandler(async (_req, res) => {
   const modules = await service.getModules();
   return ApiResponse.ok(res, { modules }, 'Modules retrieved successfully');
@@ -114,6 +119,7 @@ module.exports = {
   getPermissions,
   createRole,
   updateRole,
+  deleteRole,
   getModules,
   updateModule,
   getAnnouncements,

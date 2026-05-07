@@ -60,7 +60,7 @@ async function runTenantMigrations(dbName) {
     max: 2,
     idleTimeoutMillis: 5_000,
     connectionTimeoutMillis: 5_000,
-    ssl: { rejectUnauthorized: false },
+    ssl: env.DB.ssl ? { rejectUnauthorized: false } : false,
   });
 
   let applied = 0;
@@ -233,6 +233,23 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
         );
       }
       throw err;
+    }
+
+    // 5.5 Provision Tenant Access Controls based on Plan Features
+    if (plan_id) {
+      try {
+        const plansRepo = require('../superadmin/plans.repository');
+        const planFeatures = await plansRepo.getFeatures(plan_id);
+        
+        if (planFeatures && planFeatures.length > 0) {
+          for (const feature of planFeatures) {
+            await repo.insertAccessControl(tenantRow.id, plan_id, feature.id);
+          }
+          logger.info(`[tenant] Provisioned ${planFeatures.length} access controls for tenant ${tenantRow.id} (plan=${plan_id})`);
+        }
+      } catch (accessErr) {
+        logger.error(`[tenant] Failed to provision access controls for tenant ${tenantRow.id}:`, accessErr.message);
+      }
     }
 
     // 6. Create initial subscription record
@@ -443,6 +460,43 @@ async function resetTenantPassword(id, manualPassword = null) {
   }
 }
 
+async function getTenantFeatures(id) {
+  const tenant = await repo.findTenantById(id);
+  if (!tenant) throw new ApiError(404, 'Tenant not found');
+
+  const features = await repo.listTenantFeatureAccess(id);
+  return features.map((feature) => ({
+    id: feature.id,
+    name: feature.feature_name,
+    code: feature.feature_code,
+    description: feature.feature_description,
+    sortOrder: feature.feature_sort_order,
+    isActive: feature.feature_is_active,
+    isEnabled: feature.is_enabled,
+    isAssigned: Boolean(feature.access_control_id),
+  }));
+}
+
+async function updateTenantFeature(id, featureId, isEnabled) {
+  const tenant = await repo.findTenantById(id);
+  if (!tenant) throw new ApiError(404, 'Tenant not found');
+
+  const feature = await repo.findFeatureById(featureId);
+  if (!feature) throw new ApiError(404, 'Feature not found');
+
+  if (!feature.feature_is_active) {
+    throw new ApiError(400, 'Cannot assign an inactive feature');
+  }
+
+  const access = await repo.upsertTenantFeatureAccess(id, featureId, Boolean(isEnabled));
+  return {
+    id: access.id,
+    tenantId: access.tenant_id,
+    featureId: access.feature_id,
+    isEnabled: access.is_enabled,
+  };
+}
+
 module.exports = {
   createTenant,
   runTenantMigrations,
@@ -451,4 +505,6 @@ module.exports = {
   updateTenant,
   deleteTenant,
   resetTenantPassword,
+  getTenantFeatures,
+  updateTenantFeature,
 };

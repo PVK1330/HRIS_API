@@ -89,4 +89,24 @@ router.post(
   controller.loginAsTenant
 );
 
+router.get(
+  '/:id/features',
+  authenticate,
+  requireRole('superadmin'),
+  controller.getTenantFeatures
+);
+
+router.patch(
+  '/:id/features/:featureId',
+  authenticate,
+  requireRole('superadmin'),
+  [
+    body('isEnabled')
+      .exists().withMessage('isEnabled is required').bail()
+      .isBoolean().withMessage('isEnabled must be a boolean'),
+  ],
+  validate,
+  controller.updateTenantFeature
+);
+
 module.exports = router;

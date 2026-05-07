@@ -36,7 +36,7 @@ async function seedTenants() {
       name: t.name,
       adminEmail: t.admin_email,
       adminName: t.admin_name,
-      adminPassword: 'Tenant123!',
+      adminPassword: 'admin@acme.com',
       createdBy: 1 // Root SuperAdmin
     });
 
@@ -52,7 +52,7 @@ if (require.main === module) {
       process.exit(0);
     } catch (err) {
       logger.error('[seed:tenants] failed', err);
-      try { await db.pool.end(); } catch (_) {}
+      try { await db.pool.end(); } catch (_) { }
       process.exit(1);
     }
   })();

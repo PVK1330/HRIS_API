@@ -60,6 +60,7 @@ async function runTenantMigrations(dbName) {
     max: 2,
     idleTimeoutMillis: 5_000,
     connectionTimeoutMillis: 5_000,
+    ssl: { rejectUnauthorized: false },
   });
 
   let applied = 0;

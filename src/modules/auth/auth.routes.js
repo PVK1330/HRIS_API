@@ -5,6 +5,7 @@ const { body } = require('express-validator');
 const validate = require('../../middlewares/validate.middleware');
 const controller = require('./auth.controller');
 const { authLimiter } = require('../../middlewares/rateLimit.middleware');
+const { authenticate } = require('../../middlewares/auth.middleware');
 
 const router = Router();
 
@@ -54,6 +55,12 @@ router.post(
   ],
   validate,
   controller.resetPassword
+);
+
+router.get(
+  '/access-profile',
+  authenticate,
+  controller.getAccessProfile
 );
 
 module.exports = router;

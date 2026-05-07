@@ -40,9 +40,15 @@ const login = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, result, 'Login successful.');
 });
 
+const getAccessProfile = asyncHandler(async (req, res) => {
+  const result = await authService.getAccessProfile(req.user);
+  return ApiResponse.ok(res, result, 'Access profile fetched successfully.');
+});
+
 module.exports = {
   login,
   forgotPassword,
   verifyOtp,
-  resetPassword
+  resetPassword,
+  getAccessProfile
 };

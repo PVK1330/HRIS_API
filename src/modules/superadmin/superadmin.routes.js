@@ -180,6 +180,45 @@ router.delete(
   controller.deleteAnnouncement
 );
 
+router.get(
+  '/support-tickets',
+  authenticate,
+  requireRole('superadmin'),
+  controller.getSupportTickets
+);
+
+router.patch(
+  '/support-tickets/:id',
+  authenticate,
+  requireRole('superadmin'),
+  [
+    body('assignedTo').optional().isString().withMessage('assignedTo must be a string'),
+    body('status').optional().isString().withMessage('status must be a string'),
+  ],
+  validate,
+  controller.updateSupportTicket
+);
+
+router.post(
+  '/support-tickets/:id/messages',
+  authenticate,
+  requireRole('superadmin'),
+  [
+    body('sender').optional().isString().withMessage('sender must be a string'),
+    body('text').exists({ checkFalsy: true }).withMessage('text is required').isString().withMessage('text must be a string'),
+    body('time').optional().isString().withMessage('time must be a string'),
+  ],
+  validate,
+  controller.addSupportTicketMessage
+);
+
+router.get(
+  '/audit-logs',
+  authenticate,
+  requireRole('superadmin', 'support_admin'),
+  controller.getAuditLogs
+);
+
 /**
  * Mount features routes
  * All features routes will be prefixed with /features

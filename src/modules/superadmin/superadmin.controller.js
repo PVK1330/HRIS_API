@@ -97,17 +97,68 @@ const getAnnouncements = asyncHandler(async (_req, res) => {
 
 const createAnnouncement = asyncHandler(async (req, res) => {
   const announcement = await service.createAnnouncement(req.body);
+  await service.logAuditEvent({
+    actorName: req.user?.name || req.user?.email || 'Super Admin',
+    action: 'AnnouncementCreated',
+    target: announcement.title,
+    ipAddress: req.ip,
+  });
   return ApiResponse.created(res, { announcement }, 'Announcement created successfully');
 });
 
 const updateAnnouncement = asyncHandler(async (req, res) => {
   const announcement = await service.updateAnnouncement(req.params.id, req.body);
+  await service.logAuditEvent({
+    actorName: req.user?.name || req.user?.email || 'Super Admin',
+    action: 'AnnouncementUpdated',
+    target: announcement.title,
+    ipAddress: req.ip,
+  });
   return ApiResponse.ok(res, { announcement }, 'Announcement updated successfully');
 });
 
 const deleteAnnouncement = asyncHandler(async (req, res) => {
   await service.deleteAnnouncement(req.params.id);
+  await service.logAuditEvent({
+    actorName: req.user?.name || req.user?.email || 'Super Admin',
+    action: 'AnnouncementDeleted',
+    target: `Announcement#${req.params.id}`,
+    ipAddress: req.ip,
+  });
   return ApiResponse.ok(res, null, 'Announcement deleted successfully');
+});
+
+const getSupportTickets = asyncHandler(async (_req, res) => {
+  const tickets = await service.getSupportTickets();
+  return ApiResponse.ok(res, { tickets }, 'Support tickets retrieved successfully');
+});
+
+const updateSupportTicket = asyncHandler(async (req, res) => {
+  const ticket = await service.updateSupportTicket(req.params.id, req.body);
+  await service.logAuditEvent({
+    actorName: req.user?.name || req.user?.email || 'Super Admin',
+    action: 'SupportTicketUpdated',
+    target: ticket.ticket_code || `Ticket#${ticket.id}`,
+    ipAddress: req.ip,
+    metadata: req.body,
+  });
+  return ApiResponse.ok(res, { ticket }, 'Support ticket updated successfully');
+});
+
+const addSupportTicketMessage = asyncHandler(async (req, res) => {
+  const ticket = await service.addSupportTicketMessage(req.params.id, req.body);
+  await service.logAuditEvent({
+    actorName: req.user?.name || req.user?.email || 'Super Admin',
+    action: 'SupportTicketReplied',
+    target: ticket.ticket_code || `Ticket#${ticket.id}`,
+    ipAddress: req.ip,
+  });
+  return ApiResponse.ok(res, { ticket }, 'Support ticket message added successfully');
+});
+
+const getAuditLogs = asyncHandler(async (_req, res) => {
+  const logs = await service.getAuditLogs();
+  return ApiResponse.ok(res, { logs }, 'Audit logs retrieved successfully');
 });
 
 module.exports = {
@@ -126,4 +177,8 @@ module.exports = {
   createAnnouncement,
   updateAnnouncement,
   deleteAnnouncement,
+  getSupportTickets,
+  updateSupportTicket,
+  addSupportTicketMessage,
+  getAuditLogs,
 };

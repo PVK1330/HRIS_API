@@ -315,6 +315,74 @@ async function deleteAnnouncement(id) {
   if (!deleted) throw ApiError.notFound('Announcement not found');
 }
 
+async function getSupportTickets() {
+  const rows = await repo.listSupportTickets();
+  return rows.map((row) => ({
+    id: row.id,
+    ticketCode: row.ticket_code,
+    org: row.org_name,
+    subject: row.subject,
+    priority: row.priority,
+    assignedTo: row.assigned_to || 'Unassigned',
+    status: row.status,
+    description: row.description || '',
+    created: row.created_at,
+    messages: Array.isArray(row.messages) ? row.messages : [],
+  }));
+}
+
+async function updateSupportTicket(id, { assignedTo, status }) {
+  const updated = await repo.updateSupportTicket(id, {
+    assignedTo: assignedTo == null ? undefined : String(assignedTo).trim(),
+    status: status == null ? undefined : String(status).trim(),
+  });
+  if (!updated) throw ApiError.notFound('Support ticket not found');
+  return updated;
+}
+
+async function addSupportTicketMessage(id, { sender, text, time }) {
+  const cleanText = String(text || '').trim();
+  if (!cleanText) throw ApiError.badRequest('Message text is required');
+
+  const message = {
+    sender: String(sender || 'Support').trim(),
+    text: cleanText,
+    time: String(time || new Date().toISOString()),
+  };
+
+  const updated = await repo.appendSupportTicketMessage(id, message);
+  if (!updated) throw ApiError.notFound('Support ticket not found');
+  return updated;
+}
+
+async function logAuditEvent(payload) {
+  const cleanActorName = String(payload.actorName || 'System').trim();
+  const cleanAction = String(payload.action || 'Unknown').trim();
+  if (!cleanAction) return null;
+  return repo.createAuditLog({
+    actorName: cleanActorName,
+    action: cleanAction,
+    target: payload.target,
+    ipAddress: payload.ipAddress,
+    result: payload.result || 'Success',
+    metadata: payload.metadata || {},
+  });
+}
+
+async function getAuditLogs() {
+  const rows = await repo.listAuditLogs();
+  return rows.map((row) => ({
+    id: row.id,
+    timestamp: row.created_at,
+    admin: row.actor_name,
+    action: row.action,
+    target: row.target,
+    ip: row.ip_address,
+    result: row.result,
+    metadata: row.metadata || {},
+  }));
+}
+
 module.exports = {
   login,
   verify2FA,
@@ -330,4 +398,9 @@ module.exports = {
   createAnnouncement,
   updateAnnouncement,
   deleteAnnouncement,
+  getSupportTickets,
+  updateSupportTicket,
+  addSupportTicketMessage,
+  logAuditEvent,
+  getAuditLogs,
 };

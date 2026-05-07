@@ -4,14 +4,16 @@ const rateLimit = require('express-rate-limit');
 const env = require('../config/env');
 
 const windowMs = parseInt(env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000;
+const isDevelopment = env.NODE_ENV !== 'production';
 
 // General API rate limit
 const generalLimiter = rateLimit({
   windowMs,
-  max: parseInt(env.RATE_LIMIT_MAX, 10) || 100,
+  max: isDevelopment ? Math.max(parseInt(env.RATE_LIMIT_MAX, 10) || 100, 1000) : (parseInt(env.RATE_LIMIT_MAX, 10) || 100),
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many requests, please try again later.' },
+  skip: () => isDevelopment,
 });
 
 // Strict limit for auth endpoints (login, register)

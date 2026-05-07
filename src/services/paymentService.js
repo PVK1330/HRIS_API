@@ -103,7 +103,7 @@ async function processManualPayment(paymentData, superadminId) {
  */
 async function getTenantPayments(tenantId, filters = {}) {
   let query = `
-    SELECT p.*, t.company_name, sp.name as plan_name
+    SELECT p.*, t.company_name, sp.plan_name
     FROM public.payments p
     JOIN public.tenants t ON p.tenant_id = t.id
     LEFT JOIN public.subscription_plans sp ON t.plan_id = sp.id
@@ -141,7 +141,7 @@ async function getTenantPayments(tenantId, filters = {}) {
  */
 async function getAllPayments(filters = {}) {
   let query = `
-    SELECT p.*, t.company_name, t.admin_email, sp.name as plan_name
+    SELECT p.*, t.company_name, t.admin_email, sp.plan_name
     FROM public.payments p
     JOIN public.tenants t ON p.tenant_id = t.id
     LEFT JOIN public.subscription_plans sp ON t.plan_id = sp.id
@@ -185,7 +185,7 @@ async function getAllPayments(filters = {}) {
  */
 async function getPaymentById(paymentId) {
   const result = await superadminPool.query(
-    `SELECT p.*, t.company_name, t.admin_email, sp.name as plan_name
+    `SELECT p.*, t.company_name, t.admin_email, sp.plan_name
      FROM public.payments p
      JOIN public.tenants t ON p.tenant_id = t.id
      LEFT JOIN public.subscription_plans sp ON t.plan_id = sp.id

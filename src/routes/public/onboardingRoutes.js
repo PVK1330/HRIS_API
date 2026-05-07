@@ -27,8 +27,8 @@ router.post('/self', registrationLimiter, asyncHandler(async (req, res) => {
  */
 router.get('/subscription-plans', asyncHandler(async (req, res) => {
   const result = await superAdminPool.query(
-    `SELECT id, name, code, description, max_users, max_storage_mb,
-            price_monthly, price_yearly, features, is_active
+    `SELECT id, plan_name, plan_code, plan_description, user_quota, storage_quota_gb,
+            monthly_price, annual_price, features, is_active
      FROM public.subscription_plans
      WHERE is_active = true
      ORDER BY monthly_price ASC`

@@ -76,8 +76,55 @@ const updatePaymentStatus = async (req, res, next) => {
   }
 };
 
+const createManualInvoice = async (req, res, next) => {
+  try {
+    const {
+      tenant_id,
+      amount,
+      currency,
+      billing_start_date,
+      billing_end_date,
+      notes,
+      payment_method
+    } = req.body;
+
+    if (!tenant_id || !amount || !billing_start_date || !billing_end_date) {
+      return res.status(400).json({
+        success: false,
+        message: 'tenant_id, amount, billing_start_date, billing_end_date are required'
+      });
+    }
+
+    if (new Date(billing_start_date) > new Date(billing_end_date)) {
+      return res.status(400).json({
+        success: false,
+        message: 'billing_start_date must be before billing_end_date'
+      });
+    }
+
+    const invoice = await paymentsRepository.createManualInvoice({
+      tenantId: Number(tenant_id),
+      amount: Number(amount),
+      currency: currency || 'AED',
+      billingStartDate: billing_start_date,
+      billingEndDate: billing_end_date,
+      notes,
+      paymentMethod: payment_method || 'Manual'
+    });
+
+    return res.status(201).json({
+      success: true,
+      data: invoice,
+      message: 'Manual invoice created successfully'
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getPayments,
   getPaymentStats,
-  updatePaymentStatus
+  updatePaymentStatus,
+  createManualInvoice
 };

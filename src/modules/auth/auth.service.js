@@ -211,6 +211,33 @@ async function login(email, password) {
     }
   }
 
+  // 3.1 Fetch tenant-specific enabled features from tenant_access_controls
+  const accessResult = await superAdminPool.query(
+    `
+      SELECT
+        pf.id,
+        pf.feature_name,
+        pf.feature_code,
+        pf.feature_description,
+        tac.is_enabled
+      FROM public.tenant_access_controls tac
+      JOIN public.platform_features pf ON pf.id = tac.feature_id
+      WHERE tac.tenant_id = $1
+        AND tac.is_enabled = true
+        AND pf.feature_is_active = true
+      ORDER BY pf.feature_sort_order ASC, pf.feature_name ASC
+    `,
+    [tenant.id]
+  );
+
+  const tenantFeatures = accessResult.rows.map((row) => ({
+    id: row.id,
+    feature_name: row.feature_name,
+    feature_code: row.feature_code,
+    feature_description: row.feature_description,
+    is_enabled: row.is_enabled,
+  }));
+
   // 4. Generate JWT
   const token = jwt.sign(
     {
@@ -235,7 +262,71 @@ async function login(email, password) {
       tenantName: tenant.name
     },
     plan_details: planDetails ? [planDetails] : [],
-    plan_features: planFeatures
+    plan_features: planFeatures,
+    tenant_features: tenantFeatures
+  };
+}
+
+async function getAccessProfile(currentUser) {
+  if (!currentUser || currentUser.role !== 'admin') {
+    throw ApiError.forbidden('Access profile is only available for tenant admins');
+  }
+  if (!currentUser.tenant_id) {
+    throw ApiError.badRequest('tenant_id is missing in auth token');
+  }
+
+  const tenantResult = await superAdminPool.query(
+    'SELECT id, name, db_name, status, plan_id FROM public.tenants WHERE id = $1 LIMIT 1',
+    [currentUser.tenant_id]
+  );
+  if (tenantResult.rows.length === 0) {
+    throw ApiError.notFound('Tenant not found');
+  }
+  const tenant = tenantResult.rows[0];
+
+  let planDetails = null;
+  if (tenant.plan_id) {
+    const plansRepo = require('../superadmin/plans.repository');
+    planDetails = await plansRepo.findById(tenant.plan_id);
+  }
+
+  const accessResult = await superAdminPool.query(
+    `
+      SELECT
+        pf.id,
+        pf.feature_name,
+        pf.feature_code,
+        pf.feature_description,
+        tac.is_enabled
+      FROM public.tenant_access_controls tac
+      JOIN public.platform_features pf ON pf.id = tac.feature_id
+      WHERE tac.tenant_id = $1
+        AND tac.is_enabled = true
+        AND pf.feature_is_active = true
+      ORDER BY pf.feature_sort_order ASC, pf.feature_name ASC
+    `,
+    [tenant.id]
+  );
+
+  const tenantFeatures = accessResult.rows.map((row) => ({
+    id: row.id,
+    feature_name: row.feature_name,
+    feature_code: row.feature_code,
+    feature_description: row.feature_description,
+    is_enabled: row.is_enabled,
+  }));
+
+  return {
+    tenant: {
+      id: tenant.id,
+      name: tenant.name,
+      db_name: tenant.db_name,
+      status: tenant.status,
+      plan_id: tenant.plan_id,
+    },
+    plan_details: planDetails ? [planDetails] : [],
+    tenant_features: tenantFeatures,
+    refreshed_at: new Date().toISOString(),
   };
 }
 
@@ -244,5 +335,6 @@ module.exports = {
   verifyOTP,
   resetPassword,
   verify2FA,
-  login
+  login,
+  getAccessProfile
 };

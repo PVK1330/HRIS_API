@@ -95,6 +95,45 @@ class PaymentsRepository {
     const result = await superAdminPool.query(query);
     return result.rows[0];
   }
+
+  async createManualInvoice({
+    tenantId,
+    amount,
+    currency = 'AED',
+    billingStartDate,
+    billingEndDate,
+    notes,
+    paymentMethod = 'Manual'
+  }) {
+    const reference = `INV-MAN-${Date.now()}`;
+    const query = `
+      INSERT INTO public.payments (
+        tenant_id,
+        subscription_id,
+        payment_reference,
+        amount,
+        currency,
+        payment_method,
+        status,
+        billing_start_date,
+        billing_end_date,
+        notes
+      )
+      VALUES ($1, NULL, $2, $3, $4, $5, 'pending', $6, $7, $8)
+      RETURNING *
+    `;
+    const result = await superAdminPool.query(query, [
+      tenantId,
+      reference,
+      amount,
+      currency,
+      paymentMethod,
+      billingStartDate,
+      billingEndDate,
+      notes || null
+    ]);
+    return result.rows[0];
+  }
 }
 
 module.exports = new PaymentsRepository();

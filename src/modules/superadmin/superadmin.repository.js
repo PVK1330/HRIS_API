@@ -78,6 +78,37 @@ function ensurePlatformSchema() {
       );
 
       CREATE INDEX IF NOT EXISTS idx_superadmin_announcements_sent_date ON public.superadmin_announcements (sent_date DESC);
+
+      CREATE TABLE IF NOT EXISTS public.superadmin_support_tickets (
+        id BIGSERIAL PRIMARY KEY,
+        ticket_code VARCHAR(32) UNIQUE NOT NULL,
+        org_name VARCHAR(255) NOT NULL,
+        subject VARCHAR(255) NOT NULL,
+        priority VARCHAR(32) NOT NULL DEFAULT 'Medium',
+        assigned_to VARCHAR(255),
+        status VARCHAR(32) NOT NULL DEFAULT 'Open',
+        description TEXT,
+        messages JSONB NOT NULL DEFAULT '[]'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_superadmin_support_tickets_status ON public.superadmin_support_tickets (status);
+      CREATE INDEX IF NOT EXISTS idx_superadmin_support_tickets_created_at ON public.superadmin_support_tickets (created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS public.superadmin_audit_logs (
+        id BIGSERIAL PRIMARY KEY,
+        actor_name VARCHAR(255) NOT NULL,
+        action VARCHAR(255) NOT NULL,
+        target VARCHAR(255),
+        ip_address VARCHAR(64),
+        result VARCHAR(32) NOT NULL DEFAULT 'Success',
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_superadmin_audit_logs_created_at ON public.superadmin_audit_logs (created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_superadmin_audit_logs_action ON public.superadmin_audit_logs (action);
     `).catch((err) => {
       platformSchemaEnsurePromise = null;
       throw err;
@@ -336,6 +367,89 @@ async function deleteAnnouncement(id) {
   return result.rowCount > 0;
 }
 
+async function listSupportTickets() {
+  await ensurePlatformSchema();
+  const seedSql = `
+    INSERT INTO public.superadmin_support_tickets (ticket_code, org_name, subject, priority, assigned_to, status, description, messages)
+    SELECT
+      'TKT-' || LPAD((ROW_NUMBER() OVER (ORDER BY t.id) + 1000)::text, 4, '0'),
+      t.name,
+      'General support request',
+      'Medium',
+      NULL,
+      'Open',
+      'Auto-generated starter ticket for support workflow setup.',
+      '[]'::jsonb
+    FROM public.tenants t
+    WHERE NOT EXISTS (SELECT 1 FROM public.superadmin_support_tickets)
+    ORDER BY t.id DESC
+    LIMIT 5
+  `;
+  await db.query(seedSql);
+
+  const sql = `
+    SELECT id, ticket_code, org_name, subject, priority, assigned_to, status, description, messages, created_at, updated_at
+    FROM public.superadmin_support_tickets
+    ORDER BY created_at DESC
+  `;
+  const { rows } = await db.query(sql);
+  return rows;
+}
+
+async function updateSupportTicket(id, { assignedTo, status }) {
+  await ensurePlatformSchema();
+  const sql = `
+    UPDATE public.superadmin_support_tickets
+    SET
+      assigned_to = COALESCE($1, assigned_to),
+      status = COALESCE($2, status),
+      updated_at = NOW()
+    WHERE id = $3
+    RETURNING id, ticket_code, org_name, subject, priority, assigned_to, status, description, messages, created_at, updated_at
+  `;
+  const { rows } = await db.query(sql, [assignedTo, status, id]);
+  return rows[0] || null;
+}
+
+async function appendSupportTicketMessage(id, message) {
+  await ensurePlatformSchema();
+  const sql = `
+    UPDATE public.superadmin_support_tickets
+    SET
+      messages = COALESCE(messages, '[]'::jsonb) || $1::jsonb,
+      status = 'In Progress',
+      updated_at = NOW()
+    WHERE id = $2
+    RETURNING id, ticket_code, org_name, subject, priority, assigned_to, status, description, messages, created_at, updated_at
+  `;
+  const payload = JSON.stringify([message]);
+  const { rows } = await db.query(sql, [payload, id]);
+  return rows[0] || null;
+}
+
+async function createAuditLog({ actorName, action, target, ipAddress, result = 'Success', metadata = {} }) {
+  await ensurePlatformSchema();
+  const sql = `
+    INSERT INTO public.superadmin_audit_logs (actor_name, action, target, ip_address, result, metadata)
+    VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+    RETURNING id, actor_name, action, target, ip_address, result, metadata, created_at
+  `;
+  const { rows } = await db.query(sql, [actorName, action, target || null, ipAddress || null, result, JSON.stringify(metadata)]);
+  return rows[0];
+}
+
+async function listAuditLogs() {
+  await ensurePlatformSchema();
+  const sql = `
+    SELECT id, actor_name, action, target, ip_address, result, metadata, created_at
+    FROM public.superadmin_audit_logs
+    ORDER BY created_at DESC
+    LIMIT 500
+  `;
+  const { rows } = await db.query(sql);
+  return rows;
+}
+
 module.exports = {
   findByEmail,
   findById,
@@ -354,4 +468,9 @@ module.exports = {
   createAnnouncement,
   updateAnnouncement,
   deleteAnnouncement,
+  listSupportTickets,
+  updateSupportTicket,
+  appendSupportTicketMessage,
+  createAuditLog,
+  listAuditLogs,
 };

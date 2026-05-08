@@ -60,18 +60,24 @@ const resetTenantPassword = asyncHandler(async (req, res) => {
 const loginAsTenant = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const authService = require('../auth/auth.service');
+  const repo = require('./tenant.repository');
 
   const result = await authService.generateImpersonationToken(id);
-
-  // Find tenant to get their domain
-  const tenant = await service.getAllTenants().then(r => r.tenants.find(t => t.id === parseInt(id)));
+  const tenant = await repo.findTenantById(Number(id));
   const slug = tenant.name.toString().toLowerCase().trim()
     .replace(/\s+/g, '-')
     .replace(/[^\w-]+/g, '')
     .replace(/--+/g, '-');
 
-  const baseDomain = req.hostname === 'localhost' ? 'localhost' : 'hris.cloud';
-  const tenantUrl = `http://${slug}.${baseDomain}:5173/login?token=${result.token}&user=${encodeURIComponent(JSON.stringify(result.user))}`;
+  const host = req.hostname || '';
+  const isLocalHost = host === 'localhost' || host === '127.0.0.1';
+  const baseDomain = isLocalHost
+    ? 'localhost'
+    : host.split('.').slice(-2).join('.');
+  const tenantOrigin = isLocalHost
+    ? `${req.protocol}://${slug}.localhost:5173`
+    : `https://${slug}.${baseDomain}`;
+  const tenantUrl = `${tenantOrigin}/login?token=${result.token}&user=${encodeURIComponent(JSON.stringify(result.user))}`;
 
   return ApiResponse.ok(res, { loginUrl: tenantUrl }, 'Impersonation link generated');
 });

@@ -61,7 +61,7 @@ class PaymentsRepository {
 
   async findById(id) {
     const query = `
-      SELECT p.*, t.name as tenant_name, sp.plan_name
+      SELECT p.*, t.name as tenant_name, t.admin_email, sp.plan_name
       FROM public.payments p
       JOIN public.tenants t ON p.tenant_id = t.id
       LEFT JOIN public.tenant_subscriptions ts ON p.subscription_id = ts.id

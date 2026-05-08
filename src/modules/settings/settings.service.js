@@ -7,6 +7,7 @@ const env = require('../../config/env');
 const ApiError = require('../../utils/ApiError');
 const logger = require('../../utils/logger');
 const repo = require('./settings.repository');
+const settingsMeta = require('./settings.meta');
 
 /**
  * Settings module — business logic.
@@ -270,6 +271,16 @@ async function sendTestEmail({ to }) {
   });
 }
 
+/* -------------------- metadata / logs -------------------- */
+
+function getSettingsMeta() {
+  return settingsMeta;
+}
+
+async function getEmailLogs() {
+  return [];
+}
+
 module.exports = {
   // group ops
   getSettingsByGroup,
@@ -290,6 +301,8 @@ module.exports = {
   updateEmailTemplate,
   // test mail
   sendTestEmail,
+  getSettingsMeta,
+  getEmailLogs,
   // constants useful elsewhere
   VALID_GROUPS,
   LOGO_KEY_BY_TYPE,

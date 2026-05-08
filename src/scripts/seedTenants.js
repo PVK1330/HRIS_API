@@ -11,16 +11,7 @@ const tenantService = require('../modules/tenant/tenant.service');
 const SALT_ROUNDS = 12;
 
 async function seedTenants() {
-  const tenants = [
-    {
-      name: 'Acme Corp',
-      admin_email: 'admin@acme.com',
-      admin_name: 'Wile E. Coyote',
-      company_name: 'Acme Corporation',
-      plan_id: 'pro',
-      timezone: 'UTC',
-    }
-  ];
+  const tenants = [];
 
   await db.assertDbConnection();
   await runSuperAdminMigrations();

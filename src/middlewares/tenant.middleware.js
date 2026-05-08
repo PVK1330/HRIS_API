@@ -43,7 +43,9 @@ async function tenantResolver(req, _res, next) {
     const { rows } = await superAdminPool.query(
       `SELECT id, db_name, schema_name, status, timezone, date_format, time_format
        FROM public.tenants
-       WHERE schema_name = $1 OR admin_email = $1
+       WHERE schema_name = $1
+          OR admin_email = $1
+          OR id::text = $1
        LIMIT 1`,
       [tenantIdentifier]
     );

@@ -12,6 +12,7 @@ const ApiError = require('../utils/ApiError');
 // /uploads serves. Without this, files land somewhere static can't see.
 const UPLOADS_DIR = path.resolve(env.UPLOAD.dir);
 const LOGO_DIR = path.join(UPLOADS_DIR, 'logos');
+const TENANT_LOGO_DIR = path.join(UPLOADS_DIR, 'tenant-logos');
 const MAX_SIZE_MB = Math.round(env.UPLOAD.maxSize / (1024 * 1024)) || 2;
 const MAX_SIZE_BYTES = env.UPLOAD.maxSize;
 
@@ -30,6 +31,67 @@ function ensureLogoDir() {
     fs.mkdirSync(LOGO_DIR, { recursive: true });
   }
 }
+
+function ensureTenantLogoDir() {
+  if (!fs.existsSync(TENANT_LOGO_DIR)) {
+    fs.mkdirSync(TENANT_LOGO_DIR, { recursive: true });
+  }
+}
+
+const TENANT_LOGO_EXT = new Set(['.png', '.jpg', '.jpeg', '.svg']);
+const TENANT_LOGO_MIME = new Set(['image/png', 'image/jpeg', 'image/svg+xml']);
+
+const tenantLogoStorage = multer.diskStorage({
+  destination(_req, _file, cb) {
+    try {
+      ensureTenantLogoDir();
+      cb(null, TENANT_LOGO_DIR);
+    } catch (err) {
+      cb(err);
+    }
+  },
+  filename(req, file, cb) {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const tenantId = req.tenant?.id != null ? String(req.tenant.id) : 'tenant';
+    cb(null, `${tenantId}-${Date.now()}${ext}`);
+  },
+});
+
+function tenantLogoFileFilter(_req, file, cb) {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (!TENANT_LOGO_EXT.has(ext) || !TENANT_LOGO_MIME.has(file.mimetype)) {
+    return cb(new ApiError(400, 'Only PNG, JPG, SVG files are allowed'));
+  }
+  cb(null, true);
+}
+
+const tenantLogoUploader = multer({
+  storage: tenantLogoStorage,
+  limits: { fileSize: 2 * 1024 * 1024, files: 1 },
+  fileFilter: tenantLogoFileFilter,
+});
+
+/**
+ * Multer-style `.single(field)` for tenant logo uploads (runs after tenantResolver).
+ */
+const uploadTenantLogo = {
+  single(fieldName) {
+    return function tenantLogoUploadMiddleware(req, res, next) {
+      const run = tenantLogoUploader.single(fieldName);
+      run(req, res, function handleMulter(err) {
+        if (!err) return next();
+        if (err instanceof ApiError) return next(err);
+        if (err instanceof multer.MulterError) {
+          if (err.code === 'LIMIT_FILE_SIZE') {
+            return next(new ApiError(400, 'Logo must be under 2MB'));
+          }
+          return next(new ApiError(400, `Upload error: ${err.message}`));
+        }
+        return next(new ApiError(400, err.message || 'File upload failed'));
+      });
+    };
+  },
+};
 
 /**
  * Build a multer instance whose filename is `<type>-<timestamp>.<ext>`.
@@ -105,6 +167,8 @@ function uploadLogo(type) {
 
 module.exports = {
   uploadLogo,
+  uploadTenantLogo,
   LOGO_DIR,
+  TENANT_LOGO_DIR,
   MAX_SIZE_MB,
 };

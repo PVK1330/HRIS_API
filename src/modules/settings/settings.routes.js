@@ -109,6 +109,7 @@ router.post('/email/test', testEmailValidators, validate, controller.sendTestEma
 /* -------------------- Email Templates -------------------- */
 
 router.get('/email/templates', controller.listEmailTemplates);
+router.get('/email/logs', controller.listEmailLogs);
 router.get('/email/templates/:slug',
   [param('slug').isString().trim().isLength({ min: 1, max: 100 })],
   validate,
@@ -130,5 +131,6 @@ router.get('/logo', controller.getLogos);
 /* -------------------- System Info -------------------- */
 
 router.get('/system', controller.getSystemInfo);
+router.get('/meta', controller.getSettingsMeta);
 
 module.exports = router;

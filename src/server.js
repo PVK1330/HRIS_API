@@ -4,7 +4,10 @@ const app = require('./app');
 const env = require('./config/env');
 const db = require('./config/db');
 const logger = require('./utils/logger');
-const { runSuperAdminMigrations } = require('./scripts/runMigrations');
+const {
+  runSuperAdminMigrations,
+  runPendingTenantMigrationsForAllActiveTenants,
+} = require('./scripts/runMigrations');
 
 async function bootstrap() {
   logger.debug(`Starting HRS backend (env=${env.NODE_ENV})...`);
@@ -17,6 +20,12 @@ async function bootstrap() {
   const result = await runSuperAdminMigrations();
   logger.debug(
     `SuperAdmin migrations finished (applied=${result.applied}, skipped=${result.skipped}).`
+  );
+
+  logger.debug('Running pending tenant DB migrations for active tenants...');
+  const tenantMigrateResult = await runPendingTenantMigrationsForAllActiveTenants();
+  logger.debug(
+    `Tenant migrations sweep finished (tenantsProcessed=${tenantMigrateResult.tenantsProcessed}).`
   );
 
   // 3. Start HTTP server.

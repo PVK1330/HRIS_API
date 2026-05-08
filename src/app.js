@@ -23,6 +23,9 @@ const accountSettingsRoutes = require('./modules/accountSettings/accountSettings
 const currencyRoutes = require('./modules/currency/currency.routes');
 const authRoutes = require('./modules/auth/auth.routes');
 const lettersRoutes = require('./modules/letters/letters.routes');
+const tenantSettingsRoutes = require('./modules/tenantSettings/tenantSettings.routes');
+const attendanceSettingsRoutes = require('./modules/attendanceSettings/attendanceSettings.routes');
+const assetSettingsRoutes = require('./modules/assetSettings/assetSettings.routes');
 const publicOnboardingRoutes = require('./routes/public/onboardingRoutes');
 
 const { generalLimiter } = require('./middlewares/rateLimit.middleware');
@@ -61,11 +64,24 @@ const LOGOS_DIR = path.join(UPLOADS_DIR, 'logos');
 if (!fs.existsSync(LOGOS_DIR)) {
   fs.mkdirSync(LOGOS_DIR, { recursive: true });
 }
+const TENANT_LOGOS_DIR = path.join(UPLOADS_DIR, 'tenant-logos');
+if (!fs.existsSync(TENANT_LOGOS_DIR)) {
+  fs.mkdirSync(TENANT_LOGOS_DIR, { recursive: true });
+}
 app.use('/uploads', express.static(UPLOADS_DIR, {
   fallthrough: true,
   maxAge: '1d',
   index: false,
 }));
+
+app.use(
+  '/uploads/tenant-logos',
+  express.static(TENANT_LOGOS_DIR, {
+    fallthrough: true,
+    maxAge: '1d',
+    index: false,
+  }),
+);
 
 /* -------------------- Health -------------------- */
 
@@ -87,6 +103,9 @@ app.use('/api/v1/account-settings', accountSettingsRoutes);
 app.use('/api/v1/currency', currencyRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/letters', lettersRoutes);
+app.use('/api/v1/admin/settings/assets', assetSettingsRoutes);
+app.use('/api/v1/admin/settings/attendance', attendanceSettingsRoutes);
+app.use('/api/v1/admin/settings', tenantSettingsRoutes);
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
 
 /* -------------------- 404 + Errors -------------------- */

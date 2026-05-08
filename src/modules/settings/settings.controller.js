@@ -81,6 +81,11 @@ const updateEmailTemplate = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, 'Email template updated');
 });
 
+const listEmailLogs = asyncHandler(async (_req, res) => {
+  const data = await service.getEmailLogs();
+  return ApiResponse.ok(res, data, 'Email logs retrieved');
+});
+
 /* -------------------- Logo upload -------------------- */
 
 function logoUploadHandler(type) {
@@ -137,6 +142,11 @@ const getSystemInfo = asyncHandler(async (_req, res) => {
   return ApiResponse.ok(res, data, 'System info retrieved');
 });
 
+const getSettingsMeta = asyncHandler(async (_req, res) => {
+  const data = service.getSettingsMeta();
+  return ApiResponse.ok(res, data, 'Settings metadata retrieved');
+});
+
 module.exports = {
   // general
   getGeneralSettings,
@@ -152,6 +162,7 @@ module.exports = {
   listEmailTemplates,
   getEmailTemplate,
   updateEmailTemplate,
+  listEmailLogs,
   // logos
   uploadLargeLogo,
   uploadSmallLogo,
@@ -159,4 +170,6 @@ module.exports = {
   getLogos,
   // system info
   getSystemInfo,
+  // metadata
+  getSettingsMeta,
 };

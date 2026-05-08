@@ -8,11 +8,7 @@ const { authenticate, requireRole } = require('../../middlewares/auth.middleware
 const controller = require('./tenant.controller');
 
 const router = Router();
-
-/**
- * POST /api/v1/tenants/create
- * SuperAdmin-only endpoint that provisions a brand new tenant + admin user.
- */
+ 
 router.post(
   '/create',
   authenticate,

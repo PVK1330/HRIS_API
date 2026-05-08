@@ -1,6 +1,7 @@
 // src/modules/superadmin/payments.controller.js
 const paymentsRepository = require('./payments.repository');
 const { ApiResponse } = require('../../utils/apiResponse');
+const { renderEmail } = require('../../utils/emailTemplate');
 
 const getPayments = async (req, res, next) => {
   try {
@@ -122,9 +123,65 @@ const createManualInvoice = async (req, res, next) => {
   }
 };
 
+const getInvoiceHtml = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const invoice = await paymentsRepository.findById(id);
+
+    if (!invoice) {
+      return res.status(404).json({
+        success: false,
+        message: 'Invoice not found'
+      });
+    }
+
+    const issueDate = new Date(invoice.created_at).toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
+
+    const billingCycle = `${new Date(invoice.billing_start_date).toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    })} - ${new Date(invoice.billing_end_date).toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    })}`;
+
+    const html = await renderEmail('invoice', {
+      name: invoice.tenant_name || 'Tenant',
+      email: invoice.admin_email || '-',
+      invoiceId: invoice.id,
+      date: issueDate,
+      planName: invoice.plan_name || 'Subscription',
+      billingCycle,
+      currency: invoice.currency || 'AED',
+      amount: Number(invoice.amount || 0).toLocaleString(),
+      status: String(invoice.status || 'pending').toUpperCase(),
+      statusMessage:
+        invoice.status === 'completed'
+          ? 'Payment has been successfully completed.'
+          : invoice.status === 'failed'
+            ? 'Payment failed. Please retry or update payment method.'
+            : invoice.status === 'refunded'
+              ? 'This invoice has been refunded.'
+              : 'Payment is pending confirmation.'
+    });
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(200).send(html);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getPayments,
   getPaymentStats,
   updatePaymentStatus,
-  createManualInvoice
+  createManualInvoice,
+  getInvoiceHtml
 };

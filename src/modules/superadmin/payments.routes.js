@@ -11,6 +11,7 @@ router.use(requireRole('superadmin', 'billing_admin'));
 
 router.get('/', paymentsController.getPayments);
 router.get('/stats', paymentsController.getPaymentStats);
+router.get('/:id/invoice-html', paymentsController.getInvoiceHtml);
 router.post(
   '/manual',
   [

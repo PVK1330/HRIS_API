@@ -44,6 +44,7 @@ function authenticate(req, _res, next) {
       email: decoded.email,
       role: decoded.role,
       tenant_id: decoded.tenant_id || null,
+      db_name: decoded.db_name || null,
     };
 
     return next();

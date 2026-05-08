@@ -22,6 +22,7 @@ const freeTrialRoutes = require('./modules/freeTrial/freeTrial.routes');
 const accountSettingsRoutes = require('./modules/accountSettings/accountSettings.routes');
 const currencyRoutes = require('./modules/currency/currency.routes');
 const authRoutes = require('./modules/auth/auth.routes');
+const lettersRoutes = require('./modules/letters/letters.routes');
 const publicOnboardingRoutes = require('./routes/public/onboardingRoutes');
 
 const { generalLimiter } = require('./middlewares/rateLimit.middleware');
@@ -85,6 +86,7 @@ app.use('/api/v1/free-trial', freeTrialRoutes);
 app.use('/api/v1/account-settings', accountSettingsRoutes);
 app.use('/api/v1/currency', currencyRoutes);
 app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/letters', lettersRoutes);
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
 
 /* -------------------- 404 + Errors -------------------- */

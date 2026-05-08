@@ -267,6 +267,111 @@ async function login(email, password) {
   };
 }
 
+async function generateImpersonationToken(tenantId) {
+  const parsedTenantId = Number(tenantId);
+  if (!Number.isInteger(parsedTenantId) || parsedTenantId <= 0) {
+    throw ApiError.badRequest('Invalid tenant id');
+  }
+
+  const tenantResult = await superAdminPool.query(
+    'SELECT id, name, db_name, status, plan_id, admin_email FROM public.tenants WHERE id = $1 LIMIT 1',
+    [parsedTenantId]
+  );
+
+  if (tenantResult.rows.length === 0) {
+    throw ApiError.notFound('Tenant not found');
+  }
+
+  const tenant = tenantResult.rows[0];
+  if (tenant.status !== 'active') {
+    throw ApiError.badRequest('Tenant is not active');
+  }
+
+  const { getTenantPool } = require('../../config/db');
+  const tenantPool = getTenantPool(tenant.db_name);
+
+  let userResult = await tenantPool.query(
+    'SELECT id, email, name, status FROM admin_users WHERE email = $1 LIMIT 1',
+    [tenant.admin_email]
+  );
+  if (userResult.rows.length === 0) {
+    userResult = await tenantPool.query(
+      "SELECT id, email, name, status FROM admin_users WHERE status = 'active' ORDER BY id ASC LIMIT 1"
+    );
+  }
+  if (userResult.rows.length === 0) {
+    throw ApiError.notFound('No tenant admin user found');
+  }
+
+  const user = userResult.rows[0];
+  if (user.status !== 'active') {
+    throw ApiError.badRequest('Tenant admin user is inactive');
+  }
+
+  let planDetails = null;
+  let planFeatures = [];
+  if (tenant.plan_id) {
+    const plansRepo = require('../superadmin/plans.repository');
+    planDetails = await plansRepo.findById(tenant.plan_id);
+    if (planDetails) {
+      planFeatures = await plansRepo.getFeatures(tenant.plan_id);
+    }
+  }
+
+  const accessResult = await superAdminPool.query(
+    `
+      SELECT
+        pf.id,
+        pf.feature_name,
+        pf.feature_code,
+        pf.feature_description,
+        tac.is_enabled
+      FROM public.tenant_access_controls tac
+      JOIN public.platform_features pf ON pf.id = tac.feature_id
+      WHERE tac.tenant_id = $1
+        AND tac.is_enabled = true
+        AND pf.feature_is_active = true
+      ORDER BY pf.feature_sort_order ASC, pf.feature_name ASC
+    `,
+    [tenant.id]
+  );
+
+  const tenantFeatures = accessResult.rows.map((row) => ({
+    id: row.id,
+    feature_name: row.feature_name,
+    feature_code: row.feature_code,
+    feature_description: row.feature_description,
+    is_enabled: row.is_enabled,
+  }));
+
+  const token = jwt.sign(
+    {
+      id: user.id,
+      email: user.email,
+      role: 'admin',
+      tenant_id: tenant.id,
+      db_name: tenant.db_name
+    },
+    env.JWT.secret,
+    { expiresIn: env.JWT.expiresIn }
+  );
+
+  return {
+    token,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: 'admin',
+      tenantId: tenant.id,
+      tenantName: tenant.name
+    },
+    plan_details: planDetails ? [planDetails] : [],
+    plan_features: planFeatures,
+    tenant_features: tenantFeatures
+  };
+}
+
 async function getAccessProfile(currentUser) {
   if (!currentUser || currentUser.role !== 'admin') {
     throw ApiError.forbidden('Access profile is only available for tenant admins');
@@ -336,5 +441,6 @@ module.exports = {
   resetPassword,
   verify2FA,
   login,
+  generateImpersonationToken,
   getAccessProfile
 };

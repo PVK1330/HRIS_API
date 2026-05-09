@@ -6,8 +6,8 @@
  * SuperAdmin: runs every *.sql file in src/migrations/superadmin/ in lexicographic order.
  * Tracks applied filenames in public.schema_migrations.
  *
- * Tenants: pending files from src/migrations/tenants/ (001–014+, e.g.
- * tenant_admin_settings, attendance_settings, asset_categories, asset_rules)
+ * Tenants: pending files from src/migrations/tenants/ (001–019+, e.g.
+ * tenant_admin_settings, attendance_settings, leave_types, document_types)
  *
  * invocation:
  *   1. CLI:   `node src/scripts/runMigrations.js`

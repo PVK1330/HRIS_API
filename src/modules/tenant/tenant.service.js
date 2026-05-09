@@ -1,22 +1,28 @@
-'use strict';
+"use strict";
 
-const fs = require('fs');
-const path = require('path');
-const { Pool } = require('pg');
-const bcrypt = require('bcrypt');
-const { v4: uuidv4 } = require('uuid');
+const fs = require("fs");
+const path = require("path");
+const { Pool } = require("pg");
+const bcrypt = require("bcrypt");
+const { v4: uuidv4 } = require("uuid");
 
-const crypto = require('crypto');
-const db = require('../../config/db');
-const env = require('../../config/env');
-const { sendMail } = require('../../utils/mail');
-const { renderEmail } = require('../../utils/emailTemplate');
-const ApiError = require('../../utils/ApiError');
-const logger = require('../../utils/logger');
-const repo = require('./tenant.repository');
+const crypto = require("crypto");
+const db = require("../../config/db");
+const env = require("../../config/env");
+const { sendMail } = require("../../utils/mail");
+const { renderEmail } = require("../../utils/emailTemplate");
+const ApiError = require("../../utils/ApiError");
+const logger = require("../../utils/logger");
+const repo = require("./tenant.repository");
 
 const SALT_ROUNDS = env.BCRYPT_SALT_ROUNDS;
-const TENANT_MIGRATIONS_DIR = path.join(__dirname, '..', '..', 'migrations', 'tenants');
+const TENANT_MIGRATIONS_DIR = path.join(
+  __dirname,
+  "..",
+  "..",
+  "migrations",
+  "tenants",
+);
 
 const TENANT_TRACKING_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS tenant_migrations (
@@ -37,12 +43,14 @@ async function runTenantMigrations(dbName) {
   repo.assertSafeDbName(dbName);
 
   if (!fs.existsSync(TENANT_MIGRATIONS_DIR)) {
-    throw new Error(`Tenant migrations directory not found: ${TENANT_MIGRATIONS_DIR}`);
+    throw new Error(
+      `Tenant migrations directory not found: ${TENANT_MIGRATIONS_DIR}`,
+    );
   }
 
   const files = fs
     .readdirSync(TENANT_MIGRATIONS_DIR)
-    .filter((f) => f.toLowerCase().endsWith('.sql'))
+    .filter((f) => f.toLowerCase().endsWith(".sql"))
     .sort();
 
   if (files.length === 0) {
@@ -70,33 +78,43 @@ async function runTenantMigrations(dbName) {
     const client = await tempPool.connect();
     try {
       await client.query(TENANT_TRACKING_TABLE_SQL);
-      const { rows } = await client.query('SELECT filename FROM tenant_migrations');
+      const { rows } = await client.query(
+        "SELECT filename FROM tenant_migrations",
+      );
       const alreadyApplied = new Set(rows.map((r) => r.filename));
 
       for (const file of files) {
         if (alreadyApplied.has(file)) {
           skipped += 1;
-          logger.info(`[tenant:${dbName}] skip migration (already applied): ${file}`);
+          logger.info(
+            `[tenant:${dbName}] skip migration (already applied): ${file}`,
+          );
           continue;
         }
 
-        const sql = fs.readFileSync(path.join(TENANT_MIGRATIONS_DIR, file), 'utf8');
+        const sql = fs.readFileSync(
+          path.join(TENANT_MIGRATIONS_DIR, file),
+          "utf8",
+        );
         if (!sql.trim()) continue;
 
         logger.info(`[tenant:${dbName}] applying migration ${file}`);
-        await client.query('BEGIN');
+        await client.query("BEGIN");
         try {
           await client.query(sql);
           await client.query(
-            'INSERT INTO tenant_migrations (filename) VALUES ($1) ON CONFLICT DO NOTHING',
-            [file]
+            "INSERT INTO tenant_migrations (filename) VALUES ($1) ON CONFLICT DO NOTHING",
+            [file],
           );
-          await client.query('COMMIT');
+          await client.query("COMMIT");
           applied += 1;
           logger.info(`[tenant:${dbName}] done migration ${file}`);
         } catch (err) {
-          await client.query('ROLLBACK');
-          logger.error(`[tenant:${dbName}] FAILED migration ${file}`, err.message);
+          await client.query("ROLLBACK");
+          logger.error(
+            `[tenant:${dbName}] FAILED migration ${file}`,
+            err.message,
+          );
           throw err;
         }
       }
@@ -112,7 +130,7 @@ async function runTenantMigrations(dbName) {
   }
 
   logger.info(
-    `[tenant:${dbName}] migrations complete (applied=${applied}, skipped=${skipped})`
+    `[tenant:${dbName}] migrations complete (applied=${applied}, skipped=${skipped})`,
   );
   return { applied, skipped };
 }
@@ -140,7 +158,7 @@ async function dropTenantDatabaseIfExists(dbName) {
         `SELECT pg_terminate_backend(pid)
          FROM pg_stat_activity
          WHERE datname = $1 AND pid <> pg_backend_pid()`,
-        [dbName]
+        [dbName],
       );
     } catch (e) {
       logger.warn(`Could not terminate backends for ${dbName}: ${e.message}`);
@@ -154,22 +172,14 @@ async function dropTenantDatabaseIfExists(dbName) {
   }
 }
 
-/**
- * Creates a brand-new tenant on a SEPARATE PostgreSQL database.
- *
- * Flow:
- *   1. Pre-flight uniqueness check on public.tenants.admin_email.
- *   2. Generate db_name = tenant_<uuid_without_dashes>.
- *   3. CREATE DATABASE <db_name> via superAdminPool (NOT inside a transaction).
- *   4. INSERT INTO public.tenants (hrs_backend) — stores db_name.
- *   5. Run tenant migrations inside the new DB (admin_users, roles, ...).
- *   6. INSERT admin_users row inside the tenant DB via getTenantPool(db_name).
- *
- * Cleanup: if any step after CREATE DATABASE fails, the tenants registry
- * row is removed and the new database is dropped, so partial state never
- * lingers.
- */
-async function createTenant({ name, adminEmail, adminName, adminPassword, createdBy, plan_id }) {
+async function createTenant({
+  name,
+  adminEmail,
+  adminName,
+  adminPassword,
+  createdBy,
+  plan_id,
+}) {
   const normalizedEmail = String(adminEmail).trim().toLowerCase();
   const cleanName = String(name).trim();
   const cleanAdminName = String(adminName).trim();
@@ -177,13 +187,13 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
   // 1. Cheap uniqueness check (gives a clean 409 instead of a raw PG error).
   const existing = await repo.findTenantByAdminEmail(normalizedEmail);
   if (existing) {
-    throw ApiError.conflict('A tenant with this admin email already exists');
+    throw ApiError.conflict("A tenant with this admin email already exists");
   }
 
   // 2. Generate safe db_name (system-generated UUID — interpolation is safe).
-  const dbName = `tenant_${uuidv4().replace(/-/g, '_')}`;
+  const dbName = `tenant_${uuidv4().replace(/-/g, "_")}`;
   if (dbName.length > 63) {
-    throw ApiError.internal('Generated database name exceeds 63 characters');
+    throw ApiError.internal("Generated database name exceeds 63 characters");
   }
   repo.assertSafeDbName(dbName);
 
@@ -200,11 +210,14 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
       dbCreated = true;
       logger.info(`[tenant] created database ${dbName}`);
     } catch (err) {
-      if (err && err.code === '42P04') {
-        throw new ApiError(409, 'Tenant database already exists');
+      if (err && err.code === "42P04") {
+        throw new ApiError(409, "Tenant database already exists");
       }
-      logger.error(`[tenant] CREATE DATABASE failed for ${dbName}`, err.message);
-      throw new ApiError(500, 'Failed to create tenant database');
+      logger.error(
+        `[tenant] CREATE DATABASE failed for ${dbName}`,
+        err.message,
+      );
+      throw new ApiError(500, "Failed to create tenant database");
     } finally {
       adminClient.release();
     }
@@ -227,9 +240,9 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
       });
       tenantInserted = true;
     } catch (err) {
-      if (err && err.code === '23505') {
+      if (err && err.code === "23505") {
         throw ApiError.conflict(
-          'Tenant with this admin email or database already exists'
+          "Tenant with this admin email or database already exists",
         );
       }
       throw err;
@@ -238,17 +251,22 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
     // 5.5 Provision Tenant Access Controls based on Plan Features
     if (plan_id) {
       try {
-        const plansRepo = require('../superadmin/plans.repository');
+        const plansRepo = require("../superadmin/plans.repository");
         const planFeatures = await plansRepo.getFeatures(plan_id);
-        
+
         if (planFeatures && planFeatures.length > 0) {
           for (const feature of planFeatures) {
             await repo.insertAccessControl(tenantRow.id, plan_id, feature.id);
           }
-          logger.info(`[tenant] Provisioned ${planFeatures.length} access controls for tenant ${tenantRow.id} (plan=${plan_id})`);
+          logger.info(
+            `[tenant] Provisioned ${planFeatures.length} access controls for tenant ${tenantRow.id} (plan=${plan_id})`,
+          );
         }
       } catch (accessErr) {
-        logger.error(`[tenant] Failed to provision access controls for tenant ${tenantRow.id}:`, accessErr.message);
+        logger.error(
+          `[tenant] Failed to provision access controls for tenant ${tenantRow.id}:`,
+          accessErr.message,
+        );
       }
     }
 
@@ -262,11 +280,14 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
             current_period_start, current_period_end, trial_end
           ) VALUES ($1, $2, 'trial', 'monthly', NOW(), NOW() + INTERVAL '14 days', $3)
           RETURNING id`,
-          [tenantRow.id, plan_id, trialEndsAt]
+          [tenantRow.id, plan_id, trialEndsAt],
         );
         subscriptionRow = subResult.rows[0];
       } catch (subErr) {
-        logger.error(`Failed to create subscription record for tenant ${tenantRow.id}:`, subErr.message);
+        logger.error(
+          `Failed to create subscription record for tenant ${tenantRow.id}:`,
+          subErr.message,
+        );
       }
     }
 
@@ -295,26 +316,26 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
 
     // 9. Send Credentials Email
     try {
-      const html = await renderEmail('tenant-welcome', {
+      const html = await renderEmail("tenant-welcome", {
         name: name,
         email: adminEmail,
-        password: adminPassword
+        password: adminPassword,
       });
 
       await sendMail({
         to: adminEmail,
-        subject: 'Welcome to HRIS - Your Account Credentials',
+        subject: "Welcome to HRIS - Your Account Credentials",
         text: `Your organization "${name}" has been created.\nEmail: ${adminEmail}\nPassword: ${adminPassword}`,
-        html
+        html,
       });
     } catch (mailErr) {
-      logger.error('Failed to send welcome email:', mailErr.message);
+      logger.error("Failed to send welcome email:", mailErr.message);
     }
 
     // 10. Create and Send Invoice
     if (plan_id && subscriptionRow) {
       try {
-        const plansRepo = require('../superadmin/plans.repository');
+        const plansRepo = require("../superadmin/plans.repository");
         const planDetails = await plansRepo.findById(plan_id);
 
         if (planDetails) {
@@ -329,42 +350,46 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
               tenantRow.id,
               subscriptionRow.id,
               planDetails.monthly_price || 0,
-              'AED', // Default currency
-              'Manual',
-              planDetails.monthly_price > 0 ? 'pending' : 'completed',
+              "AED", // Default currency
+              "Manual",
+              planDetails.monthly_price > 0 ? "pending" : "completed",
               new Date(),
               trialEndsAt,
-              `Onboarding Invoice for ${planDetails.plan_name}`
-            ]
+              `Onboarding Invoice for ${planDetails.plan_name}`,
+            ],
           );
 
           const paymentId = paymentResult.rows[0].id;
 
           // Send Invoice Email
-          const invoiceHtml = await renderEmail('invoice', {
+          const invoiceHtml = await renderEmail("invoice", {
             name: cleanAdminName,
             email: normalizedEmail,
             invoiceId: paymentId,
             date: new Date().toLocaleDateString(),
             planName: planDetails.plan_name,
-            billingCycle: 'Monthly',
-            currency: 'AED',
+            billingCycle: "Monthly",
+            currency: "AED",
             amount: planDetails.monthly_price || 0,
-            status: planDetails.monthly_price > 0 ? 'PENDING PAYMENT' : 'PAID (FREE TRIAL)',
-            statusMessage: planDetails.monthly_price > 0 
-              ? 'This invoice is currently pending payment. Please complete the payment to avoid service interruption after the trial period.'
-              : 'This is a complimentary invoice for your free trial period.'
+            status:
+              planDetails.monthly_price > 0
+                ? "PENDING PAYMENT"
+                : "PAID (FREE TRIAL)",
+            statusMessage:
+              planDetails.monthly_price > 0
+                ? "This invoice is currently pending payment. Please complete the payment to avoid service interruption after the trial period."
+                : "This is a complimentary invoice for your free trial period.",
           });
 
           await sendMail({
             to: adminEmail,
             subject: `Invoice INV-${paymentId} - ${planDetails.plan_name}`,
             text: `Please find your invoice for ${planDetails.plan_name} attached.`,
-            html: invoiceHtml
+            html: invoiceHtml,
           });
         }
       } catch (invErr) {
-        logger.error('Failed to generate or send invoice:', invErr.message);
+        logger.error("Failed to generate or send invoice:", invErr.message);
       }
     }
 
@@ -376,7 +401,7 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
         await repo.deleteTenantByDbName(dbName);
       } catch (cleanupErr) {
         logger.error(
-          `Failed to delete tenants row for ${dbName}: ${cleanupErr.message}`
+          `Failed to delete tenants row for ${dbName}: ${cleanupErr.message}`,
         );
       }
     }
@@ -385,19 +410,21 @@ async function createTenant({ name, adminEmail, adminName, adminPassword, create
         await dropTenantDatabaseIfExists(dbName);
       } catch (cleanupErr) {
         logger.error(
-          `Failed to drop tenant database ${dbName}: ${cleanupErr.message}`
+          `Failed to drop tenant database ${dbName}: ${cleanupErr.message}`,
         );
       }
     }
 
     if (err instanceof ApiError) throw err;
 
-    if (err && err.code === '23505') {
-      throw ApiError.conflict('Tenant with this admin email or database already exists');
+    if (err && err.code === "23505") {
+      throw ApiError.conflict(
+        "Tenant with this admin email or database already exists",
+      );
     }
 
-    logger.error('createTenant failed', err);
-    throw new ApiError(500, 'Failed to create tenant');
+    logger.error("createTenant failed", err);
+    throw new ApiError(500, "Failed to create tenant");
   }
 }
 
@@ -407,34 +434,43 @@ async function updateTenant(id, data) {
 
 async function deleteTenant(id) {
   const tenant = await repo.findTenantById(id);
-  if (!tenant) throw new ApiError(404, 'Tenant not found');
-  
+  if (!tenant) throw new ApiError(404, "Tenant not found");
+
   // 1. Delete registry record
   await repo.deleteTenantById(id);
-  
+
   // 2. Best effort: drop the database
   try {
     await dropTenantDatabaseIfExists(tenant.db_name);
   } catch (err) {
-    logger.error(`Failed to drop database ${tenant.db_name} during tenant deletion`, err.message);
+    logger.error(
+      `Failed to drop database ${tenant.db_name} during tenant deletion`,
+      err.message,
+    );
   }
 }
 
-async function getAllTenants({ page = 1, limit = 10, search = '', plan = '', status = '' } = {}) {
+async function getAllTenants({
+  page = 1,
+  limit = 10,
+  search = "",
+  plan = "",
+  status = "",
+} = {}) {
   const offset = (page - 1) * limit;
   const [tenants, total] = await Promise.all([
     repo.findAll({ limit, offset, search, plan, status }),
-    repo.countAll({ search, plan, status })
+    repo.countAll({ search, plan, status }),
   ]);
   return { tenants, total, page, limit };
 }
 
 async function resetTenantPassword(id, manualPassword = null) {
   const tenant = await repo.findTenantById(id);
-  if (!tenant) throw new ApiError(404, 'Tenant not found');
+  if (!tenant) throw new ApiError(404, "Tenant not found");
 
   // 1. Generate or use manual password
-  const passwordToUse = manualPassword || crypto.randomBytes(6).toString('hex');
+  const passwordToUse = manualPassword || crypto.randomBytes(6).toString("hex");
   const passwordHash = await bcrypt.hash(passwordToUse, SALT_ROUNDS);
 
   // 2. Update Tenant DB
@@ -443,26 +479,26 @@ async function resetTenantPassword(id, manualPassword = null) {
 
   // 3. Send Email
   try {
-    const html = await renderEmail('tenant-password-reset', {
+    const html = await renderEmail("tenant-password-reset", {
       name: tenant.name,
       email: tenant.admin_email,
-      password: passwordToUse
+      password: passwordToUse,
     });
 
     await sendMail({
       to: tenant.admin_email,
-      subject: 'HRIS - Password Reset Notification',
+      subject: "HRIS - Password Reset Notification",
       text: `Your password for organization "${tenant.name}" has been reset.\nNew Password: ${passwordToUse}`,
-      html
+      html,
     });
   } catch (mailErr) {
-    logger.error('Failed to send reset password email:', mailErr.message);
+    logger.error("Failed to send reset password email:", mailErr.message);
   }
 }
 
 async function getTenantFeatures(id) {
   const tenant = await repo.findTenantById(id);
-  if (!tenant) throw new ApiError(404, 'Tenant not found');
+  if (!tenant) throw new ApiError(404, "Tenant not found");
 
   const features = await repo.listTenantFeatureAccess(id);
   return features.map((feature) => ({
@@ -479,16 +515,20 @@ async function getTenantFeatures(id) {
 
 async function updateTenantFeature(id, featureId, isEnabled) {
   const tenant = await repo.findTenantById(id);
-  if (!tenant) throw new ApiError(404, 'Tenant not found');
+  if (!tenant) throw new ApiError(404, "Tenant not found");
 
   const feature = await repo.findFeatureById(featureId);
-  if (!feature) throw new ApiError(404, 'Feature not found');
+  if (!feature) throw new ApiError(404, "Feature not found");
 
   if (!feature.feature_is_active) {
-    throw new ApiError(400, 'Cannot assign an inactive feature');
+    throw new ApiError(400, "Cannot assign an inactive feature");
   }
 
-  const access = await repo.upsertTenantFeatureAccess(id, featureId, Boolean(isEnabled));
+  const access = await repo.upsertTenantFeatureAccess(
+    id,
+    featureId,
+    Boolean(isEnabled),
+  );
   return {
     id: access.id,
     tenantId: access.tenant_id,

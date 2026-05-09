@@ -1,14 +1,6 @@
-'use strict';
+"use strict";
 
-const db = require('../../config/db');
-
-/**
- * Repository: pure data-access for public.settings and public.email_templates.
- * No business logic / no formatting / no defaults — just parameterized SQL.
- *
- * NOTE: The `group` column is a PostgreSQL reserved keyword, so it MUST be
- * referenced as "group" (with double quotes) in every query.
- */
+const db = require("../../config/db");
 
 /* -------------------- public.settings -------------------- */
 
@@ -79,7 +71,7 @@ async function upsertSettingsByGroup(group, pairs) {
          ON CONFLICT (key)
          DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
          RETURNING key, value, "group"`,
-        [key, value, group]
+        [key, value, group],
       );
       updated.push(rows[0]);
     }
@@ -127,8 +119,8 @@ async function updateEmailTemplateBySlug(slug, patch) {
     RETURNING id, slug, name, subject, body, variables, is_active, created_at, updated_at
   `;
   const params = [
-    patch.subject  === undefined ? null : patch.subject,
-    patch.body     === undefined ? null : patch.body,
+    patch.subject === undefined ? null : patch.subject,
+    patch.body === undefined ? null : patch.body,
     patch.isActive === undefined ? null : patch.isActive,
     slug,
   ];

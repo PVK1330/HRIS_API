@@ -27,6 +27,10 @@ const employeesRoutes = require('./modules/employees/employees.routes');
 const tenantSettingsRoutes = require('./modules/tenantSettings/tenantSettings.routes');
 const attendanceSettingsRoutes = require('./modules/attendanceSettings/attendanceSettings.routes');
 const assetSettingsRoutes = require('./modules/assetSettings/assetSettings.routes');
+const passwordSecurityRoutes = require('./modules/passwordSecurity/passwordSecurity.routes');
+const notificationSettingsRoutes = require('./modules/notificationSettings/notificationSettings.routes');
+const documentSettingsRoutes = require('./modules/documentSettings/documentSettings.routes');
+const sensitiveDataRoutes = require('./modules/sensitiveData/sensitiveData.routes');
 const publicOnboardingRoutes = require('./routes/public/onboardingRoutes');
 
 const { generalLimiter } = require('./middlewares/rateLimit.middleware');
@@ -107,6 +111,10 @@ app.use('/api/v1/letters',    lettersRoutes);
 app.use('/api/v1/employees',  employeesRoutes);
 app.use('/api/v1/admin/settings/assets', assetSettingsRoutes);
 app.use('/api/v1/admin/settings/attendance', attendanceSettingsRoutes);
+app.use('/api/v1/admin/settings/password-security', passwordSecurityRoutes);
+app.use('/api/v1/admin/settings/notifications', notificationSettingsRoutes);
+app.use('/api/v1/admin/settings/documents', documentSettingsRoutes);
+app.use('/api/v1/admin/settings/sensitive-data', sensitiveDataRoutes);
 app.use('/api/v1/admin/settings', tenantSettingsRoutes);
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
 

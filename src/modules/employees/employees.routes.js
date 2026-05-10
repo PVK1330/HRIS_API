@@ -47,6 +47,9 @@ router.post('/', requireRole('admin', 'hr_admin'), [
   body('emiratesIdExpiry').optional({ nullable: true }).isDate(),
   body('visaExpiryDate').optional({ nullable: true }).isDate(),
   body('dependents').optional({ nullable: true }).isInt({ min: 0 }),
+  body('rbacRoleId').optional({ nullable: true }).isInt({ min: 1 }),
+  body('portalEnabled').optional().isBoolean(),
+  body('portalPassword').optional({ checkFalsy: true }).isString().trim().isLength({ min: 8, max: 200 }),
 ], validate, ctrl.create);
 
 router.patch('/:id', requireRole('admin', 'hr_admin'), [
@@ -66,6 +69,9 @@ router.patch('/:id', requireRole('admin', 'hr_admin'), [
   body('emiratesIdExpiry').optional({ nullable: true }).isDate(),
   body('visaExpiryDate').optional({ nullable: true }).isDate(),
   body('dependents').optional({ nullable: true }).isInt({ min: 0 }),
+  body('rbacRoleId').optional({ nullable: true }).isInt({ min: 1 }),
+  body('portalEnabled').optional().isBoolean(),
+  body('portalPassword').optional({ checkFalsy: true }).isString().trim().isLength({ min: 8, max: 200 }),
 ], validate, ctrl.update);
 
 router.delete('/:id', requireRole('admin', 'hr_admin'), [

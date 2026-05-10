@@ -1,6 +1,10 @@
 'use strict';
 
 const { getTenantPool } = require('../../config/db');
+const env = require('../../config/env');
+
+const bcrypt = require('bcrypt');
+
 const ApiError = require('../../utils/ApiError');
 const { runTenantMigrations } = require('../tenant/tenant.service');
 const repo = require('./employees.repository');
@@ -80,7 +84,29 @@ async function createEmployee(user, data) {
     data.reportingManagerId = mgr ? mgr.id : null;
   }
 
-  return repo.insert(pool, { ...data, createdBy: user.id });
+  const payload = { ...data };
+  payload.portalEnabled = Boolean(data.portalEnabled);
+  payload.rbacRoleId =
+    data.rbacRoleId != null && `${data.rbacRoleId}`.trim() !== ''
+      ? parseInt(String(data.rbacRoleId), 10)
+      : null;
+  if (!Number.isInteger(payload.rbacRoleId) || payload.rbacRoleId <= 0) {
+    payload.rbacRoleId = null;
+  }
+
+  if (data.portalPassword && String(data.portalPassword).trim()) {
+    payload.passwordHash = await bcrypt.hash(
+      String(data.portalPassword),
+      env.BCRYPT_SALT_ROUNDS
+    );
+    delete payload.portalPassword;
+  } else if (payload.portalEnabled === false) {
+    payload.passwordHash = null;
+  }
+
+  delete payload.portalPassword;
+
+  return repo.insert(pool, { ...payload, createdBy: user.id });
 }
 
 // ─── Update ───────────────────────────────────────────────────────────────────
@@ -105,7 +131,34 @@ async function updateEmployee(user, id, data) {
     data.reportingManagerId = mgr ? mgr.id : null;
   }
 
-  const updated = await repo.update(pool, id, { ...data, updatedBy: user.id });
+  const patch = { ...data };
+
+  if (Object.prototype.hasOwnProperty.call(data, 'portalEnabled')) {
+    patch.portalEnabled = Boolean(data.portalEnabled);
+    if (!patch.portalEnabled) {
+      patch.passwordHash = null;
+    }
+  }
+
+  if (data.rbacRoleId !== undefined) {
+    patch.rbacRoleId =
+      data.rbacRoleId != null && `${data.rbacRoleId}`.trim() !== ''
+        ? parseInt(String(data.rbacRoleId), 10)
+        : null;
+    if (!Number.isInteger(patch.rbacRoleId) || patch.rbacRoleId <= 0) {
+      patch.rbacRoleId = null;
+    }
+  }
+
+  if (data.portalPassword && String(data.portalPassword).trim()) {
+    patch.passwordHash = await bcrypt.hash(
+      String(data.portalPassword),
+      env.BCRYPT_SALT_ROUNDS
+    );
+  }
+  delete patch.portalPassword;
+
+  const updated = await repo.update(pool, id, { ...patch, updatedBy: user.id });
   if (!updated) throw ApiError.notFound('Employee not found');
   return updated;
 }

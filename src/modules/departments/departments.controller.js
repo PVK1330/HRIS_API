@@ -15,14 +15,12 @@ const getOne = asyncHandler(async (req, res) => {
 });
 
 const create = asyncHandler(async (req, res) => {
-  const { head, ...rest } = req.body;
-  const department = await service.createDepartment(req.tenant, { ...rest, headName: head });
+  const department = await service.createDepartment(req.tenant, req.body);
   return ApiResponse.created(res, department, 'Department created successfully');
 });
 
 const update = asyncHandler(async (req, res) => {
-  const { head, ...rest } = req.body;
-  const department = await service.updateDepartment(req.tenant, req.params.id, { ...rest, headName: head });
+  const department = await service.updateDepartment(req.tenant, req.params.id, req.body);
   return ApiResponse.ok(res, department, 'Department updated successfully');
 });
 

@@ -14,7 +14,7 @@ const performanceRoutes = require('./performance/performance.routes');
 const assetsRoutes      = require('./assets/assets.routes');
 
 const router = Router();
-router.use(authenticate, requireRole('admin', 'hr_admin', 'hr_executive', 'manager'));
+router.use(authenticate, requireRole('superadmin', 'admin', 'hr_admin', 'hr_executive', 'manager'));
 
 // ─── Read-only ────────────────────────────────────────────────────────────────
 router.get('/stats',   ctrl.stats);
@@ -22,7 +22,7 @@ router.get('/filters', ctrl.filterOptions);
 
 router.get('/', [
   query('page').optional().isInt({ min: 1 }),
-  query('limit').optional().isInt({ min: 1, max: 100 }),
+  query('limit').optional().isInt({ min: 1, max: 1000 }),
   query('search').optional().isString().trim(),
   query('department').optional().isString().trim(),
   query('status').optional().isString().trim(),

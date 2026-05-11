@@ -695,7 +695,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"timezone\": \"Asia/Dubai\",\n  \"dateFormat\": \"DD-MM-YYYY\"\n}"
+                  "raw": "{\n  \"timezone\": \"Asia/Dubai\",\n  \"dateFormat\": \"DD-MM-YYYY\",\n  \"locations\": \"Dubai, Abu Dhabi, Sharjah\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/admin/settings",
@@ -936,7 +936,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"name\": \"Innovation Lab\",\n  \"code\": \"INN-01\",\n  \"description\": \"Research and development for new products\",\n  \"location\": \"Dubai HQ\",\n  \"isActive\": true\n}"
+                  "raw": "{\n  \"name\": \"Innovation Lab\",\n  \"code\": \"INN-01\",\n  \"description\": \"Research and development for new products\",\n  \"isActive\": true\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/departments",
@@ -949,7 +949,7 @@
             {
               "name": "Update Department",
               "request": {
-                "method": "PATCH",
+                "method": "PUT",
                 "header": [
                   {
                     "key": "Authorization",
@@ -1006,6 +1006,104 @@
                       "value": "1"
                     }
                   ]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Assets",
+          "item": [
+            {
+              "name": "List Assets",
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                  { "key": "x-tenant-id", "value": "{{tenantId}}" }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/assets",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["assets"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Get Asset",
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                  { "key": "x-tenant-id", "value": "{{tenantId}}" }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/assets/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["assets", ":id"],
+                  "variable": [{ "key": "id", "value": "1" }]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Create Asset",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                  { "key": "x-tenant-id", "value": "{{tenantId}}" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"assetId\": \"AST-001\",\n  \"categoryId\": \"uuid-from-settings\",\n  \"serialNumber\": \"SN123456\",\n  \"employeeId\": 1,\n  \"condition\": \"New\",\n  \"status\": \"Issued\",\n  \"issueDate\": \"2026-05-11\",\n  \"notes\": \"Premium setup\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/assets",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["assets"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Update Asset",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                  { "key": "x-tenant-id", "value": "{{tenantId}}" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"categoryId\": \"uuid-from-settings\",\n  \"condition\": \"Good\",\n  \"status\": \"Available\",\n  \"notes\": \"Returned in good condition\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/assets/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["assets", ":id"],
+                  "variable": [{ "key": "id", "value": "1" }]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Delete Asset",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                  { "key": "x-tenant-id", "value": "{{tenantId}}" }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/assets/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["assets", ":id"],
+                  "variable": [{ "key": "id", "value": "1" }]
                 }
               },
               "response": []

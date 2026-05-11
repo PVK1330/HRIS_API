@@ -10,15 +10,9 @@ async function findAll(pool) {
       d.name, 
       d.code, 
       d.description, 
-      d.location, 
-      d.budget, 
       d.is_active,
-      d.manager_id,
-      d.head_name,
-      COALESCE(e.full_name, d.head_name) as head,
       (SELECT COUNT(*) FROM employees WHERE department_id = d.id) as employee_count
     FROM departments d
-    LEFT JOIN employees e ON e.id = d.manager_id
     ORDER BY d.name ASC
   `);
   return rows.map(r => ({
@@ -33,9 +27,8 @@ async function findAll(pool) {
  */
 async function findById(pool, id) {
   const { rows } = await pool.query(`
-    SELECT d.*, COALESCE(e.full_name, d.head_name) as head
+    SELECT d.*
     FROM departments d
-    LEFT JOIN employees e ON e.id = d.manager_id
     WHERE d.id = $1
   `, [id]);
   return rows[0] || null;
@@ -45,12 +38,12 @@ async function findById(pool, id) {
  * Create a new department
  */
 async function create(pool, data) {
-  const { name, code, description, managerId, headName, location, budget, isActive } = data;
+  const { name, code, description, isActive } = data;
   const { rows } = await pool.query(`
-    INSERT INTO departments (name, code, description, manager_id, head_name, location, budget, is_active)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    INSERT INTO departments (name, code, description, is_active)
+    VALUES ($1, $2, $3, $4)
     RETURNING *
-  `, [name, code, description, managerId || null, headName || null, location, budget || 0, isActive !== false]);
+  `, [name, code, description, isActive !== false]);
   return rows[0];
 }
 
@@ -58,22 +51,18 @@ async function create(pool, data) {
  * Update an existing department
  */
 async function update(pool, id, data) {
-  const { name, code, description, managerId, headName, location, budget, isActive } = data;
+  const { name, code, description, isActive } = data;
   const { rows } = await pool.query(`
     UPDATE departments
     SET 
       name = COALESCE($2, name),
       code = COALESCE($3, code),
       description = COALESCE($4, description),
-      manager_id = $5,
-      head_name = $6,
-      location = COALESCE($7, location),
-      budget = COALESCE($8, budget),
-      is_active = COALESCE($9, is_active),
+      is_active = COALESCE($5, is_active),
       updated_at = NOW()
     WHERE id = $1
     RETURNING *
-  `, [id, name, code, description, managerId, headName, location, budget, isActive]);
+  `, [id, name, code, description, isActive]);
   return rows[0] || null;
 }
 

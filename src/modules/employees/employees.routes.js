@@ -7,8 +7,8 @@ const { authenticate, requireRole } = require('../../middlewares/auth.middleware
 const ctrl = require('./employees.controller');
 
 // Sub-module routes
-const attendanceRoutes  = require('./attendance/attendance.routes');
-const leaveRoutes       = require('./leave/leave.routes');
+const { employeeRouter: attendanceEmpRoutes, adminRouter: attendanceAdminRoutes } = require('./attendance/attendance.routes');
+const { employeeRouter: leaveEmpRoutes,      adminRouter: leaveAdminRoutes }      = require('./leave/leave.routes');
 const documentsRoutes   = require('./documents/documents.routes');
 const performanceRoutes = require('./performance/performance.routes');
 const assetsRoutes      = require('./assets/assets.routes');
@@ -86,10 +86,13 @@ router.delete('/:id', requireRole('admin', 'hr_admin'), [
 ], validate, ctrl.remove);
 
 // ─── Employee sub-resources ───────────────────────────────────────────────────
-router.use('/:employeeId/attendance',  attendanceRoutes);
-router.use('/:employeeId/leave',       leaveRoutes);
+router.use('/:employeeId/attendance',  attendanceEmpRoutes);
+router.use('/:employeeId/leave',       leaveEmpRoutes);
 router.use('/:employeeId/documents',   documentsRoutes);
 router.use('/:employeeId/performance', performanceRoutes);
 router.use('/:employeeId/assets',      assetsRoutes);
 
+// ─── Admin-level attendance & leave (exported for app.js) ────────────────────
 module.exports = router;
+module.exports.attendanceAdminRoutes = attendanceAdminRoutes;
+module.exports.leaveAdminRoutes      = leaveAdminRoutes;

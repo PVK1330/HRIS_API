@@ -42,6 +42,23 @@ async function findById(pool, id) {
 }
 
 /**
+ * Get manager options from employees table
+ */
+async function findManagerOptions(pool) {
+  const { rows } = await pool.query(`
+    SELECT e.id, e.full_name
+    FROM employees e
+    WHERE e.deleted_at IS NULL
+    ORDER BY e.full_name ASC
+  `);
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.full_name
+  }));
+}
+
+/**
  * Create a new department
  */
 async function create(pool, data) {
@@ -65,8 +82,8 @@ async function update(pool, id, data) {
       name = COALESCE($2, name),
       code = COALESCE($3, code),
       description = COALESCE($4, description),
-      manager_id = $5,
-      head_name = $6,
+      manager_id = COALESCE($5, manager_id),
+      head_name = COALESCE($6, head_name),
       location = COALESCE($7, location),
       budget = COALESCE($8, budget),
       is_active = COALESCE($9, is_active),
@@ -88,6 +105,7 @@ async function remove(pool, id) {
 module.exports = {
   findAll,
   findById,
+  findManagerOptions,
   create,
   update,
   remove

@@ -13,6 +13,7 @@ const ApiError = require('../utils/ApiError');
 const UPLOADS_DIR = path.resolve(env.UPLOAD.dir);
 const LOGO_DIR = path.join(UPLOADS_DIR, 'logos');
 const TENANT_LOGO_DIR = path.join(UPLOADS_DIR, 'tenant-logos');
+const SUPERADMIN_LOGO_DIR = path.join(UPLOADS_DIR, 'superadmin-logos');
 const MAX_SIZE_MB = Math.round(env.UPLOAD.maxSize / (1024 * 1024)) || 2;
 const MAX_SIZE_BYTES = env.UPLOAD.maxSize;
 
@@ -57,7 +58,7 @@ const tenantLogoStorage = multer.diskStorage({
   },
   filename(req, file, cb) {
     const ext = path.extname(file.originalname).toLowerCase();
-    const tenantId = req.tenant?.id != null ? String(req.tenant.id) : 'tenant';
+    const tenantId = req.tenant?.id != null ? String(req.tenant.id) : 'unknown';
     cb(null, `${tenantId}-${Date.now()}${ext}`);
   },
 });
@@ -142,6 +143,58 @@ const uploader = multer({
   fileFilter,
 });
 
+function ensureSuperadminLogoDir() {
+  if (!fs.existsSync(SUPERADMIN_LOGO_DIR)) {
+    fs.mkdirSync(SUPERADMIN_LOGO_DIR, { recursive: true });
+  }
+}
+
+const superadminLogoStorage = multer.diskStorage({
+  destination(_req, _file, cb) {
+    try {
+      ensureSuperadminLogoDir();
+      cb(null, SUPERADMIN_LOGO_DIR);
+    } catch (err) {
+      cb(err);
+    }
+  },
+  filename(req, file, cb) {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const type = (req.params && req.params.type) || req.logoType || 'logo';
+    const safeType = String(type).replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'logo';
+    cb(null, `superadmin-${safeType}-${Date.now()}${ext}`);
+  },
+});
+
+const superadminLogoUploader = multer({
+  storage: superadminLogoStorage,
+  limits: { fileSize: MAX_SIZE_BYTES, files: 1 },
+  fileFilter,
+});
+
+/**
+ * Superadmin platform logos — stored under uploads/superadmin-logos/ (central DB only).
+ */
+function uploadSuperAdminLogo(type) {
+  const single = superadminLogoUploader.single('logo');
+  return function uploadSuperAdminLogoMiddleware(req, res, next) {
+    req.logoType = type;
+    single(req, res, function handleMulter(err) {
+      if (!err) return next();
+      if (err instanceof ApiError) return next(err);
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return next(
+            new ApiError(400, `File is too large. Max size is ${MAX_SIZE_MB}MB`)
+          );
+        }
+        return next(new ApiError(400, `Upload error: ${err.message}`));
+      }
+      return next(new ApiError(400, err.message || 'File upload failed'));
+    });
+  };
+}
+
 /**
  * Express middleware factory: returns a handler that uploads a single file
  * under field name `logo`, transforms multer errors into ApiError instances,
@@ -192,9 +245,11 @@ function uploadFile(fieldName, type = 'document') {
 
 module.exports = {
   uploadLogo,
+  uploadSuperAdminLogo,
   uploadTenantLogo,
   uploadFile,
   LOGO_DIR,
   TENANT_LOGO_DIR,
+  SUPERADMIN_LOGO_DIR,
   MAX_SIZE_MB,
 };

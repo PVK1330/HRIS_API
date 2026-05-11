@@ -12,9 +12,35 @@ const router = Router();
 
 router.use(authenticate, tenantResolver);
 
+function requireTenantContext(req, _res, next) {
+  if (!req.tenant?.dbName) {
+    return next(new ApiError(401, 'Tenant context missing'));
+  }
+  next();
+}
+
+router.use(requireTenantContext);
+
 const rbacRoutes = require('../rbac/rbac.routes');
 
 router.use('/rbac', rbacRoutes);
+
+const TENANT_LOGO_VIEW_ROLES = new Set([
+  'admin',
+  'hr_admin',
+  'hr_executive',
+  'manager',
+  'employee',
+]);
+
+const tenantStaffMayViewLogo = (req, res, next) => {
+  if (!TENANT_LOGO_VIEW_ROLES.has(req.user.role)) {
+    return next(new ApiError(403, 'Access denied.'));
+  }
+  next();
+};
+
+router.get('/logo', tenantStaffMayViewLogo, controller.getLogo);
 
 const adminOnly = (req, res, next) => {
   if (req.user.role !== 'admin') {

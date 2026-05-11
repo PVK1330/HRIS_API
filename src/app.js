@@ -76,6 +76,10 @@ const TENANT_LOGOS_DIR = path.join(UPLOADS_DIR, 'tenant-logos');
 if (!fs.existsSync(TENANT_LOGOS_DIR)) {
   fs.mkdirSync(TENANT_LOGOS_DIR, { recursive: true });
 }
+const SUPERADMIN_LOGOS_DIR = path.join(UPLOADS_DIR, 'superadmin-logos');
+if (!fs.existsSync(SUPERADMIN_LOGOS_DIR)) {
+  fs.mkdirSync(SUPERADMIN_LOGOS_DIR, { recursive: true });
+}
 app.use('/uploads', express.static(UPLOADS_DIR, {
   fallthrough: true,
   maxAge: '1d',
@@ -85,6 +89,15 @@ app.use('/uploads', express.static(UPLOADS_DIR, {
 app.use(
   '/uploads/tenant-logos',
   express.static(TENANT_LOGOS_DIR, {
+    fallthrough: true,
+    maxAge: '1d',
+    index: false,
+  }),
+);
+
+app.use(
+  '/uploads/superadmin-logos',
+  express.static(SUPERADMIN_LOGOS_DIR, {
     fallthrough: true,
     maxAge: '1d',
     index: false,

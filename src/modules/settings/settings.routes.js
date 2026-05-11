@@ -5,7 +5,7 @@ const { body, param } = require('express-validator');
 
 const validate = require('../../middlewares/validate.middleware');
 const { authenticate, requireRole } = require('../../middlewares/auth.middleware');
-const { uploadLogo } = require('../../middlewares/upload.middleware');
+const { uploadSuperAdminLogo } = require('../../middlewares/upload.middleware');
 const controller = require('./settings.controller');
 
 const router = Router();
@@ -123,9 +123,9 @@ router.put('/email/templates/:slug',
 
 /* -------------------- Logo Upload -------------------- */
 
-router.post('/logo/large',   uploadLogo('large'),   controller.uploadLargeLogo);
-router.post('/logo/small',   uploadLogo('small'),   controller.uploadSmallLogo);
-router.post('/logo/favicon', uploadLogo('favicon'), controller.uploadFavicon);
+router.post('/logo/large',   uploadSuperAdminLogo('large'),   controller.uploadLargeLogo);
+router.post('/logo/small',   uploadSuperAdminLogo('small'),   controller.uploadSmallLogo);
+router.post('/logo/favicon', uploadSuperAdminLogo('favicon'), controller.uploadFavicon);
 router.get('/logo', controller.getLogos);
 
 /* -------------------- System Info -------------------- */

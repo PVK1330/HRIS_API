@@ -32,7 +32,7 @@ async function tenantResolver(req, _res, next) {
     }
 
     if (!tenantIdentifier) {
-      return next(new ApiError(400, 'Tenant identifier required'));
+      return next(new ApiError(401, 'Tenant context missing'));
     }
 
     // Validate format before querying

@@ -168,16 +168,23 @@ const LOGO_KEY_BY_TYPE = {
 // /uploads static server use. Otherwise a wrong-path delete-on-overwrite would
 // silently no-op while real files pile up.
 const LOGO_DIR = path.join(path.resolve(env.UPLOAD.dir), 'logos');
+const SUPERADMIN_LOGO_DIR = path.join(path.resolve(env.UPLOAD.dir), 'superadmin-logos');
 
 function publicLogoPath(filename) {
-  return `/uploads/logos/${filename}`;
+  return `/uploads/superadmin-logos/${filename}`;
 }
 
-function absoluteLogoFsPath(relativeOrFilename) {
-  if (!relativeOrFilename) return null;
-  // Stored as e.g. "/uploads/logos/large-1700000000000.png"
-  const trimmed = relativeOrFilename.replace(/^\/+/, '');
-  return path.join(__dirname, '..', '..', '..', 'src', trimmed);
+function resolveStoredLogoPathForUnlink(storedValue) {
+  if (!storedValue) return null;
+  const s = String(storedValue);
+  const base = path.basename(s);
+  if (s.includes('superadmin-logos')) {
+    return path.join(SUPERADMIN_LOGO_DIR, base);
+  }
+  if (s.includes('/tenant-logos/')) {
+    return path.join(path.resolve(env.UPLOAD.dir), 'tenant-logos', base);
+  }
+  return path.join(LOGO_DIR, base);
 }
 
 function safeUnlink(absPath) {
@@ -207,7 +214,7 @@ async function saveLogo(type, file) {
   // Delete previous file (best-effort) before overwriting the setting.
   const previous = await repo.findSettingByKey(key);
   if (previous && previous.value) {
-    const oldAbs = path.join(LOGO_DIR, path.basename(previous.value));
+    const oldAbs = resolveStoredLogoPathForUnlink(previous.value);
     safeUnlink(oldAbs);
   }
 

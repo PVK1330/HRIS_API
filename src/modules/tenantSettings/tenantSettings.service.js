@@ -74,6 +74,26 @@ function mapToResponse(row) {
   };
 }
 
+function normalizeBaseUrl(baseUrl) {
+  if (!baseUrl || typeof baseUrl !== 'string') return '';
+  return baseUrl.replace(/\/+$/, '');
+}
+
+function toAbsoluteAssetUrl(relativeOrAbsolute, baseUrl) {
+  if (relativeOrAbsolute == null || relativeOrAbsolute === '') return null;
+  const s = String(relativeOrAbsolute).trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return s;
+  const base = normalizeBaseUrl(baseUrl);
+  if (!base) return s.startsWith('/') ? s : `/${s}`;
+  return `${base}${s.startsWith('/') ? s : `/${s}`}`;
+}
+
+function enrichLogoUrlField(mapped, baseUrl) {
+  if (!mapped || !mapped.logoUrl) return mapped;
+  return { ...mapped, logoUrl: toAbsoluteAssetUrl(mapped.logoUrl, baseUrl) };
+}
+
 function resolveUploadDiskPath(publicPath) {
   if (!publicPath || typeof publicPath !== 'string') return null;
   const trimmed = publicPath.trim();
@@ -190,7 +210,7 @@ function validatePartialUpdate(body) {
   }
 }
 
-async function getAdminSettings(dbName) {
+async function getAdminSettings(dbName, baseUrl) {
   const pool = getTenantPool(dbName);
   let row = await repository.getSettings(pool);
   if (!row) {
@@ -199,10 +219,10 @@ async function getAdminSettings(dbName) {
   if (!row) {
     throw ApiError.notFound('Tenant admin settings not found');
   }
-  return mapToResponse(row);
+  return enrichLogoUrlField(mapToResponse(row), baseUrl);
 }
 
-async function updateAdminSettings(dbName, body) {
+async function updateAdminSettings(dbName, body, baseUrl) {
   validatePartialUpdate(body || {});
   const fields = mapBodyToFields(body || {});
   const pool = getTenantPool(dbName);
@@ -210,10 +230,24 @@ async function updateAdminSettings(dbName, body) {
   if (!updated) {
     throw ApiError.notFound('Tenant admin settings not found');
   }
-  return mapToResponse(updated);
+  return enrichLogoUrlField(mapToResponse(updated), baseUrl);
 }
 
-async function uploadLogo(dbName, file) {
+async function getTenantLogo(dbName, baseUrl) {
+  const pool = getTenantPool(dbName);
+  let row = await repository.getSettings(pool);
+  if (!row) {
+    row = await repository.seedDefaultSettings(pool);
+  }
+  if (!row) {
+    throw ApiError.notFound('Tenant admin settings not found');
+  }
+  const rel = row.logo_url ? String(row.logo_url).trim() : '';
+  const logoUrl = rel ? toAbsoluteAssetUrl(rel, baseUrl) : null;
+  return { logoUrl, hasLogo: !!rel };
+}
+
+async function uploadLogo(dbName, file, baseUrl) {
   const pool = getTenantPool(dbName);
   const existingUrl = await repository.getExistingLogoUrl(pool);
 
@@ -224,17 +258,19 @@ async function uploadLogo(dbName, file) {
     }
   }
 
-  const logoUrl = `/uploads/tenant-logos/${file.filename}`;
-  const updated = await repository.updateLogoUrl(pool, logoUrl);
+  const relativePath = `/uploads/tenant-logos/${file.filename}`;
+  const updated = await repository.updateLogoUrl(pool, relativePath);
   if (!updated) {
     throw ApiError.notFound('Tenant admin settings not found');
   }
-  return { logoUrl: updated.logo_url };
+  const logoUrl = toAbsoluteAssetUrl(updated.logo_url, baseUrl);
+  return { logoUrl, hasLogo: true };
 }
 
 module.exports = {
   getAdminSettings,
   updateAdminSettings,
+  getTenantLogo,
   uploadLogo,
   VALID_TIMEZONES,
   VALID_WORK_CALENDARS,

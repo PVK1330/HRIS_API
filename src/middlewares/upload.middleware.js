@@ -16,7 +16,7 @@ const TENANT_LOGO_DIR = path.join(UPLOADS_DIR, 'tenant-logos');
 const MAX_SIZE_MB = Math.round(env.UPLOAD.maxSize / (1024 * 1024)) || 2;
 const MAX_SIZE_BYTES = env.UPLOAD.maxSize;
 
-const ALLOWED_EXT = new Set(['.png', '.jpg', '.jpeg', '.svg', '.ico']);
+const ALLOWED_EXT = new Set(['.png', '.jpg', '.jpeg', '.svg', '.ico', '.pdf', '.doc', '.docx', '.xls', '.xlsx']);
 const ALLOWED_MIME = new Set([
   'image/png',
   'image/jpeg',
@@ -24,6 +24,11 @@ const ALLOWED_MIME = new Set([
   'image/svg+xml',
   'image/x-icon',
   'image/vnd.microsoft.icon',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 ]);
 
 function ensureLogoDir() {
@@ -165,9 +170,30 @@ function uploadLogo(type) {
   };
 }
 
+function uploadFile(fieldName, type = 'document') {
+  const single = uploader.single(fieldName);
+  return function uploadFileMiddleware(req, res, next) {
+    req.logoType = type; // reusing storage logic that looks at req.logoType
+    single(req, res, function handleMulter(err) {
+      if (!err) return next();
+      if (err instanceof ApiError) return next(err);
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return next(
+            new ApiError(400, `File is too large. Max size is ${MAX_SIZE_MB}MB`)
+          );
+        }
+        return next(new ApiError(400, `Upload error: ${err.message}`));
+      }
+      return next(new ApiError(400, err.message || 'File upload failed'));
+    });
+  };
+}
+
 module.exports = {
   uploadLogo,
   uploadTenantLogo,
+  uploadFile,
   LOGO_DIR,
   TENANT_LOGO_DIR,
   MAX_SIZE_MB,

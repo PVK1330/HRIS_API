@@ -3,7 +3,7 @@
 const { Router } = require('express');
 const { body, param } = require('express-validator');
 const validate = require('../../middlewares/validate.middleware');
-const { authenticate, requireRole } = require('../../middlewares/auth.middleware');
+const { authenticate, requireRole, requirePermission } = require('../../middlewares/auth.middleware');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
 const ctrl = require('./departments.controller');
 
@@ -13,14 +13,13 @@ const router = Router();
 router.use(authenticate, tenantResolver);
 
 router.get('/', ctrl.list);
-router.get('/managers', ctrl.listManagers);
 
 router.get('/:id', [
   param('id').isInt().withMessage('ID must be an integer')
 ], validate, ctrl.getOne);
 
 router.post('/', [
-  requireRole('admin', 'hr_admin'),
+  requirePermission('departments'),
   body('name').notEmpty().withMessage('Name is required').trim(),
   body('status')
     .custom((value, { req }) => {
@@ -36,14 +35,12 @@ router.post('/', [
       return true;
     }),
   body('description').optional({ nullable: true }).isString().trim(),
-  body('managerId').optional({ nullable: true }).isInt(),
-  body('manager_id').optional({ nullable: true }).isInt(),
   body('isActive').optional().isBoolean(),
   body('is_active').optional().isBoolean()
 ], validate, ctrl.create);
 
 router.patch('/:id', [
-  requireRole('admin', 'hr_admin'),
+  requirePermission('departments'),
   param('id').isInt().withMessage('ID must be an integer'),
   body('name').optional().notEmpty().trim(),
   body('status')
@@ -56,14 +53,12 @@ router.patch('/:id', [
       return true;
     }),
   body('description').optional({ nullable: true }).isString().trim(),
-  body('managerId').optional({ nullable: true }).isInt(),
-  body('manager_id').optional({ nullable: true }).isInt(),
   body('isActive').optional().isBoolean(),
   body('is_active').optional().isBoolean()
 ], validate, ctrl.update);
 
 router.delete('/:id', [
-  requireRole('admin', 'hr_admin'),
+  requirePermission('departments'),
   param('id').isInt().withMessage('ID must be an integer')
 ], validate, ctrl.remove);
 

@@ -38,11 +38,6 @@ async function listDepartments(tenant) {
   return repo.findAll(pool);
 }
 
-async function listDepartmentManagers(tenant) {
-  const pool = await getTenantPool(tenant.dbName);
-  return repo.findManagerOptions(pool);
-}
-
 /**
  * Get a single department
  */
@@ -94,7 +89,6 @@ async function deleteDepartment(tenant, id) {
 
 module.exports = {
   listDepartments,
-  listDepartmentManagers,
   getDepartment,
   createDepartment,
   updateDepartment,

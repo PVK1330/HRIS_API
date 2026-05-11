@@ -1107,6 +1107,62 @@
                 }
               },
               "response": []
+            },
+            {
+              "name": "Policies",
+              "item": [
+                {
+                  "name": "List Policies",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                      { "key": "x-tenant-id", "value": "{{tenantId}}" }
+                    ],
+                    "url": {
+                      "raw": "{{baseUrl}}/policies",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["policies"]
+                    }
+                  }
+                },
+                {
+                  "name": "Create Policy",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                      { "key": "x-tenant-id", "value": "{{tenantId}}" },
+                      { "key": "Content-Type", "value": "application/json" }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"title\": \"Remote Work Policy 2026\",\n  \"category\": \"HR Policies\",\n  \"description\": \"Guidelines for working from home\",\n  \"effectiveDate\": \"2026-06-01\",\n  \"ackRequired\": true\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/policies",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["policies"]
+                    }
+                  }
+                },
+                {
+                  "name": "Get Compliance Tracking",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                      { "key": "x-tenant-id", "value": "{{tenantId}}" }
+                    ],
+                    "url": {
+                      "raw": "{{baseUrl}}/policies/:id/tracking",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["policies", ":id", "tracking"],
+                      "variable": [{ "key": "id", "value": "1" }]
+                    }
+                  }
+                }
+              ]
             }
           ]
         }

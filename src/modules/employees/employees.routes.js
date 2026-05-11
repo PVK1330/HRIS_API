@@ -6,6 +6,13 @@ const validate   = require('../../middlewares/validate.middleware');
 const { authenticate, requireRole } = require('../../middlewares/auth.middleware');
 const ctrl = require('./employees.controller');
 
+// Sub-module routes
+const attendanceRoutes  = require('./attendance/attendance.routes');
+const leaveRoutes       = require('./leave/leave.routes');
+const documentsRoutes   = require('./documents/documents.routes');
+const performanceRoutes = require('./performance/performance.routes');
+const assetsRoutes      = require('./assets/assets.routes');
+
 const router = Router();
 router.use(authenticate, requireRole('admin', 'hr_admin', 'hr_executive', 'manager'));
 
@@ -71,5 +78,12 @@ router.patch('/:id', requireRole('admin', 'hr_admin'), [
 router.delete('/:id', requireRole('admin', 'hr_admin'), [
   param('id').isInt({ min: 1 }),
 ], validate, ctrl.remove);
+
+// ─── Employee sub-resources ───────────────────────────────────────────────────
+router.use('/:employeeId/attendance',  attendanceRoutes);
+router.use('/:employeeId/leave',       leaveRoutes);
+router.use('/:employeeId/documents',   documentsRoutes);
+router.use('/:employeeId/performance', performanceRoutes);
+router.use('/:employeeId/assets',      assetsRoutes);
 
 module.exports = router;

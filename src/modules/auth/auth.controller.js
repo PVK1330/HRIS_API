@@ -35,8 +35,8 @@ const resetPassword = asyncHandler(async (req, res) => {
  * Login
  */
 const login = asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
-  const result = await authService.login(email, password);
+  const { email, password, tenantId } = req.body;
+  const result = await authService.login(email, password, { tenantId });
   return ApiResponse.ok(res, result, 'Login successful.');
 });
 

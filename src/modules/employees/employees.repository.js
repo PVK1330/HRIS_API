@@ -33,10 +33,13 @@ async function findAll(pool, {
        e.job_title, e.department, e.employment_type, e.employment_status,
        e.work_location, e.work_mode, e.join_date, e.profile_image_url,
        e.nationality, e.gender,
+       e.rbac_role_id,
+       rr.name AS rbac_role_name,
        m.full_name AS manager_name, m.emp_id AS manager_emp_id,
        TO_CHAR(e.created_at, 'DD/MM/YYYY') AS "createdAt",
        TO_CHAR(e.updated_at, 'DD/MM/YYYY') AS "updatedAt"
      FROM employees e
+     LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
      LEFT JOIN employees m ON m.id = e.reporting_manager_id AND m.deleted_at IS NULL
      ${where}
      ORDER BY e.full_name ASC
@@ -80,6 +83,7 @@ async function findById(pool, id) {
   const { rows } = await pool.query(
     `SELECT
        e.*,
+       rr.name AS rbac_role_name,
        m.full_name AS manager_name, m.emp_id AS manager_emp_id,
        TO_CHAR(e.date_of_birth,      'YYYY-MM-DD') AS date_of_birth,
        TO_CHAR(e.join_date,          'YYYY-MM-DD') AS join_date,
@@ -90,6 +94,7 @@ async function findById(pool, id) {
        TO_CHAR(e.created_at, 'DD/MM/YYYY') AS "createdAt",
        TO_CHAR(e.updated_at, 'DD/MM/YYYY') AS "updatedAt"
      FROM employees e
+     LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
      LEFT JOIN employees m ON m.id = e.reporting_manager_id AND m.deleted_at IS NULL
      WHERE e.id = $1 AND e.deleted_at IS NULL`,
     [id]
@@ -128,6 +133,7 @@ async function insert(pool, data) {
     passportNumber, passportExpiry, emiratesIdNumber, emiratesIdExpiry,
     visaType, visaExpiryDate, sponsoringEntity, countryOfResidence,
     profileImageUrl, bio, createdBy, careerHistory, awardsSummary, promotionHistory,
+    rbacRoleId, portalEnabled, passwordHash,
   } = data;
 
   const { rows } = await pool.query(
@@ -140,14 +146,16 @@ async function insert(pool, data) {
        passport_number, passport_expiry, emirates_id_number, emirates_id_expiry,
        visa_type, visa_expiry_date, sponsoring_entity, country_of_residence,
        profile_image_url, bio, created_by, updated_by,
-       career_history, awards_summary, promotion_history
+       career_history, awards_summary, promotion_history,
+       rbac_role_id, portal_enabled, password_hash
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
        $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,
-       $40,$41,$42
+       $40,$41,$42,$43,$44,$45
      )
      RETURNING id, emp_id, full_name, job_title, department, employment_status,
                work_email, work_location, work_mode,
+               rbac_role_id,
                TO_CHAR(join_date, 'YYYY-MM-DD') AS join_date,
                TO_CHAR(created_at, 'DD/MM/YYYY') AS "createdAt"`,
     [
@@ -166,8 +174,11 @@ async function insert(pool, data) {
       visaType || null, visaExpiryDate || null,                        // $32–$33
       sponsoringEntity || null, countryOfResidence || null,            // $34–$35
       profileImageUrl || null, bio || null,                            // $36–$37
-      createdBy || null, createdBy || null,                            // $38–$39 (created_by, updated_by)
+      createdBy || null, createdBy || null,                           // $38–$39
       careerHistory || null, awardsSummary || null, promotionHistory || null, // $40–$42
+      rbacRoleId ?? null,
+      portalEnabled ?? false,
+      passwordHash ?? null,
     ]
   );
   return rows[0];
@@ -187,6 +198,7 @@ async function update(pool, id, data) {
     'emirates_id_number', 'emirates_id_expiry', 'visa_type', 'visa_expiry_date',
     'sponsoring_entity', 'country_of_residence', 'profile_image_url', 'bio',
     'updated_by', 'career_history', 'awards_summary', 'promotion_history',
+    'rbac_role_id', 'portal_enabled', 'password_hash',
   ];
 
   // Map camelCase keys → snake_case column names
@@ -210,6 +222,9 @@ async function update(pool, id, data) {
     sponsoringEntity: 'sponsoring_entity', countryOfResidence: 'country_of_residence',
     profileImageUrl: 'profile_image_url', bio: 'bio', updatedBy: 'updated_by',
     careerHistory: 'career_history', awardsSummary: 'awards_summary', promotionHistory: 'promotion_history',
+    rbacRoleId: 'rbac_role_id',
+    portalEnabled: 'portal_enabled',
+    passwordHash: 'password_hash',
   };
 
   const fields = [];

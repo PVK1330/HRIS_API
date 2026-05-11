@@ -10,6 +10,12 @@ const controller = require('./tenantSettings.controller');
 
 const router = Router();
 
+router.use(authenticate, tenantResolver);
+
+const rbacRoutes = require('../rbac/rbac.routes');
+
+router.use('/rbac', rbacRoutes);
+
 const adminOnly = (req, res, next) => {
   if (req.user.role !== 'admin') {
     return next(new ApiError(403, 'Access denied. Admin role required.'));
@@ -17,7 +23,7 @@ const adminOnly = (req, res, next) => {
   next();
 };
 
-router.use(authenticate, tenantResolver, adminOnly);
+router.use(adminOnly);
 
 router.get('/', controller.getAdminSettings);
 router.put('/', controller.updateAdminSettings);

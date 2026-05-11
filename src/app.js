@@ -22,7 +22,7 @@ const freeTrialRoutes = require('./modules/freeTrial/freeTrial.routes');
 const accountSettingsRoutes = require('./modules/accountSettings/accountSettings.routes');
 const currencyRoutes = require('./modules/currency/currency.routes');
 const authRoutes = require('./modules/auth/auth.routes');
-const lettersRoutes   = require('./modules/letters/letters.routes');
+const lettersRoutes = require('./modules/letters/letters.routes');
 const employeesRoutes = require('./modules/employees/employees.routes');
 const tenantSettingsRoutes = require('./modules/tenantSettings/tenantSettings.routes');
 const attendanceSettingsRoutes = require('./modules/attendanceSettings/attendanceSettings.routes');
@@ -33,6 +33,7 @@ const documentSettingsRoutes = require('./modules/documentSettings/documentSetti
 const sensitiveDataRoutes = require('./modules/sensitiveData/sensitiveData.routes');
 const leaveSettingsRoutes = require('./modules/leaveSettings/leaveSettings.routes');
 const departmentsRoutes = require('./modules/departments/departments.routes');
+const designationsRoutes = require('./modules/designations/designations.routes');
 const publicOnboardingRoutes = require('./routes/public/onboardingRoutes');
 
 const { generalLimiter } = require('./middlewares/rateLimit.middleware');
@@ -50,7 +51,7 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 
-app.use(helmet({ 
+app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
   contentSecurityPolicy: env.NODE_ENV === 'production' ? undefined : false,
 }));
@@ -109,8 +110,8 @@ app.use('/api/v1/free-trial', freeTrialRoutes);
 app.use('/api/v1/account-settings', accountSettingsRoutes);
 app.use('/api/v1/currency', currencyRoutes);
 app.use('/api/v1/auth', authRoutes);
-app.use('/api/v1/letters',    lettersRoutes);
-app.use('/api/v1/employees',  employeesRoutes);
+app.use('/api/v1/letters', lettersRoutes);
+app.use('/api/v1/employees', employeesRoutes);
 app.use('/api/v1/admin/settings/assets', assetSettingsRoutes);
 app.use('/api/v1/admin/settings/attendance', attendanceSettingsRoutes);
 app.use('/api/v1/admin/settings/password-security', passwordSecurityRoutes);
@@ -120,6 +121,7 @@ app.use('/api/v1/admin/settings/sensitive-data', sensitiveDataRoutes);
 app.use('/api/v1/admin/settings/leave-types', leaveSettingsRoutes);
 app.use('/api/v1/departments', departmentsRoutes);
 app.use('/api/v1/assets', require('./modules/assets/assets.routes'));
+app.use('/api/v1/designations', designationsRoutes);
 app.use('/api/v1/admin/settings', tenantSettingsRoutes);
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
 

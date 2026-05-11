@@ -98,6 +98,146 @@
           ]
         },
         {
+          "name": "Admin Users",
+          "item": [
+            {
+              "name": "Get All Admin Users",
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{superadminToken}}" }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/admin-users",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "admin-users"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Create Admin User",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{superadminToken}}" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Support Admin\",\n  \"email\": \"support@hris.com\",\n  \"password\": \"SupportAdmin123\",\n  \"role\": \"support_admin\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/admin-users",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "admin-users"]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Permissions & Roles",
+          "item": [
+            {
+              "name": "Get Permissions",
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{superadminToken}}" }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/permissions",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "permissions"]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Announcements",
+          "item": [
+            {
+              "name": "Get Announcements",
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{superadminToken}}" }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/announcements",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "announcements"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Create Announcement",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{superadminToken}}" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"title\": \"System Maintenance\",\n  \"message\": \"We will have a maintenance window this Sunday.\",\n  \"audience\": \"all\",\n  \"type\": \"info\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/announcements",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "announcements"]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Support Tickets",
+          "item": [
+            {
+              "name": "Get All Tickets",
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{superadminToken}}" }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/support-tickets",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "support-tickets"]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Audit Logs",
+          "item": [
+            {
+              "name": "Get Audit Logs",
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{superadminToken}}" }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/superadmin/audit-logs",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["superadmin", "audit-logs"]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
           "name": "Features",
           "item": [
             {
@@ -487,6 +627,385 @@
                   "raw": "{{baseUrl}}/tenants/create",
                   "host": ["{{baseUrl}}"],
                   "path": ["tenants", "create"]
+                }
+              },
+              "response": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Tenant Admin",
+      "item": [
+        {
+          "name": "Authentication",
+          "item": [
+            {
+              "name": "Admin Login",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"admin@acme.com\",\n  \"password\": \"admin@acme.com\",\n  \"tenantId\": \"1\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/auth/login",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["auth", "login"]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Organization Settings",
+          "item": [
+            {
+              "name": "Get Settings",
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                  { "key": "x-tenant-id", "value": "{{tenantId}}" }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Update Settings",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                  { "key": "x-tenant-id", "value": "{{tenantId}}" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"timezone\": \"Asia/Dubai\",\n  \"dateFormat\": \"DD-MM-YYYY\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/admin/settings",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["admin", "settings"]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Employees",
+          "item": [
+            {
+              "name": "Get Employee Stats",
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                  { "key": "x-tenant-id", "value": "{{tenantId}}" }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/employees/stats",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["employees", "stats"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "List Employees",
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                  { "key": "x-tenant-id", "value": "{{tenantId}}" }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/employees?page=1&limit=10&search=&department=&status=Active",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["employees"],
+                  "query": [
+                    { "key": "page", "value": "1" },
+                    { "key": "limit", "value": "10" },
+                    { "key": "search", "value": "" },
+                    { "key": "department", "value": "" },
+                    { "key": "status", "value": "Active" }
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Create Employee",
+              "request": {
+                "method": "POST",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                  { "key": "x-tenant-id", "value": "{{tenantId}}" },
+                  { "key": "Content-Type", "value": "application/json" }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"empId\": \"EMP101\",\n  \"fullName\": \"Jane Doe\",\n  \"jobTitle\": \"Software Engineer\",\n  \"department\": \"IT\",\n  \"employmentType\": \"Full-time\",\n  \"joinDate\": \"2024-01-01\",\n  \"workEmail\": \"jane.doe@acme.com\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/employees",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["employees"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Get Attendance",
+              "request": {
+                "method": "GET",
+                "header": [
+                  { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                  { "key": "x-tenant-id", "value": "{{tenantId}}" }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/employees/:employeeId/attendance?year=2024&month=5",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["employees", ":employeeId", "attendance"],
+                  "query": [
+                    { "key": "year", "value": "2024" },
+                    { "key": "month", "value": "5" }
+                  ],
+                  "variable": [
+                    { "key": "employeeId", "value": "1" }
+                  ]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Admin Settings",
+          "item": [
+            {
+              "name": "Leave Types",
+              "item": [
+                {
+                  "name": "Get Leave Types",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                      { "key": "x-tenant-id", "value": "{{tenantId}}" }
+                    ],
+                    "url": {
+                      "raw": "{{baseUrl}}/admin/settings/leave-types",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["admin", "settings", "leave-types"]
+                    }
+                  },
+                  "response": []
+                }
+              ]
+            },
+            {
+              "name": "Attendance Settings",
+              "item": [
+                {
+                  "name": "Get Attendance Settings",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                      { "key": "x-tenant-id", "value": "{{tenantId}}" }
+                    ],
+                    "url": {
+                      "raw": "{{baseUrl}}/admin/settings/attendance",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["admin", "settings", "attendance"]
+                    }
+                  },
+                  "response": []
+                }
+              ]
+            },
+            {
+              "name": "Asset Settings",
+              "item": [
+                {
+                  "name": "Get Asset Settings",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+                      { "key": "x-tenant-id", "value": "{{tenantId}}" }
+                    ],
+                    "url": {
+                      "raw": "{{baseUrl}}/admin/settings/assets",
+                      "host": ["{{baseUrl}}"],
+                      "path": ["admin", "settings", "assets"]
+                    }
+                  },
+                  "response": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Departments",
+          "item": [
+            {
+              "name": "List Departments",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{adminToken}}"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/departments",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["departments"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Get Department",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{adminToken}}"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/departments/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["departments", ":id"],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "1"
+                    }
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Create Department",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{adminToken}}"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Innovation Lab\",\n  \"code\": \"INN-01\",\n  \"description\": \"Research and development for new products\",\n  \"location\": \"Dubai HQ\",\n  \"isActive\": true\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/departments",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["departments"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Update Department",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{adminToken}}"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Innovation & Strategy\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/departments/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["departments", ":id"],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "1"
+                    }
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Delete Department",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{adminToken}}"
+                  },
+                  {
+                    "key": "x-tenant-id",
+                    "value": "{{tenantId}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/departments/:id",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["departments", ":id"],
+                  "variable": [
+                    {
+                      "key": "id",
+                      "value": "1"
+                    }
+                  ]
                 }
               },
               "response": []

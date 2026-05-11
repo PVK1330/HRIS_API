@@ -15,6 +15,7 @@ const COLUMN_KEYS = new Set([
   'default_probation_period',
   'default_notice_period',
   'auto_assign_policies',
+  'locations',
 ]);
 
 async function getSettings(pool) {
@@ -43,9 +44,9 @@ async function updateSettings(pool, fields) {
   let i = 1;
 
   for (const k of keys) {
-    if (k === 'working_days') {
-      fragments.push(`working_days = $${i}::jsonb`);
-      values.push(JSON.stringify(fields.working_days));
+    if (k === 'working_days' || k === 'locations') {
+      fragments.push(`${k} = $${i}::jsonb`);
+      values.push(JSON.stringify(fields[k]));
     } else {
       fragments.push(`${k} = $${i}`);
       values.push(fields[k]);

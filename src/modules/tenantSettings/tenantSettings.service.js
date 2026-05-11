@@ -48,6 +48,7 @@ const CAMEL_TO_SNAKE = {
   defaultProbationPeriod: 'default_probation_period',
   defaultNoticePeriod: 'default_notice_period',
   autoAssignPolicies: 'auto_assign_policies',
+  locations: 'locations',
 };
 
 function mapToResponse(row) {
@@ -68,6 +69,7 @@ function mapToResponse(row) {
     defaultProbationPeriod: row.default_probation_period,
     defaultNoticePeriod: row.default_notice_period,
     autoAssignPolicies: row.auto_assign_policies,
+    locations: row.locations || [],
     updatedAt: row.updated_at,
   };
 }
@@ -105,6 +107,7 @@ function mapBodyToFields(body) {
     'default_probation_period',
     'default_notice_period',
     'auto_assign_policies',
+    'locations',
   ];
 
   for (const key of passthrough) {

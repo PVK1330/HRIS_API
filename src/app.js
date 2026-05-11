@@ -32,6 +32,7 @@ const notificationSettingsRoutes = require('./modules/notificationSettings/notif
 const documentSettingsRoutes = require('./modules/documentSettings/documentSettings.routes');
 const sensitiveDataRoutes = require('./modules/sensitiveData/sensitiveData.routes');
 const leaveSettingsRoutes = require('./modules/leaveSettings/leaveSettings.routes');
+const departmentsRoutes = require('./modules/departments/departments.routes');
 const publicOnboardingRoutes = require('./routes/public/onboardingRoutes');
 
 const { generalLimiter } = require('./middlewares/rateLimit.middleware');
@@ -117,6 +118,7 @@ app.use('/api/v1/admin/settings/notifications', notificationSettingsRoutes);
 app.use('/api/v1/admin/settings/documents', documentSettingsRoutes);
 app.use('/api/v1/admin/settings/sensitive-data', sensitiveDataRoutes);
 app.use('/api/v1/admin/settings/leave-types', leaveSettingsRoutes);
+app.use('/api/v1/departments', departmentsRoutes);
 app.use('/api/v1/admin/settings', tenantSettingsRoutes);
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
 

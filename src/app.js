@@ -139,6 +139,7 @@ app.use('/api/v1/departments', departmentsRoutes);
 app.use('/api/v1/assets', require('./modules/assets/assets.routes'));
 app.use('/api/v1/policies', require('./modules/policies/policies.routes'));
 app.use('/api/v1/designations', designationsRoutes);
+app.use('/api/v1/admin/announcements', require('./modules/announcements/announcements.routes'));
 app.use('/api/v1/admin/settings', tenantSettingsRoutes);
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
 

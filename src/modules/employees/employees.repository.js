@@ -140,7 +140,11 @@ async function findById(pool, id) {
      WHERE e.id = $1 AND e.deleted_at IS NULL`,
     [id],
   );
-  return rows[0] || null;
+  const emp = rows[0] || null;
+  if (!emp) return null;
+
+  const sections = await getEmployeeSections(pool, id);
+  return { ...emp, ...sections };
 }
 
 async function findByEmpId(pool, empId) {
@@ -208,7 +212,27 @@ async function insert(pool, data) {
     rbacRoleId,
     portalEnabled,
     passwordHash,
+    username,
+    religion,
+    employmentSpouse,
+    bankName,
+    bankAccountNo,
+    ifscCode,
+    branchAddress,
+    familyMembers,
+    secondaryContact,
+    education,
+    workExperience,
+    isCurrentlyWorking,
   } = data;
+
+  const fm = Array.isArray(familyMembers) ? familyMembers : [];
+  const sc =
+    secondaryContact && typeof secondaryContact === "object" && !Array.isArray(secondaryContact)
+      ? secondaryContact
+      : {};
+  const edu = Array.isArray(education) ? education : [];
+  const wx = Array.isArray(workExperience) ? workExperience : [];
 
   const { rows } = await pool.query(
     `INSERT INTO employees (
@@ -221,11 +245,13 @@ async function insert(pool, data) {
        visa_type, visa_expiry_date, sponsoring_entity, country_of_residence,
        profile_image_url, bio, created_by, updated_by,
        career_history, awards_summary, promotion_history,
-       rbac_role_id, portal_enabled, password_hash
+       rbac_role_id, portal_enabled, password_hash,
+       username, religion, employment_spouse, bank_name, bank_account_no, ifsc_code, branch_address,
+       family_members, secondary_contact, education, work_experience, is_currently_working
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
        $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,
-       $40,$41,$42,$43,$44,$45
+       $40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57
      )
      RETURNING id, emp_id, full_name, job_title, department, employment_status,
                work_email, work_location, work_mode,
@@ -278,6 +304,32 @@ async function insert(pool, data) {
       rbacRoleId ?? null,
       portalEnabled ?? false,
       passwordHash ?? null,
+      username != null && String(username).trim() !== ""
+        ? String(username).trim()
+        : null,
+      religion != null && String(religion).trim() !== ""
+        ? String(religion).trim()
+        : null,
+      employmentSpouse != null && String(employmentSpouse).trim() !== ""
+        ? String(employmentSpouse).trim()
+        : null,
+      bankName != null && String(bankName).trim() !== ""
+        ? String(bankName).trim()
+        : null,
+      bankAccountNo != null && String(bankAccountNo).trim() !== ""
+        ? String(bankAccountNo).trim()
+        : null,
+      ifscCode != null && String(ifscCode).trim() !== ""
+        ? String(ifscCode).trim()
+        : null,
+      branchAddress != null && String(branchAddress).trim() !== ""
+        ? String(branchAddress).trim()
+        : null,
+      JSON.stringify(fm),
+      JSON.stringify(sc),
+      JSON.stringify(edu),
+      JSON.stringify(wx),
+      Boolean(isCurrentlyWorking),
     ],
   );
   return rows[0];
@@ -328,6 +380,18 @@ async function update(pool, id, data) {
     "rbac_role_id",
     "portal_enabled",
     "password_hash",
+    "username",
+    "religion",
+    "employment_spouse",
+    "bank_name",
+    "bank_account_no",
+    "ifsc_code",
+    "branch_address",
+    "family_members",
+    "secondary_contact",
+    "education",
+    "work_experience",
+    "is_currently_working",
   ];
 
   const camelToSnake = {
@@ -374,6 +438,18 @@ async function update(pool, id, data) {
     rbacRoleId: "rbac_role_id",
     portalEnabled: "portal_enabled",
     passwordHash: "password_hash",
+    username: "username",
+    religion: "religion",
+    employmentSpouse: "employment_spouse",
+    bankName: "bank_name",
+    bankAccountNo: "bank_account_no",
+    ifscCode: "ifsc_code",
+    branchAddress: "branch_address",
+    familyMembers: "family_members",
+    secondaryContact: "secondary_contact",
+    education: "education",
+    workExperience: "work_experience",
+    isCurrentlyWorking: "is_currently_working",
   };
 
   const fields = [];
@@ -381,7 +457,22 @@ async function update(pool, id, data) {
 
   for (const [key, col] of Object.entries(camelToSnake)) {
     if (key in data && allowed.includes(col)) {
-      params.push(data[key] ?? null);
+      let val = data[key] ?? null;
+      if (col === "family_members" || col === "education" || col === "work_experience") {
+        val = Array.isArray(val) ? val : [];
+        val = JSON.stringify(val);
+      }
+      if (col === "secondary_contact") {
+        val =
+          val && typeof val === "object" && !Array.isArray(val)
+            ? val
+            : {};
+        val = JSON.stringify(val);
+      }
+      if (col === "is_currently_working") {
+        val = Boolean(val);
+      }
+      params.push(val);
       fields.push(`${col} = $${params.length}`);
     }
   }
@@ -446,6 +537,245 @@ async function getStats(pool) {
   return rows[0];
 }
 
+async function getEmployeeSections(pool, employeeId) {
+  const [docs, bank, addresses, emergency, experience, education, salary] =
+    await Promise.all([
+      pool.query(
+        `SELECT id, document_type, document_name, document_number,
+                TO_CHAR(issued_date, 'YYYY-MM-DD') AS issued_date,
+                TO_CHAR(expiry_date, 'YYYY-MM-DD') AS expiry_date,
+                file_url, notes
+         FROM employee_documents
+         WHERE employee_id = $1
+         ORDER BY id ASC`,
+        [employeeId],
+      ),
+      pool.query(
+        `SELECT bank_name, account_holder, account_number, ifsc_code, swift_code, iban, branch_name, branch_address
+         FROM employee_bank_details
+         WHERE employee_id = $1
+         LIMIT 1`,
+        [employeeId],
+      ),
+      pool.query(
+        `SELECT id, address_type, line1, line2, city, state, country, postal_code, is_primary
+         FROM employee_addresses
+         WHERE employee_id = $1
+         ORDER BY is_primary DESC, id ASC`,
+        [employeeId],
+      ),
+      pool.query(
+        `SELECT id, contact_name, relationship, phone_primary, phone_secondary, email, address, is_primary
+         FROM employee_emergency_contacts
+         WHERE employee_id = $1
+         ORDER BY is_primary DESC, id ASC`,
+        [employeeId],
+      ),
+      pool.query(
+        `SELECT id, company_name, designation,
+                TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date,
+                TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date,
+                is_current, notes
+         FROM employee_experience
+         WHERE employee_id = $1
+         ORDER BY id ASC`,
+        [employeeId],
+      ),
+      pool.query(
+        `SELECT id, institution_name, course_name, specialization,
+                TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date,
+                TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date,
+                grade
+         FROM employee_education
+         WHERE employee_id = $1
+         ORDER BY id ASC`,
+        [employeeId],
+      ),
+      pool.query(
+        `SELECT currency, basic_salary, allowances, deductions, net_salary, payment_frequency,
+                TO_CHAR(effective_from, 'YYYY-MM-DD') AS effective_from
+         FROM employee_salary
+         WHERE employee_id = $1
+         LIMIT 1`,
+        [employeeId],
+      ),
+    ]);
+
+  return {
+    documents: docs.rows,
+    bank_details: bank.rows[0] || null,
+    addresses: addresses.rows,
+    emergency_contacts: emergency.rows,
+    experiences: experience.rows,
+    education_details: education.rows,
+    salary_details: salary.rows[0] || null,
+  };
+}
+
+async function syncEmployeeSections(pool, employeeId, data = {}) {
+  const {
+    documents = [],
+    bankDetails = null,
+    addresses = [],
+    emergencyContacts = [],
+    educationDetails = [],
+    experienceDetails = [],
+    salaryDetails = null,
+  } = data;
+
+  if (Array.isArray(documents)) {
+    await pool.query(`DELETE FROM employee_documents WHERE employee_id = $1`, [employeeId]);
+    for (const d of documents) {
+      await pool.query(
+        `INSERT INTO employee_documents
+          (employee_id, document_type, document_name, document_number, issued_date, expiry_date, file_url, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [
+          employeeId,
+          d?.documentType || null,
+          d?.documentName || null,
+          d?.documentNumber || null,
+          d?.issuedDate || null,
+          d?.expiryDate || null,
+          d?.fileUrl || null,
+          d?.notes || null,
+        ],
+      );
+    }
+  }
+
+  if (bankDetails && typeof bankDetails === "object") {
+    await pool.query(
+      `INSERT INTO employee_bank_details
+        (employee_id, bank_name, account_holder, account_number, ifsc_code, swift_code, iban, branch_name, branch_address)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (employee_id) DO UPDATE SET
+         bank_name=EXCLUDED.bank_name, account_holder=EXCLUDED.account_holder,
+         account_number=EXCLUDED.account_number, ifsc_code=EXCLUDED.ifsc_code,
+         swift_code=EXCLUDED.swift_code, iban=EXCLUDED.iban,
+         branch_name=EXCLUDED.branch_name, branch_address=EXCLUDED.branch_address,
+         updated_at=NOW()`,
+      [
+        employeeId,
+        bankDetails.bankName || null,
+        bankDetails.accountHolder || null,
+        bankDetails.accountNumber || null,
+        bankDetails.ifscCode || null,
+        bankDetails.swiftCode || null,
+        bankDetails.iban || null,
+        bankDetails.branchName || null,
+        bankDetails.branchAddress || null,
+      ],
+    );
+  }
+
+  if (Array.isArray(addresses)) {
+    await pool.query(`DELETE FROM employee_addresses WHERE employee_id = $1`, [employeeId]);
+    for (const a of addresses) {
+      await pool.query(
+        `INSERT INTO employee_addresses
+          (employee_id, address_type, line1, line2, city, state, country, postal_code, is_primary)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          employeeId,
+          a?.addressType || "home",
+          a?.line1 || null,
+          a?.line2 || null,
+          a?.city || null,
+          a?.state || null,
+          a?.country || null,
+          a?.postalCode || null,
+          Boolean(a?.isPrimary),
+        ],
+      );
+    }
+  }
+
+  if (Array.isArray(emergencyContacts)) {
+    await pool.query(`DELETE FROM employee_emergency_contacts WHERE employee_id = $1`, [employeeId]);
+    for (const c of emergencyContacts) {
+      await pool.query(
+        `INSERT INTO employee_emergency_contacts
+          (employee_id, contact_name, relationship, phone_primary, phone_secondary, email, address, is_primary)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [
+          employeeId,
+          c?.contactName || null,
+          c?.relationship || null,
+          c?.phonePrimary || null,
+          c?.phoneSecondary || null,
+          c?.email || null,
+          c?.address || null,
+          Boolean(c?.isPrimary),
+        ],
+      );
+    }
+  }
+
+  if (Array.isArray(educationDetails)) {
+    await pool.query(`DELETE FROM employee_education WHERE employee_id = $1`, [employeeId]);
+    for (const e of educationDetails) {
+      await pool.query(
+        `INSERT INTO employee_education
+          (employee_id, institution_name, course_name, specialization, start_date, end_date, grade)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [
+          employeeId,
+          e?.institutionName || null,
+          e?.courseName || null,
+          e?.specialization || null,
+          e?.startDate || null,
+          e?.endDate || null,
+          e?.grade || null,
+        ],
+      );
+    }
+  }
+
+  if (Array.isArray(experienceDetails)) {
+    await pool.query(`DELETE FROM employee_experience WHERE employee_id = $1`, [employeeId]);
+    for (const ex of experienceDetails) {
+      await pool.query(
+        `INSERT INTO employee_experience
+          (employee_id, company_name, designation, start_date, end_date, is_current, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [
+          employeeId,
+          ex?.companyName || null,
+          ex?.designation || null,
+          ex?.startDate || null,
+          ex?.endDate || null,
+          Boolean(ex?.isCurrent),
+          ex?.notes || null,
+        ],
+      );
+    }
+  }
+
+  if (salaryDetails && typeof salaryDetails === "object") {
+    await pool.query(
+      `INSERT INTO employee_salary
+        (employee_id, currency, basic_salary, allowances, deductions, net_salary, payment_frequency, effective_from)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (employee_id) DO UPDATE SET
+         currency=EXCLUDED.currency, basic_salary=EXCLUDED.basic_salary, allowances=EXCLUDED.allowances,
+         deductions=EXCLUDED.deductions, net_salary=EXCLUDED.net_salary,
+         payment_frequency=EXCLUDED.payment_frequency, effective_from=EXCLUDED.effective_from,
+         updated_at=NOW()`,
+      [
+        employeeId,
+        salaryDetails.currency || "AED",
+        salaryDetails.basicSalary ?? null,
+        salaryDetails.allowances ?? null,
+        salaryDetails.deductions ?? null,
+        salaryDetails.netSalary ?? null,
+        salaryDetails.paymentFrequency || null,
+        salaryDetails.effectiveFrom || null,
+      ],
+    );
+  }
+}
+
 module.exports = {
   findAll,
   countAll,
@@ -457,4 +787,6 @@ module.exports = {
   softDelete,
   getFilterOptions,
   getStats,
+  getEmployeeSections,
+  syncEmployeeSections,
 };

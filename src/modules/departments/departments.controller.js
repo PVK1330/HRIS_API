@@ -5,8 +5,13 @@ const ApiResponse = require('../../utils/ApiResponse');
 const service = require('./departments.service');
 
 const list = asyncHandler(async (req, res) => {
-  const departments = await service.listDepartments(req.tenant);
-  return ApiResponse.ok(res, departments, 'Departments retrieved successfully');
+  const result = await service.listDepartments(req.tenant, req.query);
+  return ApiResponse.ok(res, result, 'Departments retrieved successfully');
+});
+
+const listManagers = asyncHandler(async (req, res) => {
+  const managers = await service.listDepartmentManagers(req.tenant);
+  return ApiResponse.ok(res, managers, 'Managers retrieved successfully');
 });
 
 const getOne = asyncHandler(async (req, res) => {
@@ -26,13 +31,14 @@ const update = asyncHandler(async (req, res) => {
 
 const remove = asyncHandler(async (req, res) => {
   await service.deleteDepartment(req.tenant, req.params.id);
-  return ApiResponse.ok(res, null, 'Department deleted successfully');
+  return ApiResponse.ok(res, null, 'Department archived successfully');
 });
 
 module.exports = {
   list,
+  listManagers,
   getOne,
   create,
   update,
-  remove
+  remove,
 };

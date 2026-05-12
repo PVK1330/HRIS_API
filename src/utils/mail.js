@@ -7,13 +7,22 @@ const logger = require('./logger');
 /**
  * Mail Utility using Nodemailer
  */
+const mailHost = process.env.MAIL_HOST || process.env.EMAIL_HOST || 'smtp.gmail.com';
+const mailPort = parseInt(process.env.MAIL_PORT || process.env.EMAIL_PORT, 10) || 587;
+const mailUser = process.env.MAIL_USER || process.env.EMAIL_USER;
+const mailPass = process.env.MAIL_PASS || process.env.EMAIL_PASS;
+const mailFromAddr =
+  process.env.MAIL_FROM ||
+  process.env.EMAIL_FROM_ADDRESS ||
+  process.env.EMAIL_USER;
+
 const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.EMAIL_PORT, 10) || 587,
-  secure: (process.env.EMAIL_SECURE === 'true'), 
+  host: mailHost,
+  port: mailPort,
+  secure: process.env.MAIL_SECURE === 'true' || process.env.EMAIL_SECURE === 'true',
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
+    user: mailUser,
+    pass: mailPass,
   },
 });
 
@@ -24,7 +33,7 @@ const transporter = nodemailer.createTransport({
 async function sendMail({ to, subject, html, text }) {
   try {
     const info = await transporter.sendMail({
-      from: `"${process.env.EMAIL_FROM_NAME || 'HRIS Support'}" <${process.env.EMAIL_FROM_ADDRESS || process.env.EMAIL_USER}>`,
+      from: `"${process.env.EMAIL_FROM_NAME || process.env.MAIL_FROM_NAME || 'HRIS Support'}" <${mailFromAddr}>`,
       to,
       subject,
       text,

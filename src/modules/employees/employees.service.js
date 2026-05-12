@@ -6,8 +6,20 @@ const env = require("../../config/env");
 const bcrypt = require("bcrypt");
 
 const ApiError = require("../../utils/ApiError");
+const logger = require("../../utils/logger");
+const { sendMail } = require("../../utils/mail");
+const { buildEmployeeWelcomeHtml } = require("../../utils/employeeWelcomeEmail");
+const { sanitizeEmployeePayload } = require("../../utils/sanitize");
 const { runTenantMigrations } = require("../tenant/tenant.service");
 const repo = require("./employees.repository");
+
+function omitPassword(obj) {
+  if (!obj || typeof obj !== "object") return obj;
+  const o = { ...obj };
+  delete o.password_hash;
+  delete o.passwordHash;
+  return o;
+}
 
 const _migrationCache = new Map();
 async function ensureMigrated(dbName) {
@@ -58,38 +70,49 @@ async function getEmployee(user, id) {
   await ensureMigrated(user.db_name);
   const emp = await repo.findById(pool, id);
   if (!emp) throw ApiError.notFound("Employee not found");
-  return emp;
+  return omitPassword(emp);
 }
 
 async function createEmployee(user, data) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
 
-  if (await repo.findByEmpId(pool, data.empId)) {
-    throw ApiError.conflict(`Employee ID "${data.empId}" already exists`);
+  const welcomePlain =
+    data.portalPassword && String(data.portalPassword).trim()
+      ? String(data.portalPassword).trim()
+      : "";
+
+  const sanitized = sanitizeEmployeePayload({ ...data });
+
+  if (await repo.findByEmpId(pool, sanitized.empId)) {
+    throw ApiError.conflict(`Employee ID "${sanitized.empId}" already exists`);
   }
-  if (data.workEmail && (await repo.findByWorkEmail(pool, data.workEmail))) {
-    throw ApiError.conflict(`Work email "${data.workEmail}" already in use`);
+  if (sanitized.workEmail && (await repo.findByWorkEmail(pool, sanitized.workEmail))) {
+    throw ApiError.conflict(`Work email "${sanitized.workEmail}" already in use`);
   }
 
-  if (data.reportingManagerEmpId) {
-    const mgr = await repo.findByEmpId(pool, data.reportingManagerEmpId);
-    data.reportingManagerId = mgr ? mgr.id : null;
+  if (sanitized.reportingManagerEmpId) {
+    const mgr = await repo.findByEmpId(pool, sanitized.reportingManagerEmpId);
+    sanitized.reportingManagerId = mgr ? mgr.id : null;
   }
 
-  const payload = { ...data };
-  payload.portalEnabled = Boolean(data.portalEnabled);
+  const payload = { ...sanitized };
+  if (data.profileImageBase64 && String(data.profileImageBase64).startsWith("data:image")) {
+    payload.profileImageUrl = String(data.profileImageBase64).slice(0, 800000);
+  }
+  delete payload.profileImageBase64;
+  payload.portalEnabled = Boolean(sanitized.portalEnabled);
   payload.rbacRoleId =
-    data.rbacRoleId != null && `${data.rbacRoleId}`.trim() !== ""
-      ? parseInt(String(data.rbacRoleId), 10)
+    sanitized.rbacRoleId != null && `${sanitized.rbacRoleId}`.trim() !== ""
+      ? parseInt(String(sanitized.rbacRoleId), 10)
       : null;
   if (!Number.isInteger(payload.rbacRoleId) || payload.rbacRoleId <= 0) {
     payload.rbacRoleId = null;
   }
 
-  if (data.portalPassword && String(data.portalPassword).trim()) {
+  if (sanitized.portalPassword && String(sanitized.portalPassword).trim()) {
     payload.passwordHash = await bcrypt.hash(
-      String(data.portalPassword),
+      String(sanitized.portalPassword),
       env.BCRYPT_SALT_ROUNDS,
     );
     delete payload.portalPassword;
@@ -119,9 +142,35 @@ async function createEmployee(user, data) {
   if (employeeId) {
     await repo.syncEmployeeSections(pool, employeeId, data);
     const full = await repo.findById(pool, employeeId);
-    if (full) return full;
+    if (full) {
+      if (welcomePlain && full.work_email) {
+        try {
+          const portalUrl =
+            process.env.PORTAL_URL || process.env.VITE_PORTAL_URL || "https://hris.example.com/login";
+          const html = buildEmployeeWelcomeHtml({
+            fullName: full.full_name,
+            empId: full.emp_id,
+            department: full.department || "",
+            jobTitle: full.job_title || "",
+            joinDate: full.join_date || "",
+            portalUrl,
+            username: full.username || full.work_email,
+            temporaryPassword: welcomePlain,
+          });
+          await sendMail({
+            to: full.work_email,
+            subject: "Welcome — your HR portal access",
+            text: `Welcome ${full.full_name}. Username: ${full.username || full.work_email}. Temporary password: ${welcomePlain}. Portal: ${portalUrl}`,
+            html,
+          });
+        } catch (mailErr) {
+          logger.warn(`Welcome email skipped: ${mailErr.message}`);
+        }
+      }
+      return omitPassword(full);
+    }
   }
-  return created;
+  return omitPassword(created);
 }
 
 async function updateEmployee(user, id, data) {
@@ -131,18 +180,24 @@ async function updateEmployee(user, id, data) {
   const existing = await repo.findById(pool, id);
   if (!existing) throw ApiError.notFound("Employee not found");
 
-  if (data.workEmail && data.workEmail !== existing.work_email) {
-    if (await repo.findByWorkEmail(pool, data.workEmail, id)) {
-      throw ApiError.conflict(`Work email "${data.workEmail}" already in use`);
+  const sanitized = sanitizeEmployeePayload({ ...data });
+
+  if (sanitized.workEmail && sanitized.workEmail !== existing.work_email) {
+    if (await repo.findByWorkEmail(pool, sanitized.workEmail, id)) {
+      throw ApiError.conflict(`Work email "${sanitized.workEmail}" already in use`);
     }
   }
 
-  if (data.reportingManagerEmpId) {
-    const mgr = await repo.findByEmpId(pool, data.reportingManagerEmpId);
-    data.reportingManagerId = mgr ? mgr.id : null;
+  if (sanitized.reportingManagerEmpId) {
+    const mgr = await repo.findByEmpId(pool, sanitized.reportingManagerEmpId);
+    sanitized.reportingManagerId = mgr ? mgr.id : null;
   }
 
-  const patch = { ...data };
+  const patch = { ...sanitized };
+  if (data.profileImageBase64 && String(data.profileImageBase64).startsWith("data:image")) {
+    patch.profileImageUrl = String(data.profileImageBase64).slice(0, 800000);
+  }
+  delete patch.profileImageBase64;
 
   if (Object.prototype.hasOwnProperty.call(data, "portalEnabled")) {
     patch.portalEnabled = Boolean(data.portalEnabled);
@@ -198,7 +253,7 @@ async function updateEmployee(user, id, data) {
   if (!updated) throw ApiError.notFound("Employee not found");
   await repo.syncEmployeeSections(pool, id, data);
   const full = await repo.findById(pool, id);
-  return full || updated;
+  return omitPassword(full || updated);
 }
 
 async function deleteEmployee(user, id) {
@@ -219,7 +274,15 @@ async function getFilterOptions(user) {
 async function getStats(user) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
-  return repo.getStats(pool);
+  const row = await repo.getStats(pool);
+  return {
+    total: row.total,
+    active: row.active,
+    onLeave: row.on_leave,
+    probation: row.probation,
+    notice: row.notice,
+    departments: row.departments,
+  };
 }
 
 module.exports = {

@@ -20,7 +20,7 @@ async function findAll(
     params.push(`%${search}%`);
     const n = params.length;
     conditions.push(
-      `(e.full_name ILIKE $${n} OR e.emp_id ILIKE $${n} OR e.work_email ILIKE $${n} OR e.job_title ILIKE $${n})`,
+      `(e.full_name ILIKE $${n} OR e.emp_id ILIKE $${n} OR e.work_email ILIKE $${n} OR e.job_title ILIKE $${n} OR COALESCE(e.phone_number::text, '') ILIKE $${n})`,
     );
   }
   if (department) {
@@ -88,7 +88,7 @@ async function countAll(
     params.push(`%${search}%`);
     const n = params.length;
     conditions.push(
-      `(e.full_name ILIKE $${n} OR e.emp_id ILIKE $${n} OR e.work_email ILIKE $${n} OR e.job_title ILIKE $${n})`,
+      `(e.full_name ILIKE $${n} OR e.emp_id ILIKE $${n} OR e.work_email ILIKE $${n} OR e.job_title ILIKE $${n} OR COALESCE(e.phone_number::text, '') ILIKE $${n})`,
     );
   }
   if (department) {
@@ -142,6 +142,7 @@ async function findById(pool, id) {
   );
   const emp = rows[0] || null;
   if (!emp) return null;
+  delete emp.password_hash;
 
   const sections = await getEmployeeSections(pool, id);
   return { ...emp, ...sections };
@@ -501,12 +502,18 @@ async function softDelete(pool, id) {
 }
 
 async function getFilterOptions(pool) {
-  const [depts, jobs, locs, modes] = await Promise.all([
+  const [deptTable, empDept, jobsDesig, jobsEmp, locs, modes, statuses] = await Promise.all([
     pool.query(
-      `SELECT DISTINCT department FROM employees WHERE deleted_at IS NULL ORDER BY department`,
+      `SELECT name FROM departments WHERE is_active = true ORDER BY name ASC`,
     ),
     pool.query(
-      `SELECT DISTINCT job_title FROM employees WHERE deleted_at IS NULL ORDER BY job_title`,
+      `SELECT DISTINCT department FROM employees WHERE deleted_at IS NULL AND department IS NOT NULL ORDER BY department`,
+    ),
+    pool.query(
+      `SELECT DISTINCT name AS job_title FROM designations WHERE is_active = true ORDER BY name`,
+    ),
+    pool.query(
+      `SELECT DISTINCT job_title FROM employees WHERE deleted_at IS NULL AND job_title IS NOT NULL ORDER BY job_title`,
     ),
     pool.query(
       `SELECT DISTINCT work_location FROM employees WHERE deleted_at IS NULL AND work_location IS NOT NULL ORDER BY work_location`,
@@ -514,12 +521,27 @@ async function getFilterOptions(pool) {
     pool.query(
       `SELECT DISTINCT work_mode FROM employees WHERE deleted_at IS NULL AND work_mode IS NOT NULL ORDER BY work_mode`,
     ),
+    pool.query(
+      `SELECT DISTINCT employment_status FROM employees WHERE deleted_at IS NULL AND employment_status IS NOT NULL ORDER BY employment_status`,
+    ),
   ]);
+
+  const deptNames = new Set();
+  for (const r of deptTable.rows) if (r.name) deptNames.add(r.name);
+  for (const r of empDept.rows) if (r.department) deptNames.add(r.department);
+  const departments = [...deptNames].sort((a, b) => a.localeCompare(b));
+
+  const jobSet = new Set();
+  for (const r of jobsDesig.rows) if (r.job_title) jobSet.add(r.job_title);
+  for (const r of jobsEmp.rows) if (r.job_title) jobSet.add(r.job_title);
+  const jobTitles = [...jobSet].sort((a, b) => a.localeCompare(b));
+
   return {
-    departments: depts.rows.map((r) => r.department),
-    jobTitles: jobs.rows.map((r) => r.job_title),
+    departments,
+    jobTitles,
     workLocations: locs.rows.map((r) => r.work_location),
     workModes: modes.rows.map((r) => r.work_mode),
+    statuses: statuses.rows.map((r) => r.employment_status),
   };
 }
 

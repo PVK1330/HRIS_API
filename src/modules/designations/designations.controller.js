@@ -5,8 +5,15 @@ const ApiResponse = require('../../utils/ApiResponse');
 const service = require('./designations.service');
 
 const list = asyncHandler(async (req, res) => {
-  const designations = await service.listDesignations(req.tenant);
-  return ApiResponse.ok(res, designations, 'Designations retrieved successfully');
+  const result = await service.listDesignations(req.tenant, req.query);
+  return ApiResponse.ok(res, result, 'Designations retrieved successfully');
+});
+
+const listByDepartment = asyncHandler(async (req, res) => {
+  const raw = req.params.deptName;
+  const deptName = raw ? decodeURIComponent(String(raw)) : '';
+  const rows = await service.listDesignationsByDepartmentName(req.tenant, deptName);
+  return ApiResponse.ok(res, rows, 'Designations retrieved successfully');
 });
 
 const getOne = asyncHandler(async (req, res) => {
@@ -26,11 +33,12 @@ const update = asyncHandler(async (req, res) => {
 
 const remove = asyncHandler(async (req, res) => {
   await service.deleteDesignation(req.tenant, req.params.id);
-  return ApiResponse.ok(res, null, 'Designation deleted successfully');
+  return ApiResponse.ok(res, null, 'Designation archived successfully');
 });
 
 module.exports = {
   list,
+  listByDepartment,
   getOne,
   create,
   update,

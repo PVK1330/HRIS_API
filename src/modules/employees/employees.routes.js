@@ -19,6 +19,7 @@ router.use(authenticate, requireRole('superadmin', 'admin', 'hr_admin', 'hr_exec
 // ─── Read-only ────────────────────────────────────────────────────────────────
 router.get('/stats',   ctrl.stats);
 router.get('/filters', ctrl.filterOptions);
+router.get('/filter-options', ctrl.filterOptions);
 
 router.get('/', [
   query('page').optional().isInt({ min: 1 }),
@@ -75,6 +76,8 @@ router.post('/', requireRole('admin', 'hr_admin'), [
   body('educationDetails').optional({ nullable: true }).isArray(),
   body('experienceDetails').optional({ nullable: true }).isArray(),
   body('salaryDetails').optional({ nullable: true }).isObject(),
+  body('profileImageBase64').optional({ nullable: true }).isString(),
+  body('costCenter').optional({ nullable: true }).isString().trim().isLength({ max: 120 }),
 ], validate, ctrl.create);
 
 router.patch('/:id', requireRole('admin', 'hr_admin'), [
@@ -116,6 +119,51 @@ router.patch('/:id', requireRole('admin', 'hr_admin'), [
   body('educationDetails').optional({ nullable: true }).isArray(),
   body('experienceDetails').optional({ nullable: true }).isArray(),
   body('salaryDetails').optional({ nullable: true }).isObject(),
+  body('profileImageBase64').optional({ nullable: true }).isString(),
+  body('costCenter').optional({ nullable: true }).isString().trim().isLength({ max: 120 }),
+], validate, ctrl.update);
+
+router.put('/:id', requireRole('admin', 'hr_admin'), [
+  param('id').isInt({ min: 1 }),
+  body('fullName').optional().isString().trim().isLength({ min: 2, max: 255 }),
+  body('jobTitle').optional().isString().trim(),
+  body('department').optional().isString().trim(),
+  body('employmentType').optional().isIn(['Full-time', 'Part-time', 'Contract', 'Intern']),
+  body('joinDate').optional().isDate(),
+  body('workEmail').optional().isEmail().normalizeEmail(),
+  body('dateOfBirth').optional({ nullable: true }).isDate(),
+  body('gender').optional().isIn(['Male', 'Female', 'Other']),
+  body('salary').optional({ nullable: true }).isFloat({ min: 0 }),
+  body('employmentStatus').optional().isIn(['Active', 'Probation', 'Notice Period', 'On Leave', 'Terminated']),
+  body('probationEndDate').optional({ nullable: true }).isDate(),
+  body('passportExpiry').optional({ nullable: true }).isDate(),
+  body('emiratesIdExpiry').optional({ nullable: true }).isDate(),
+  body('visaExpiryDate').optional({ nullable: true }).isDate(),
+  body('dependents').optional({ nullable: true }).isInt({ min: 0 }),
+  body('rbacRoleId').optional({ nullable: true }).isInt({ min: 1 }),
+  body('portalEnabled').optional().isBoolean(),
+  body('portalPassword').optional({ checkFalsy: true }).isString().trim().isLength({ min: 8, max: 200 }),
+  body('username').optional({ nullable: true }).isString().trim().isLength({ max: 120 }),
+  body('religion').optional({ nullable: true }).isString().trim().isLength({ max: 200 }),
+  body('employmentSpouse').optional({ nullable: true }).isString().trim().isLength({ max: 500 }),
+  body('bankName').optional({ nullable: true }).isString().trim().isLength({ max: 255 }),
+  body('bankAccountNo').optional({ nullable: true }).isString().trim().isLength({ max: 100 }),
+  body('ifscCode').optional({ nullable: true }).isString().trim().isLength({ max: 50 }),
+  body('branchAddress').optional({ nullable: true }).isString().trim(),
+  body('familyMembers').optional({ nullable: true }).isArray(),
+  body('secondaryContact').optional({ nullable: true }).isObject(),
+  body('education').optional({ nullable: true }).isArray(),
+  body('workExperience').optional({ nullable: true }).isArray(),
+  body('isCurrentlyWorking').optional().isBoolean(),
+  body('documents').optional({ nullable: true }).isArray(),
+  body('bankDetails').optional({ nullable: true }).isObject(),
+  body('addresses').optional({ nullable: true }).isArray(),
+  body('emergencyContacts').optional({ nullable: true }).isArray(),
+  body('educationDetails').optional({ nullable: true }).isArray(),
+  body('experienceDetails').optional({ nullable: true }).isArray(),
+  body('salaryDetails').optional({ nullable: true }).isObject(),
+  body('profileImageBase64').optional({ nullable: true }).isString(),
+  body('costCenter').optional({ nullable: true }).isString().trim().isLength({ max: 120 }),
 ], validate, ctrl.update);
 
 router.delete('/:id', requireRole('admin', 'hr_admin'), [

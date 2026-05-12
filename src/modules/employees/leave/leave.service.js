@@ -213,13 +213,24 @@ async function processLeave(user, id, { action, reason }) {
 
   const request = await repo.findRequestById(pool, id);
   if (!request) throw ApiError.notFound('Leave request not found');
-  if (request.status !== 'Pending') {
-    throw ApiError.badRequest(`Cannot ${action} a request with status "${request.status}"`);
-  }
 
   const statusMap = { approve: 'Approved', reject: 'Rejected', cancel: 'Cancelled' };
   const newStatus = statusMap[action];
   if (!newStatus) throw ApiError.badRequest('action must be approve, reject, or cancel');
+
+  // Pending → Approved / Rejected / Cancelled  ✓
+  // Approved → Cancelled  ✓  (restore balance)
+  // Anything else → block
+  const allowedTransitions = {
+    approve: ['Pending'],
+    reject:  ['Pending'],
+    cancel:  ['Pending', 'Approved'],
+  };
+  if (!allowedTransitions[action].includes(request.status)) {
+    throw ApiError.badRequest(
+      `Cannot ${action} a request with status "${request.status}"`
+    );
+  }
 
   const updated = await repo.updateRequestStatus(pool, id, {
     status:          newStatus,
@@ -227,17 +238,19 @@ async function processLeave(user, id, { action, reason }) {
     rejectionReason: reason || null,
   });
 
-  // Deduct balance on approval
-  if (newStatus === 'Approved') {
-    const leaveTypeCfg = await repo.findActiveLeaveType(pool, request.leave_type);
-    const isUnpaid = leaveTypeCfg?.paid_or_unpaid === 'Unpaid';
+  // ── Balance logic ─────────────────────────────────────────────────────────
+  const leaveTypeCfg = await repo.findActiveLeaveType(pool, request.leave_type);
+  const isUnpaid     = leaveTypeCfg?.paid_or_unpaid === 'Unpaid';
 
-    if (!isUnpaid) {
-      const year = new Date(request.from_date).getFullYear();
-      const annualDays = leaveTypeCfg?.annual_entitlement_days ?? 0;
-      const balance = await ensureBalance(
-        pool, request.employee_id, request.leave_type, year, annualDays
-      );
+  if (!isUnpaid) {
+    const year       = new Date(request.from_date).getFullYear();
+    const annualDays = leaveTypeCfg?.annual_entitlement_days ?? 0;
+    const balance    = await ensureBalance(
+      pool, request.employee_id, request.leave_type, year, annualDays
+    );
+
+    if (newStatus === 'Approved') {
+      // Deduct days — leave is now consuming the balance
       await repo.upsertBalance(pool, {
         employeeId:     request.employee_id,
         leaveType:      request.leave_type,
@@ -246,7 +259,19 @@ async function processLeave(user, id, { action, reason }) {
         used:           balance.used + request.total_days,
         carryForward:   balance.carry_forward,
       });
+    } else if (newStatus === 'Cancelled' && request.status === 'Approved') {
+      // Restore days — previously approved leave is being cancelled
+      const restored = Math.max(0, balance.used - request.total_days);
+      await repo.upsertBalance(pool, {
+        employeeId:     request.employee_id,
+        leaveType:      request.leave_type,
+        year,
+        totalAllocated: balance.total_allocated,
+        used:           restored,
+        carryForward:   balance.carry_forward,
+      });
     }
+    // Rejected from Pending → no balance change (days were never deducted)
   }
 
   return updated;

@@ -50,10 +50,19 @@ async function findAllRequests(pool, { status, year, department, search, limit =
             TO_CHAR(lr.created_at, 'DD/MM/YYYY') AS "createdAt",
             e.id AS employee_id, e.full_name AS employee_name,
             e.emp_id, e.department, e.job_title,
-            a.full_name AS approved_by_name
+            a.full_name AS approved_by_name,
+            -- remaining balance for this leave type in the request year
+            lb.total_allocated,
+            lb.used                                                    AS balance_used,
+            lb.carry_forward,
+            COALESCE(lb.total_allocated + lb.carry_forward - lb.used, NULL) AS balance_remaining
      FROM leave_requests lr
      JOIN employees e ON e.id = lr.employee_id AND e.deleted_at IS NULL
      LEFT JOIN employees a ON a.id = lr.approved_by AND a.deleted_at IS NULL
+     LEFT JOIN leave_balances lb
+            ON lb.employee_id = lr.employee_id
+           AND lb.leave_type  = lr.leave_type
+           AND lb.year        = EXTRACT(YEAR FROM lr.from_date)::int
      WHERE ${conditions.join(' AND ')}
      ORDER BY lr.created_at DESC
      LIMIT $${params.length - 1} OFFSET $${params.length}`,

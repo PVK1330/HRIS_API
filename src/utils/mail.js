@@ -7,28 +7,32 @@ const logger = require('./logger');
 /**
  * Mail Utility using Nodemailer
  */
-const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.EMAIL_PORT, 10) || 587,
-  secure: (process.env.EMAIL_SECURE === 'true'), 
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
-
 /**
  * Send an email
  * @param {Object} options { to, subject, html, text }
  */
-async function sendMail({ to, subject, html, text }) {
+async function sendMail({ to, subject, html, text, attachments }) {
   try {
-    const info = await transporter.sendMail({
+    // Reload dotenv to pick up any live changes made to .env file without restarting server
+    require('dotenv').config();
+
+    const dynamicTransporter = nodemailer.createTransport({
+      host: process.env.EMAIL_HOST || 'smtp.gmail.com',
+      port: parseInt(process.env.EMAIL_PORT, 10) || 587,
+      secure: (process.env.EMAIL_SECURE === 'true'), 
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+    });
+
+    const info = await dynamicTransporter.sendMail({
       from: `"${process.env.EMAIL_FROM_NAME || 'HRIS Support'}" <${process.env.EMAIL_FROM_ADDRESS || process.env.EMAIL_USER}>`,
       to,
       subject,
       text,
       html,
+      attachments,
     });
 
     logger.info(`Email sent to ${to}: ${info.messageId}`);

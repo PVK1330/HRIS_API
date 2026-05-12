@@ -11,7 +11,6 @@ const settingsMeta = {
           { label: 'Company Details', to: '/superadmin/settings/company' },
           { label: 'Domain Settings', to: '/superadmin/settings/domain' },
           { label: 'Logo', to: '/superadmin/settings/logo' },
-          { label: 'System', to: '/superadmin/settings/system' },
         ],
       },
       {
@@ -20,7 +19,6 @@ const settingsMeta = {
         items: [
           { label: 'Account Settings', to: '/superadmin/settings/account-settings' },
           { label: 'reCAPTCHA', to: '/superadmin/settings/recaptcha' },
-          { label: 'Roles & Permissions', to: '', disabled: true },
         ],
       },
       {
@@ -121,7 +119,7 @@ const settingsMeta = {
     ],
   },
   paymentGateways: {
-    order: ['stripe', 'paypal', 'razorpay', 'offline'],
+    order: ['stripe', 'offline'],
     meta: {
       stripe: {
         label: 'Stripe',
@@ -133,39 +131,6 @@ const settingsMeta = {
           { key: 'publishable_key', label: 'Publishable Key', type: 'text', required: true, placeholder: 'pk_test_...' },
           { key: 'secret_key', label: 'Secret Key', type: 'password', required: true, placeholder: 'sk_test_...' },
           { key: 'webhook_secret', label: 'Webhook Secret', type: 'password', required: false, placeholder: 'whsec_...' },
-        ],
-      },
-      paypal: {
-        label: 'PayPal',
-        subtitle: 'GLOBAL COMMERCE PLATFORM',
-        icon: 'credit-card',
-        iconBg: 'bg-blue-500',
-        showTestMode: true,
-        fields: [
-          { key: 'client_id', label: 'Client ID', type: 'text', required: true, placeholder: '' },
-          { key: 'client_secret', label: 'Client Secret', type: 'password', required: true, placeholder: '' },
-          {
-            key: 'mode',
-            label: 'Mode',
-            type: 'select',
-            required: true,
-            options: [
-              { value: 'sandbox', label: 'Sandbox' },
-              { value: 'live', label: 'Live' },
-            ],
-          },
-        ],
-      },
-      razorpay: {
-        label: 'Razorpay',
-        subtitle: 'CONVERGED PAYMENTS FOR INDIA',
-        icon: 'credit-card',
-        iconBg: 'bg-gray-900',
-        showTestMode: true,
-        fields: [
-          { key: 'key_id', label: 'Key ID', type: 'text', required: true, placeholder: 'rzp_test_...' },
-          { key: 'key_secret', label: 'Key Secret', type: 'password', required: true, placeholder: '••••••••' },
-          { key: 'webhook_secret', label: 'Webhook Secret', type: 'password', required: false, placeholder: '' },
         ],
       },
       offline: {

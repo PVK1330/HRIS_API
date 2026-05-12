@@ -7,8 +7,8 @@ class PlansRepository {
    */
   async findAll(filters = {}) {
     let query = `
-      SELECT id, plan_name, plan_code, plan_description, monthly_price, annual_price, user_quota,
-             storage_quota_gb, company_quota, trial_days, support_level, is_popular, is_custom, is_active, created_at, updated_at
+      SELECT id, plan_name, plan_code, plan_description, monthly_price, annual_price,
+             trial_days, support_level, is_popular, is_custom, is_active, created_at, updated_at
       FROM public.subscription_plans
       WHERE 1=1
     `;
@@ -38,8 +38,8 @@ class PlansRepository {
    */
   async findById(id) {
     const result = await superAdminPool.query(
-      `SELECT id, plan_name, plan_code, plan_description, monthly_price, annual_price, user_quota,
-              storage_quota_gb, company_quota, trial_days, support_level, is_popular, is_custom, is_active, created_at, updated_at
+      `SELECT id, plan_name, plan_code, plan_description, monthly_price, annual_price,
+              trial_days, support_level, is_popular, is_custom, is_active, created_at, updated_at
        FROM public.subscription_plans
        WHERE id = $1`,
       [id]
@@ -52,8 +52,8 @@ class PlansRepository {
    */
   async findByCode(code) {
     const result = await superAdminPool.query(
-      `SELECT id, plan_name, plan_code, plan_description, monthly_price, annual_price, user_quota,
-              storage_quota_gb, company_quota, trial_days, support_level, is_popular, is_custom, is_active, created_at, updated_at
+      `SELECT id, plan_name, plan_code, plan_description, monthly_price, annual_price,
+              trial_days, support_level, is_popular, is_custom, is_active, created_at, updated_at
        FROM public.subscription_plans
        WHERE plan_code = $1`,
       [code]
@@ -84,9 +84,9 @@ class PlansRepository {
     const result = await superAdminPool.query(
       `INSERT INTO public.subscription_plans (
         plan_name, plan_code, plan_description, monthly_price, annual_price,
-        user_quota, storage_quota_gb, company_quota, trial_days, support_level,
+        trial_days, support_level,
         is_popular, is_custom, is_active
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING *`,
       [
         plan_name,
@@ -94,9 +94,6 @@ class PlansRepository {
         plan_description || null,
         monthly_price || 0,
         annual_price || 0,
-        user_quota || 0,
-        storage_quota_gb || 0,
-        company_quota || 1,
         trial_days || 0,
         support_level || null,
         is_popular,
@@ -134,16 +131,13 @@ class PlansRepository {
            plan_description = COALESCE($3, plan_description),
            monthly_price = COALESCE($4, monthly_price),
            annual_price = COALESCE($5, annual_price),
-           user_quota = COALESCE($6, user_quota),
-           storage_quota_gb = COALESCE($7, storage_quota_gb),
-           company_quota = COALESCE($8, company_quota),
-           trial_days = COALESCE($9, trial_days),
-           support_level = COALESCE($10, support_level),
-           is_popular = COALESCE($11, is_popular),
-           is_custom = COALESCE($12, is_custom),
-           is_active = COALESCE($13, is_active),
+           trial_days = COALESCE($6, trial_days),
+           support_level = COALESCE($7, support_level),
+           is_popular = COALESCE($8, is_popular),
+           is_custom = COALESCE($9, is_custom),
+           is_active = COALESCE($10, is_active),
            updated_at = NOW()
-       WHERE id = $14
+       WHERE id = $11
        RETURNING *`,
       [
         plan_name,
@@ -151,9 +145,6 @@ class PlansRepository {
         plan_description,
         monthly_price,
         annual_price,
-        user_quota,
-        storage_quota_gb,
-        company_quota,
         trial_days,
         support_level,
         is_popular,

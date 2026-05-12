@@ -99,7 +99,29 @@ async function createEmployee(user, data) {
 
   delete payload.portalPassword;
 
-  return repo.insert(pool, { ...payload, createdBy: user.id });
+  payload.familyMembers = Array.isArray(payload.familyMembers)
+    ? payload.familyMembers
+    : [];
+  payload.education = Array.isArray(payload.education) ? payload.education : [];
+  payload.workExperience = Array.isArray(payload.workExperience)
+    ? payload.workExperience
+    : [];
+  payload.secondaryContact =
+    payload.secondaryContact &&
+    typeof payload.secondaryContact === "object" &&
+    !Array.isArray(payload.secondaryContact)
+      ? payload.secondaryContact
+      : {};
+  payload.isCurrentlyWorking = Boolean(payload.isCurrentlyWorking);
+
+  const created = await repo.insert(pool, { ...payload, createdBy: user.id });
+  const employeeId = created?.id;
+  if (employeeId) {
+    await repo.syncEmployeeSections(pool, employeeId, data);
+    const full = await repo.findById(pool, employeeId);
+    if (full) return full;
+  }
+  return created;
 }
 
 async function updateEmployee(user, id, data) {
@@ -147,9 +169,36 @@ async function updateEmployee(user, id, data) {
   }
   delete patch.portalPassword;
 
+  if (Object.prototype.hasOwnProperty.call(patch, "familyMembers")) {
+    patch.familyMembers = Array.isArray(patch.familyMembers)
+      ? patch.familyMembers
+      : [];
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "education")) {
+    patch.education = Array.isArray(patch.education) ? patch.education : [];
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "workExperience")) {
+    patch.workExperience = Array.isArray(patch.workExperience)
+      ? patch.workExperience
+      : [];
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "secondaryContact")) {
+    patch.secondaryContact =
+      patch.secondaryContact &&
+      typeof patch.secondaryContact === "object" &&
+      !Array.isArray(patch.secondaryContact)
+        ? patch.secondaryContact
+        : {};
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "isCurrentlyWorking")) {
+    patch.isCurrentlyWorking = Boolean(patch.isCurrentlyWorking);
+  }
+
   const updated = await repo.update(pool, id, { ...patch, updatedBy: user.id });
   if (!updated) throw ApiError.notFound("Employee not found");
-  return updated;
+  await repo.syncEmployeeSections(pool, id, data);
+  const full = await repo.findById(pool, id);
+  return full || updated;
 }
 
 async function deleteEmployee(user, id) {

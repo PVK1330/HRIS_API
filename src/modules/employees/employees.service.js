@@ -103,6 +103,16 @@ async function listEmployees(user, query = {}) {
   };
 }
 
+/** Full employee id / name list for dropdowns (no pagination, capped in repository). */
+async function listEmployeesDropdown(user, query = {}) {
+  const pool = resolvePool(user);
+  await ensureMigrated(user.db_name);
+  const employees = await repo.findAllForDropdown(pool, {
+    search: query.search || "",
+  });
+  return { employees };
+}
+
 async function listEmployeesForExport(user, query = {}) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
@@ -329,6 +339,7 @@ async function getStats(user) {
 
 module.exports = {
   listEmployees,
+  listEmployeesDropdown,
   listEmployeesForExport,
   getEmployee,
   createEmployee,

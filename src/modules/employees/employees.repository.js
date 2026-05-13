@@ -125,6 +125,32 @@ async function findAll(
   return rows;
 }
 
+const DROPDOWN_MAX = 10000;
+
+/** Minimal columns for selects / modals — full list, no pagination (capped). */
+async function findAllForDropdown(pool, { search = "" } = {}) {
+  const conditions = ["e.deleted_at IS NULL"];
+  const params = [];
+  const q = String(search || "").trim();
+  if (q) {
+    params.push(`%${q}%`);
+    const n = params.length;
+    conditions.push(`(e.full_name ILIKE $${n} OR e.emp_id ILIKE $${n})`);
+  }
+  const where = `WHERE ${conditions.join(" AND ")}`;
+  params.push(DROPDOWN_MAX);
+  const limIdx = params.length;
+  const { rows } = await pool.query(
+    `SELECT e.id, e.emp_id, e.full_name
+     FROM employees e
+     ${where}
+     ORDER BY e.full_name ASC NULLS LAST, e.id ASC
+     LIMIT $${limIdx}`,
+    params,
+  );
+  return rows;
+}
+
 async function countAll(
   pool,
   {
@@ -893,6 +919,7 @@ async function syncEmployeeSections(pool, employeeId, data = {}) {
 module.exports = {
   findAll,
   countAll,
+  findAllForDropdown,
   findAllForExport,
   findById,
   findByEmpId,

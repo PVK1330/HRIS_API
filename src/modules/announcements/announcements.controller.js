@@ -74,7 +74,10 @@ exports.create = async (req, res) => {
     const announcement = await repo.create(pool, { ...req.body, posted_by: req.user?.id });
     
     if (announcement?.status === 'Published') {
-      sendAnnouncementEmails(pool, announcement);
+      const channels = announcement.dispatch_channels || 'Both';
+      if (channels === 'Email' || channels === 'Both') {
+        sendAnnouncementEmails(pool, announcement);
+      }
     }
     
     res.status(201).json({ success: true, data: announcement });
@@ -93,7 +96,10 @@ exports.update = async (req, res) => {
     }
     
     if (announcement.status === 'Published') {
-      sendAnnouncementEmails(pool, announcement);
+      const channels = announcement.dispatch_channels || 'Both';
+      if (channels === 'Email' || channels === 'Both') {
+        sendAnnouncementEmails(pool, announcement);
+      }
     }
     
     res.status(200).json({ success: true, data: announcement });

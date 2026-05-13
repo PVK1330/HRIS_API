@@ -37,6 +37,17 @@ async function bootstrap() {
     logger.debug('  GET  /api/v1/settings/*       (Bearer SuperAdmin JWT)');
     logger.debug('  GET  /uploads/logos/*         (static logo files)');
     logger.debug('  GET  /health');
+
+    if (process.env.DISABLE_VISA_EXPIRY_CRON !== 'true') {
+      try {
+        const { startVisaExpiryAlertCron } = require('./jobs/visaExpiryAlert.job');
+        startVisaExpiryAlertCron();
+      } catch (e) {
+        logger.error('Failed to start visa expiry alert cron', e);
+      }
+    } else {
+      logger.debug('Visa expiry alert cron disabled (DISABLE_VISA_EXPIRY_CRON=true).');
+    }
   });
 
   /* -------- graceful shutdown -------- */

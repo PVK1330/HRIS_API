@@ -13,7 +13,7 @@ const idParam = Joi.object({
 
 const listingQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
-  limit: Joi.number().integer().min(1).max(100).default(10),
+  limit: Joi.number().integer().min(1).max(1000).default(10),
   search: Joi.string().allow('').max(200).default(''),
   status: Joi.string().valid('active', 'inactive', 'all', 'Active', 'Inactive', 'All').default('all'),
   parent_id: Joi.alternatives().try(Joi.number().integer().positive(), Joi.string().allow('')).optional(),

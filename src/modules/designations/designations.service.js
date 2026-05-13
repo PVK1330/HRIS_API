@@ -8,7 +8,7 @@ const SORT_COL = {
   updated_at: 'ds.updated_at',
   name: 'ds.name',
   grade: 'ds.grade',
-  department_name: 'COALESCE(ds.department_name, d.name)',
+  department_name: 'd.name',
 };
 
 function normalizeListStatus(raw) {
@@ -61,7 +61,7 @@ function buildWhereClause(query) {
   if (search) {
     params.push(`%${search}%`);
     conditions.push(
-      `(ds.name ILIKE $${i} OR COALESCE(ds.description, '') ILIKE $${i} OR COALESCE(ds.department_name, d.name, '') ILIKE $${i})`,
+      `(ds.name ILIKE $${i} OR COALESCE(ds.description, '') ILIKE $${i} OR COALESCE(d.name, '') ILIKE $${i})`,
     );
     i += 1;
   }
@@ -83,7 +83,7 @@ function buildWhereClause(query) {
   const departmentName = (query.department_name || query.departmentName || '').trim();
   if (departmentName) {
     params.push(`%${departmentName}%`);
-    conditions.push(`(ds.department_name ILIKE $${i} OR d.name ILIKE $${i})`);
+    conditions.push(`d.name ILIKE $${i}`);
     i += 1;
   }
 
@@ -125,7 +125,7 @@ async function listDesignations(tenant, query = {}) {
        ds.name,
        ds.description,
        ds.department_id,
-       COALESCE(ds.department_name, d.name) AS department_name,
+       d.name AS department_name,
        ds.grade,
        ds.is_active,
        ds.status,
@@ -193,7 +193,7 @@ async function listAllForExport(tenant, query) {
        ds.name,
        ds.description,
        ds.department_id,
-       COALESCE(ds.department_name, d.name) AS department_name,
+       d.name AS department_name,
        ds.grade,
        ds.is_active,
        ds.status,
@@ -234,7 +234,7 @@ async function listDesignationsByDepartmentName(tenant, deptName) {
   if (!name) throw new ApiError(400, 'Department name is required');
   const { rows } = await pool.query(
     `SELECT ds.id, ds.name, ds.description, ds.department_id,
-            COALESCE(ds.department_name, d.name) AS department_name,
+            d.name AS department_name,
             ds.grade, ds.is_active
      FROM designations ds
      INNER JOIN departments d ON d.id = ds.department_id
@@ -249,7 +249,7 @@ async function getDesignation(tenant, id) {
   const pool = await getTenantPool(tenant.dbName);
   const { rows } = await pool.query(
     `SELECT ds.*, d.name AS department_join_name,
-            COALESCE(ds.department_name, d.name) AS department_name,
+            d.name AS department_name,
             ${empCountSql()} AS employee_count
      FROM designations ds
      LEFT JOIN departments d ON d.id = ds.department_id
@@ -265,9 +265,8 @@ async function createDesignation(tenant, data) {
   const pool = await getTenantPool(tenant.dbName);
   const st = normalizePayloadStatus(data, true);
   const departmentId = data.department_id ?? data.departmentId;
-  const { rows: drows } = await pool.query(`SELECT name FROM departments WHERE id = $1`, [departmentId]);
+  const { rows: drows } = await pool.query(`SELECT id FROM departments WHERE id = $1`, [departmentId]);
   if (!drows.length) throw new ApiError(400, 'department_id does not exist');
-  const departmentName = drows[0].name;
 
   const grade = data.grade != null && String(data.grade).trim() !== '' ? String(data.grade).trim() : null;
 
@@ -278,7 +277,7 @@ async function createDesignation(tenant, data) {
     [
       data.name.trim(),
       departmentId,
-      departmentName,
+      null,
       grade,
       st.is_active,
       st.status,
@@ -302,11 +301,11 @@ async function updateDesignation(tenant, id, data) {
   const depRaw = data.department_id ?? data.departmentId;
   if (depRaw !== undefined) {
     const departmentId = parseInt(String(depRaw), 10);
-    const { rows: drows } = await pool.query(`SELECT name FROM departments WHERE id = $1`, [departmentId]);
+    const { rows: drows } = await pool.query(`SELECT id FROM departments WHERE id = $1`, [departmentId]);
     if (!drows.length) throw new ApiError(400, 'department_id does not exist');
     params.push(departmentId);
     fields.push(`department_id = $${n++}`);
-    params.push(drows[0].name);
+    params.push(null);
     fields.push(`department_name = $${n++}`);
   }
   if (data.description !== undefined) {
@@ -340,10 +339,7 @@ async function updateDesignation(tenant, id, data) {
 
 async function deleteDesignation(tenant, id) {
   const pool = await getTenantPool(tenant.dbName);
-  const { rowCount } = await pool.query(
-    `UPDATE designations SET is_active = false, status = 'inactive', updated_at = NOW() WHERE id = $1`,
-    [id],
-  );
+  const { rowCount } = await pool.query(`DELETE FROM designations WHERE id = $1`, [id]);
   if (!rowCount) throw new ApiError(404, 'Designation not found');
   return true;
 }

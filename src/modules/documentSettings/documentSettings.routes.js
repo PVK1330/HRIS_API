@@ -26,7 +26,7 @@ const adminOnly = (req, res, next) => {
 
 router.use(authenticate, tenantResolver, adminOnly);
 
-const uuidParam = param('id').isUUID();
+const idParam = param('id').isInt({ min: 1 });
 
 function normalizeBody(req, _res, next) {
   req.body = mergeDocumentBody(req.body || {});
@@ -76,10 +76,10 @@ const updateValidators = [
 ];
 
 router.get('/', controller.getAll);
-router.get('/:id', uuidParam, validate, controller.getOne);
+router.get('/:id', idParam, validate, controller.getOne);
 
 router.post('/', normalizeBody, createValidators, validate, controller.create);
-router.put('/:id', uuidParam, normalizeBody, updateValidators, validate, controller.update);
-router.delete('/:id', uuidParam, validate, controller.remove);
+router.put('/:id', idParam, normalizeBody, updateValidators, validate, controller.update);
+router.delete('/:id', idParam, validate, controller.remove);
 
 module.exports = router;

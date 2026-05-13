@@ -1,9 +1,9 @@
 'use strict';
 
 const http = require('http');
-const app  = require('./app');
-const env  = require('./config/env');
-const db   = require('./config/db');
+const app = require('./app');
+const env = require('./config/env');
+const db = require('./config/db');
 const logger = require('./utils/logger');
 const { initSocket } = require('./socket');
 const {
@@ -30,6 +30,23 @@ async function bootstrap() {
 
   server.listen(env.PORT, () => {
     logger.info(`Running on port ${env.PORT}`);
+    logger.debug('Available routes:');
+    logger.debug('  POST /api/v1/superadmin/login');
+    logger.debug('  POST /api/v1/tenants/create   (Bearer SuperAdmin JWT)');
+    logger.debug('  GET  /api/v1/settings/*       (Bearer SuperAdmin JWT)');
+    logger.debug('  GET  /uploads/logos/*         (static logo files)');
+    logger.debug('  GET  /health');
+
+    if (process.env.DISABLE_VISA_EXPIRY_CRON !== 'true') {
+      try {
+        const { startVisaExpiryAlertCron } = require('./jobs/visaExpiryAlert.job');
+        startVisaExpiryAlertCron();
+      } catch (e) {
+        logger.error('Failed to start visa expiry alert cron', e);
+      }
+    } else {
+      logger.debug('Visa expiry alert cron disabled (DISABLE_VISA_EXPIRY_CRON=true).');
+    }
     logger.info(`Socket.io attached on /socket.io`);
   });
 
@@ -51,10 +68,10 @@ async function bootstrap() {
     setTimeout(() => { logger.error('Forced shutdown (timeout).'); process.exit(1); }, 10_000).unref();
   };
 
-  process.on('SIGINT',  () => shutdown('SIGINT'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('unhandledRejection', (reason) => { logger.error('Unhandled promise rejection', reason); });
-  process.on('uncaughtException',  (err)    => { logger.error('Uncaught exception', err); });
+  process.on('uncaughtException', (err) => { logger.error('Uncaught exception', err); });
 }
 
 bootstrap().catch((err) => {

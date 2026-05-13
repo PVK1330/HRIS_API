@@ -36,6 +36,8 @@ const sensitiveDataRoutes = require('./modules/sensitiveData/sensitiveData.route
 const leaveSettingsRoutes = require('./modules/leaveSettings/leaveSettings.routes');
 const departmentsRoutes = require('./modules/departments/departments.routes');
 const designationsRoutes = require('./modules/designations/designations.routes');
+const visaTypesRoutes = require('./modules/visa-types/visa-types.routes');
+const visaRecordsRoutes = require('./modules/visa-records/visa-records.routes');
 const publicOnboardingRoutes = require('./routes/public/onboardingRoutes');
 
 const { generalLimiter } = require('./middlewares/rateLimit.middleware');
@@ -139,8 +141,11 @@ app.use('/api/v1/admin/settings/sensitive-data', sensitiveDataRoutes);
 app.use('/api/v1/admin/settings/leave-types', leaveSettingsRoutes);
 app.use('/api/v1/departments', departmentsRoutes);
 app.use('/api/v1/assets', require('./modules/assets/assets.routes'));
+app.use('/api/v1/notifications', require('./modules/notifications/notifications.routes'));
 app.use('/api/v1/policies', require('./modules/policies/policies.routes'));
 app.use('/api/v1/designations', designationsRoutes);
+app.use('/api/v1/visa-types', visaTypesRoutes);
+app.use('/api/v1/visa-records', visaRecordsRoutes);
 app.use('/api/v1/admin/announcements', require('./modules/announcements/announcements.routes'));
 app.use('/api/v1/admin/settings', tenantSettingsRoutes);
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);

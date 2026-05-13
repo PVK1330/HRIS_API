@@ -29,6 +29,14 @@ router.get('/', validateWithJoi(empV.listingQuery, 'query'), ctrl.list);
 
 router.get('/dropdown', validateWithJoi(empV.dropdownQuery, 'query'), ctrl.dropdownList);
 
+// Sub-resources must be registered before `/:id` so paths like `/123/documents` are not
+// captured by the single-segment employee profile route.
+router.use('/:employeeId/attendance',  attendanceEmpRoutes);
+router.use('/:employeeId/leave',       leaveEmpRoutes);
+router.use('/:employeeId/documents',   documentsRoutes);
+router.use('/:employeeId/performance', performanceRoutes);
+router.use('/:employeeId/assets',      assetsRoutes);
+
 router.get('/:id', [
   param('id').isInt({ min: 1 }).withMessage('id must be a positive integer'),
 ], validate, ctrl.getOne);
@@ -166,13 +174,6 @@ router.put('/:id', requireRole('admin', 'hr_admin'), [
 router.delete('/:id', requireRole('admin', 'hr_admin'), [
   param('id').isInt({ min: 1 }),
 ], validate, ctrl.remove);
-
-// ─── Employee sub-resources ───────────────────────────────────────────────────
-router.use('/:employeeId/attendance',  attendanceEmpRoutes);
-router.use('/:employeeId/leave',       leaveEmpRoutes);
-router.use('/:employeeId/documents',   documentsRoutes);
-router.use('/:employeeId/performance', performanceRoutes);
-router.use('/:employeeId/assets',      assetsRoutes);
 
 // ─── Admin-level attendance & leave (exported for app.js) ────────────────────
 module.exports = router;

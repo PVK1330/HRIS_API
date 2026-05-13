@@ -30,7 +30,7 @@ router.get('/', [employeeIdParam], validate, ctrl.list);
 
 router.post(
   '/',
-  requireRole('admin', 'hr_admin'),
+  requireRole('superadmin', 'admin', 'hr_admin', 'hr_executive'),
   [employeeIdParam],
   validate,
   handleMulter,

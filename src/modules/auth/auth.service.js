@@ -235,7 +235,7 @@ async function login(email, password, options = {}) {
       throw ApiError.unauthorized('Account is suspended or inactive');
     }
 
-    await runTenantMigrations(tenant.db_name).catch(() => {});
+    await runTenantMigrations(tenant.db_name).catch(() => { });
     const tenantPool = getTenantPool(tenant.db_name);
     const tenantFeatures = await gatherTenantFeatures(tenant.id);
     const { planDetails, planFeatures } = await fetchPlanBundles(tenant.plan_id);
@@ -358,7 +358,7 @@ async function login(email, password, options = {}) {
   }
 
   const tenantPool = getTenantPool(tenant.db_name);
-  await runTenantMigrations(tenant.db_name).catch(() => {});
+  await runTenantMigrations(tenant.db_name).catch(() => { });
 
   const userResult = await tenantPool.query(
     'SELECT id, email, password_hash, name, status FROM admin_users WHERE LOWER(TRIM(email)) = $1',

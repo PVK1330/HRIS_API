@@ -1,18 +1,15 @@
 "use strict";
 
-async function findAll(
-  pool,
-  {
-    search = "",
-    department = "",
-    status = "",
-    workMode = "",
-    jobTitle = "",
-    workLocation = "",
-    limit = 20,
-    offset = 0,
-  } = {},
-) {
+function buildEmployeeListWhere({
+  search = "",
+  department = "",
+  status = "",
+  workMode = "",
+  jobTitle = "",
+  workLocation = "",
+  joinDateFrom = "",
+  joinDateTo = "",
+} = {}) {
   const conditions = ["e.deleted_at IS NULL"];
   const params = [];
 
@@ -24,8 +21,8 @@ async function findAll(
     );
   }
   if (department) {
-    params.push(department);
-    conditions.push(`e.department = $${params.length}`);
+    params.push(`%${department}%`);
+    conditions.push(`e.department ILIKE $${params.length}`);
   }
   if (status) {
     params.push(status);
@@ -43,9 +40,64 @@ async function findAll(
     params.push(workLocation);
     conditions.push(`e.work_location = $${params.length}`);
   }
+  if (joinDateFrom) {
+    params.push(joinDateFrom);
+    conditions.push(`e.join_date >= $${params.length}`);
+  }
+  if (joinDateTo) {
+    params.push(joinDateTo);
+    conditions.push(`e.join_date <= $${params.length}`);
+  }
 
   const where = `WHERE ${conditions.join(" AND ")}`;
-  params.push(limit, offset);
+  return { where, params };
+}
+
+const ORDER_MAP = {
+  created_at: "e.created_at",
+  join_date: "e.join_date",
+  full_name: "e.full_name",
+  employment_status: "e.employment_status",
+  job_title: "e.job_title",
+  work_email: "e.work_email",
+  emp_id: "e.emp_id",
+};
+
+function listOrderClause(sortBy, sortOrder) {
+  const col = ORDER_MAP[sortBy] || ORDER_MAP.created_at;
+  const dir = String(sortOrder || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
+  return `${col} ${dir}, e.id ASC`;
+}
+
+async function findAll(
+  pool,
+  {
+    search = "",
+    department = "",
+    status = "",
+    workMode = "",
+    jobTitle = "",
+    workLocation = "",
+    joinDateFrom = "",
+    joinDateTo = "",
+    sortBy = "created_at",
+    sortOrder = "desc",
+    limit = 20,
+    offset = 0,
+  } = {},
+) {
+  const { where, params: baseParams } = buildEmployeeListWhere({
+    search,
+    department,
+    status,
+    workMode,
+    jobTitle,
+    workLocation,
+    joinDateFrom,
+    joinDateTo,
+  });
+  const params = [...baseParams, limit, offset];
+  const orderSql = listOrderClause(sortBy, sortOrder);
 
   const { rows } = await pool.query(
     `SELECT
@@ -55,6 +107,9 @@ async function findAll(
        e.work_location, e.work_mode, e.join_date, e.profile_image_url,
        e.nationality, e.gender,
        e.rbac_role_id,
+       e.portal_enabled,
+       e.salary,
+       e.grade,
        rr.name AS rbac_role_name,
        m.full_name AS manager_name, m.emp_id AS manager_emp_id,
        TO_CHAR(e.created_at, 'DD/MM/YYYY') AS "createdAt",
@@ -63,7 +118,7 @@ async function findAll(
      LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
      LEFT JOIN employees m ON m.id = e.reporting_manager_id AND m.deleted_at IS NULL
      ${where}
-     ORDER BY e.full_name ASC
+     ORDER BY ${orderSql}
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
@@ -79,45 +134,78 @@ async function countAll(
     workMode = "",
     jobTitle = "",
     workLocation = "",
+    joinDateFrom = "",
+    joinDateTo = "",
   } = {},
 ) {
-  const conditions = ["e.deleted_at IS NULL"];
-  const params = [];
-
-  if (search) {
-    params.push(`%${search}%`);
-    const n = params.length;
-    conditions.push(
-      `(e.full_name ILIKE $${n} OR e.emp_id ILIKE $${n} OR e.work_email ILIKE $${n} OR e.job_title ILIKE $${n} OR COALESCE(e.phone_number::text, '') ILIKE $${n})`,
-    );
-  }
-  if (department) {
-    params.push(department);
-    conditions.push(`e.department = $${params.length}`);
-  }
-  if (status) {
-    params.push(status);
-    conditions.push(`e.employment_status = $${params.length}`);
-  }
-  if (workMode) {
-    params.push(workMode);
-    conditions.push(`e.work_mode = $${params.length}`);
-  }
-  if (jobTitle) {
-    params.push(jobTitle);
-    conditions.push(`e.job_title = $${params.length}`);
-  }
-  if (workLocation) {
-    params.push(workLocation);
-    conditions.push(`e.work_location = $${params.length}`);
-  }
-
-  const where = `WHERE ${conditions.join(" AND ")}`;
+  const { where, params } = buildEmployeeListWhere({
+    search,
+    department,
+    status,
+    workMode,
+    jobTitle,
+    workLocation,
+    joinDateFrom,
+    joinDateTo,
+  });
   const { rows } = await pool.query(
     `SELECT COUNT(*)::int AS total FROM employees e ${where}`,
     params,
   );
   return rows[0].total;
+}
+
+async function findAllForExport(
+  pool,
+  {
+    search = "",
+    department = "",
+    status = "",
+    workMode = "",
+    jobTitle = "",
+    workLocation = "",
+    joinDateFrom = "",
+    joinDateTo = "",
+    sortBy = "created_at",
+    sortOrder = "desc",
+  } = {},
+) {
+  const { where, params: baseParams } = buildEmployeeListWhere({
+    search,
+    department,
+    status,
+    workMode,
+    jobTitle,
+    workLocation,
+    joinDateFrom,
+    joinDateTo,
+  });
+  const orderSql = listOrderClause(sortBy, sortOrder);
+  const params = [...baseParams];
+  const { rows } = await pool.query(
+    `SELECT
+       e.id, e.emp_id, e.full_name, e.first_name, e.last_name,
+       e.work_email, e.personal_email, e.phone_number,
+       e.job_title, e.department, e.employment_type, e.employment_status,
+       e.work_location, e.work_mode,
+       e.portal_enabled, e.salary, e.grade,
+       m.full_name AS manager_name, m.emp_id AS manager_emp_id,
+       TO_CHAR(e.date_of_birth, 'YYYY-MM-DD') AS date_of_birth,
+       TO_CHAR(e.join_date, 'YYYY-MM-DD') AS join_date,
+       e.gender, e.nationality, e.marital_status, e.religion,
+       e.home_address, e.bank_name, e.bank_account_no, e.ifsc_code, e.branch_address,
+       e.passport_number, TO_CHAR(e.passport_expiry, 'YYYY-MM-DD') AS passport_expiry,
+       e.emirates_id_number, TO_CHAR(e.emirates_id_expiry, 'YYYY-MM-DD') AS emirates_id_expiry,
+       e.visa_type, TO_CHAR(e.visa_expiry_date, 'YYYY-MM-DD') AS visa_expiry_date,
+       e.created_at
+     FROM employees e
+     LEFT JOIN employees m ON m.id = e.reporting_manager_id AND m.deleted_at IS NULL
+     ${where}
+     ORDER BY ${orderSql}
+     LIMIT 50000`,
+    params,
+  );
+  return rows;
 }
 
 async function findById(pool, id) {
@@ -553,6 +641,10 @@ async function getStats(pool) {
        COUNT(*) FILTER (WHERE employment_status = 'Probation')::int          AS probation,
        COUNT(*) FILTER (WHERE employment_status = 'Notice Period')::int      AS notice,
        COUNT(*) FILTER (WHERE employment_status = 'On Leave')::int           AS on_leave,
+       COUNT(*) FILTER (
+         WHERE join_date >= date_trunc('month', CURRENT_DATE)::date
+           AND join_date < (date_trunc('month', CURRENT_DATE) + interval '1 month')::date
+       )::int                                                                 AS new_this_month,
        COUNT(DISTINCT department)::int                                        AS departments
      FROM employees WHERE deleted_at IS NULL`,
   );
@@ -801,6 +893,7 @@ async function syncEmployeeSections(pool, employeeId, data = {}) {
 module.exports = {
   findAll,
   countAll,
+  findAllForExport,
   findById,
   findByEmpId,
   findByWorkEmail,

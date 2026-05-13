@@ -3,8 +3,10 @@
 const { Router } = require('express');
 const { body, param, query } = require('express-validator');
 const validate = require('../../middlewares/validate.middleware');
+const { validateWithJoi } = require('../../middlewares/joiValidate.middleware');
 const { authenticate, requireRole } = require('../../middlewares/auth.middleware');
 const ctrl = require('./employees.controller');
+const empV = require('./employees.validator');
 
 // Sub-module routes
 const { employeeRouter: attendanceEmpRoutes, adminRouter: attendanceAdminRoutes } = require('./attendance/attendance.routes');
@@ -21,16 +23,9 @@ router.get('/stats',   ctrl.stats);
 router.get('/filters', ctrl.filterOptions);
 router.get('/filter-options', ctrl.filterOptions);
 
-router.get('/', [
-  query('page').optional().isInt({ min: 1 }),
-  query('limit').optional().isInt({ min: 1, max: 1000 }),
-  query('search').optional().isString().trim(),
-  query('department').optional().isString().trim(),
-  query('status').optional().isString().trim(),
-  query('workMode').optional().isString().trim(),
-  query('jobTitle').optional().isString().trim(),
-  query('workLocation').optional().isString().trim(),
-], validate, ctrl.list);
+router.get('/export', validateWithJoi(empV.exportQuery, 'query'), ctrl.exportList);
+
+router.get('/', validateWithJoi(empV.listingQuery, 'query'), ctrl.list);
 
 router.get('/:id', [
   param('id').isInt({ min: 1 }).withMessage('id must be a positive integer'),

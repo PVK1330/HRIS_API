@@ -1,17 +1,17 @@
 "use strict";
 
 const { getTenantPool } = require("../../config/db");
-const env = require("../../config/env");
 
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 
 const ApiError = require("../../utils/ApiError");
 const logger = require("../../utils/logger");
-const { sendMail } = require("../../utils/mail");
-const { buildEmployeeWelcomeHtml } = require("../../utils/employeeWelcomeEmail");
 const { sanitizeEmployeePayload } = require("../../utils/sanitize");
 const { runTenantMigrations } = require("../tenant/tenant.service");
 const repo = require("./employees.repository");
+const { sendEmployeeWelcomeEmail } = require("./employees.mailer");
+
+const BCRYPT_ROUNDS = 12;
 
 function omitPassword(obj) {
   if (!obj || typeof obj !== "object") return obj;
@@ -38,12 +38,18 @@ function resolvePool(user) {
   return getTenantPool(user.db_name);
 }
 
+function fmtDateFilter(v) {
+  if (v === undefined || v === null || v === "") return "";
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).trim().slice(0, 10);
+}
+
 async function listEmployees(user, query = {}) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
 
   const page = Math.max(1, parseInt(query.page, 10) || 1);
-  const limit = Math.min(1000, parseInt(query.limit, 10) || 20);
+  const limit = Math.min(100, parseInt(query.limit, 10) || 10);
   const offset = (page - 1) * limit;
 
   const filters = {
@@ -53,16 +59,65 @@ async function listEmployees(user, query = {}) {
     workMode: query.workMode || "",
     jobTitle: query.jobTitle || "",
     workLocation: query.workLocation || "",
+    joinDateFrom: fmtDateFilter(query.joinDateFrom),
+    joinDateTo: fmtDateFilter(query.joinDateTo),
+    sortBy: query.sortBy || "created_at",
+    sortOrder: query.sortOrder || "desc",
     limit,
     offset,
   };
 
-  const [employees, total] = await Promise.all([
+  const [records, total, options] = await Promise.all([
     repo.findAll(pool, filters),
     repo.countAll(pool, filters),
+    repo.getFilterOptions(pool),
   ]);
 
-  return { employees, total, page, limit, pages: Math.ceil(total / limit) };
+  return {
+    records,
+    pagination: {
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+      hasNext: page * limit < total,
+      hasPrev: page > 1,
+    },
+    filters: {
+      applied: {
+        page,
+        limit,
+        search: filters.search,
+        department: filters.department,
+        status: filters.status,
+        workMode: filters.workMode,
+        jobTitle: filters.jobTitle,
+        workLocation: filters.workLocation,
+        joinDateFrom: filters.joinDateFrom || null,
+        joinDateTo: filters.joinDateTo || null,
+        sortBy: filters.sortBy,
+        sortOrder: String(filters.sortOrder).toLowerCase(),
+      },
+      options,
+    },
+  };
+}
+
+async function listEmployeesForExport(user, query = {}) {
+  const pool = resolvePool(user);
+  await ensureMigrated(user.db_name);
+  return repo.findAllForExport(pool, {
+    search: query.search || "",
+    department: query.department || "",
+    status: query.status || "",
+    workMode: query.workMode || "",
+    jobTitle: query.jobTitle || "",
+    workLocation: query.workLocation || "",
+    joinDateFrom: fmtDateFilter(query.joinDateFrom),
+    joinDateTo: fmtDateFilter(query.joinDateTo),
+    sortBy: query.sortBy || "created_at",
+    sortOrder: query.sortOrder || "desc",
+  });
 }
 
 async function getEmployee(user, id) {
@@ -111,10 +166,7 @@ async function createEmployee(user, data) {
   }
 
   if (sanitized.portalPassword && String(sanitized.portalPassword).trim()) {
-    payload.passwordHash = await bcrypt.hash(
-      String(sanitized.portalPassword),
-      env.BCRYPT_SALT_ROUNDS,
-    );
+    payload.passwordHash = await bcrypt.hash(String(sanitized.portalPassword), BCRYPT_ROUNDS);
     delete payload.portalPassword;
   } else if (payload.portalEnabled === false) {
     payload.passwordHash = null;
@@ -145,23 +197,15 @@ async function createEmployee(user, data) {
     if (full) {
       if (welcomePlain && full.work_email) {
         try {
-          const portalUrl =
-            process.env.PORTAL_URL || process.env.VITE_PORTAL_URL || "https://hris.example.com/login";
-          const html = buildEmployeeWelcomeHtml({
-            fullName: full.full_name,
-            empId: full.emp_id,
+          await sendEmployeeWelcomeEmail({
+            to: full.work_email,
+            firstName: full.first_name || full.full_name || "",
+            empId: full.emp_id || "",
             department: full.department || "",
             jobTitle: full.job_title || "",
             joinDate: full.join_date || "",
-            portalUrl,
             username: full.username || full.work_email,
-            temporaryPassword: welcomePlain,
-          });
-          await sendMail({
-            to: full.work_email,
-            subject: "Welcome — your HR portal access",
-            text: `Welcome ${full.full_name}. Username: ${full.username || full.work_email}. Temporary password: ${welcomePlain}. Portal: ${portalUrl}`,
-            html,
+            plainPassword: welcomePlain,
           });
         } catch (mailErr) {
           logger.warn(`Welcome email skipped: ${mailErr.message}`);
@@ -217,10 +261,7 @@ async function updateEmployee(user, id, data) {
   }
 
   if (data.portalPassword && String(data.portalPassword).trim()) {
-    patch.passwordHash = await bcrypt.hash(
-      String(data.portalPassword),
-      env.BCRYPT_SALT_ROUNDS,
-    );
+    patch.passwordHash = await bcrypt.hash(String(data.portalPassword), BCRYPT_ROUNDS);
   }
   delete patch.portalPassword;
 
@@ -280,6 +321,7 @@ async function getStats(user) {
     active: row.active,
     onLeave: row.on_leave,
     probation: row.probation,
+    newThisMonth: row.new_this_month,
     notice: row.notice,
     departments: row.departments,
   };
@@ -287,6 +329,7 @@ async function getStats(user) {
 
 module.exports = {
   listEmployees,
+  listEmployeesForExport,
   getEmployee,
   createEmployee,
   updateEmployee,

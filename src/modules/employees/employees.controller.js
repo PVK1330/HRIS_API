@@ -20,6 +20,12 @@ const list = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, result, "Employees retrieved successfully");
 });
 
+/** GET /employees/dropdown — full id/name list for selects (no pagination). */
+const dropdownList = asyncHandler(async (req, res) => {
+  const result = await service.listEmployeesDropdown(req.user, req.query);
+  return ApiResponse.ok(res, result, "Employees retrieved successfully");
+});
+
 const exportList = asyncHandler(async (req, res) => {
   const type = String(req.query.type || "").toLowerCase();
   if (!["pdf", "excel"].includes(type)) {
@@ -83,4 +89,14 @@ const remove = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, null, "Employee deleted successfully");
 });
 
-module.exports = { list, exportList, stats, filterOptions, getOne, create, update, remove };
+module.exports = {
+  list,
+  dropdownList,
+  exportList,
+  stats,
+  filterOptions,
+  getOne,
+  create,
+  update,
+  remove,
+};

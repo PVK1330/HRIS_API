@@ -27,6 +27,8 @@ router.get('/export', validateWithJoi(empV.exportQuery, 'query'), ctrl.exportLis
 
 router.get('/', validateWithJoi(empV.listingQuery, 'query'), ctrl.list);
 
+router.get('/dropdown', validateWithJoi(empV.dropdownQuery, 'query'), ctrl.dropdownList);
+
 router.get('/:id', [
   param('id').isInt({ min: 1 }).withMessage('id must be a positive integer'),
 ], validate, ctrl.getOne);

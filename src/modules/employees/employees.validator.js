@@ -27,8 +27,14 @@ const idParam = Joi.object({
   id: Joi.number().integer().positive().required(),
 });
 
+/** Optional server-side filter; returns full list up to cap when empty. */
+const dropdownQuery = Joi.object({
+  search: Joi.string().allow("").max(300).default(""),
+});
+
 module.exports = {
   listingQuery,
   exportQuery,
+  dropdownQuery,
   idParam,
 };

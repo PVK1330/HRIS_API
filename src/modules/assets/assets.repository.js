@@ -39,7 +39,8 @@ async function findById(pool, id) {
       ac.icon as category_icon,
       ac.color as category_color,
       e.full_name as assigned_to_name, 
-      e.emp_id as assigned_to_code
+      e.emp_id as assigned_to_code,
+      e.work_email
     FROM assets a
     LEFT JOIN asset_categories ac ON ac.id = a.category_id
     LEFT JOIN employees e ON e.id = a.employee_id

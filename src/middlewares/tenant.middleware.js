@@ -41,7 +41,7 @@ async function tenantResolver(req, _res, next) {
     }
 
     const { rows } = await superAdminPool.query(
-      `SELECT id, db_name, schema_name, status, timezone, date_format, time_format
+      `SELECT id, db_name, schema_name, status, timezone, date_format, time_format, admin_email, name
        FROM public.tenants
        WHERE schema_name = $1
           OR admin_email = $1
@@ -56,6 +56,8 @@ async function tenantResolver(req, _res, next) {
 
     req.tenant = {
       id: tenant.id,
+      name: tenant.name,
+      adminEmail: tenant.admin_email,
       dbName: tenant.db_name,       // used by getTenantPool()
       schemaName: tenant.schema_name,
       timezone: tenant.timezone || 'UTC',

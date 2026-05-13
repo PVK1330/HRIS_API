@@ -139,6 +139,7 @@ app.use('/api/v1/admin/settings/sensitive-data', sensitiveDataRoutes);
 app.use('/api/v1/admin/settings/leave-types', leaveSettingsRoutes);
 app.use('/api/v1/departments', departmentsRoutes);
 app.use('/api/v1/assets', require('./modules/assets/assets.routes'));
+app.use('/api/v1/notifications', require('./modules/notifications/notifications.routes'));
 app.use('/api/v1/policies', require('./modules/policies/policies.routes'));
 app.use('/api/v1/designations', designationsRoutes);
 app.use('/api/v1/visa-types', visaTypesRoutes);

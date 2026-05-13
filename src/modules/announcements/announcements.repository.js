@@ -1,6 +1,9 @@
 'use strict';
 
 async function getAll(pool) {
+  try {
+    await pool.query(`ALTER TABLE announcements ADD COLUMN IF NOT EXISTS dispatch_channels varchar(50) DEFAULT 'Both'`);
+  } catch (e) {}
   const { rows } = await pool.query(
     `SELECT a.*, e.full_name AS posted_by_name 
      FROM announcements a 
@@ -23,20 +26,28 @@ async function getStats(pool) {
 }
 
 async function create(pool, data) {
+  try {
+    await pool.query(`ALTER TABLE announcements ADD COLUMN IF NOT EXISTS dispatch_channels varchar(50) DEFAULT 'Both'`);
+  } catch (e) {}
   const { title, category, priority, content, visibility, status, posted_by } = data;
+  const dispatch_channels = data.dispatch_channels || data.dispatchChannels || 'Both';
   const schedule_date = data.schedule_date || data.scheduleDate;
   const { rows } = await pool.query(
     `INSERT INTO announcements 
-      (title, category, priority, content, visibility, schedule_date, status, posted_by) 
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+      (title, category, priority, content, visibility, schedule_date, status, posted_by, dispatch_channels) 
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
      RETURNING *`,
-    [title, category, priority, content, visibility, schedule_date || null, status || 'Draft', posted_by || null]
+    [title, category, priority, content, visibility, schedule_date || null, status || 'Draft', posted_by || null, dispatch_channels]
   );
   return rows[0];
 }
 
 async function update(pool, id, data) {
+  try {
+    await pool.query(`ALTER TABLE announcements ADD COLUMN IF NOT EXISTS dispatch_channels varchar(50) DEFAULT 'Both'`);
+  } catch (e) {}
   const { title, category, priority, content, visibility, status } = data;
+  const dispatch_channels = data.dispatch_channels || data.dispatchChannels;
   const schedule_date = data.schedule_date || data.scheduleDate;
   const { rows } = await pool.query(
     `UPDATE announcements 
@@ -47,10 +58,11 @@ async function update(pool, id, data) {
          visibility = COALESCE($5, visibility),
          schedule_date = COALESCE($6, schedule_date),
          status = COALESCE($7, status),
+         dispatch_channels = COALESCE($8, dispatch_channels),
          updated_at = NOW()
-     WHERE id = $8 
+     WHERE id = $9 
      RETURNING *`,
-    [title, category, priority, content, visibility, schedule_date || null, status, id]
+    [title, category, priority, content, visibility, schedule_date || null, status, dispatch_channels, id]
   );
   return rows[0];
 }

@@ -4,7 +4,7 @@ const Joi = require('joi');
 
 const listingQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
-  limit: Joi.number().integer().min(1).max(100).default(10),
+  limit: Joi.number().integer().min(1).max(5000).default(10),
   search: Joi.string().allow('').max(300).default(''),
   department: Joi.string().allow('').max(255).default(''),
   status: Joi.string().allow('').max(80).default(''),

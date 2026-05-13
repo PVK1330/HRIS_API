@@ -4,6 +4,87 @@ const repo = require('./assets.repository');
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
 
+async function handleAssetAssignmentNotifications(tenant, assetId) {
+  try {
+    const pool = await getTenantPool(tenant.dbName);
+    const asset = await repo.findById(pool, assetId);
+    if (!asset || !asset.employee_id) return;
+
+    const title = `Asset Assigned: ${asset.type || 'Hardware Equipment'}`;
+    const message = `You have been assigned corporate asset ${asset.asset_id} (${asset.type || ''}) with Serial Number: ${asset.serial_number || 'N/A'}. Allocation status: Assigned.`;
+
+    const notifService = require('../notifications/notifications.service');
+
+    // 1. Send In-App Feed alert to assigned individual
+    await notifService.pushNotification(tenant, {
+      employeeId: asset.employee_id,
+      forAdmin: false,
+      title,
+      message,
+      type: 'info'
+    });
+
+    // 2. Send In-App Feed alert to Company Administrators
+    await notifService.pushNotification(tenant, {
+      employeeId: null,
+      forAdmin: true,
+      title: `Asset Handover Notice: ${asset.assigned_to_name}`,
+      message: `Asset ${asset.asset_id} (${asset.type || ''}) has been allocated to ${asset.assigned_to_name} (${asset.assigned_to_code}).`,
+      type: 'info'
+    });
+
+    // 3. Dispatch Email Notice to assigned person's corporate inbox and admin
+    const { sendMail } = require('../../utils/mail');
+    
+    const mailHtml = (recipientName) => `
+      <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <h2 style="color: #0f766e;">Corporate Asset Allocation Notice</h2>
+        <p>Dear <strong>${recipientName}</strong>,</p>
+        <p>${message}</p>
+        <table style="width: 100%; margin-top: 15px; border-collapse: collapse;">
+          <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+            <td style="padding: 8px; font-weight: bold;">Asset Tag</td>
+            <td style="padding: 8px;">${asset.asset_id}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #e2e8f0;">
+            <td style="padding: 8px; font-weight: bold;">Category / Type</td>
+            <td style="padding: 8px;">${asset.type || '-'}</td>
+          </tr>
+          <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+            <td style="padding: 8px; font-weight: bold;">Serial Number</td>
+            <td style="padding: 8px;">${asset.serial_number || 'N/A'}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px; font-weight: bold;">Assigned Personnel</td>
+            <td style="padding: 8px; color: #0f766e; font-weight: bold;">${asset.assigned_to_name} (${asset.assigned_to_code})</td>
+          </tr>
+        </table>
+        <p style="margin-top: 20px; font-size: 12px; color: #64748b;">This notification confirms formal hardware ledger updating within the HRIS inventory center.</p>
+      </div>
+    `;
+
+    if (asset.work_email) {
+      await sendMail({
+        to: asset.work_email,
+        subject: `Corporate Asset Handover Notice: ${asset.asset_id}`,
+        text: `Dear ${asset.assigned_to_name},\n\n${message}\n\nPlease verify receipt and adhere to organizational hardware policy standards.\n\nRegards,\nHR & IT Operations`,
+        html: mailHtml(asset.assigned_to_name)
+      }).catch(err => console.error('Asset assignment mail error:', err));
+    }
+
+    if (tenant?.adminEmail) {
+      await sendMail({
+        to: tenant.adminEmail,
+        subject: `[Admin Ledger] Asset Handover Completed: ${asset.asset_id}`,
+        text: `Dear Administrator,\n\nAsset ${asset.asset_id} has been formally allocated to ${asset.assigned_to_name} (${asset.assigned_to_code}).\n\nRegards,\nHR & IT Operations`,
+        html: mailHtml(tenant.name || 'Company Administrator')
+      }).catch(err => console.error('Admin asset assignment mail error:', err));
+    }
+  } catch (err) {
+    console.error('Failed to dispatch asset allocation notifications', err);
+  }
+}
+
 async function listAssets(tenant) {
   const pool = await getTenantPool(tenant.dbName);
   return repo.findAll(pool);
@@ -18,20 +99,26 @@ async function getAsset(tenant, id) {
 
 async function createAsset(tenant, data) {
   const pool = await getTenantPool(tenant.dbName);
-  // Generate asset ID if not provided (e.g. AST-00X)
   if (!data.assetId) {
     const assets = await repo.findAll(pool);
     const lastId = assets.length > 0 ? assets[0].asset_id : 'AST-000';
     const nextNum = parseInt(lastId.split('-')[1]) + 1;
     data.assetId = `AST-${String(nextNum).padStart(3, '0')}`;
   }
-  return repo.create(pool, data);
+  const created = await repo.create(pool, data);
+  if (created && data.employeeId) {
+    handleAssetAssignmentNotifications(tenant, created.id).catch(() => null);
+  }
+  return created;
 }
 
 async function updateAsset(tenant, id, data) {
   const pool = await getTenantPool(tenant.dbName);
   const updated = await repo.update(pool, id, data);
   if (!updated) throw new ApiError(404, 'Asset not found');
+  if (data.employeeId) {
+    handleAssetAssignmentNotifications(tenant, id).catch(() => null);
+  }
   return updated;
 }
 

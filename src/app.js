@@ -39,6 +39,7 @@ const designationsRoutes = require('./modules/designations/designations.routes')
 const visaTypesRoutes = require('./modules/visa-types/visa-types.routes');
 const visaRecordsRoutes = require('./modules/visa-records/visa-records.routes');
 const publicOnboardingRoutes = require('./routes/public/onboardingRoutes');
+const adminDocumentsRoutes = require('./modules/adminDocuments/adminDocuments.routes');
 
 const { generalLimiter } = require('./middlewares/rateLimit.middleware');
 
@@ -148,6 +149,7 @@ app.use('/api/v1/visa-types', visaTypesRoutes);
 app.use('/api/v1/visa-records', visaRecordsRoutes);
 app.use('/api/v1/admin/announcements', require('./modules/announcements/announcements.routes'));
 app.use('/api/v1/admin/settings', tenantSettingsRoutes);
+app.use('/api/v1/admin/documents', adminDocumentsRoutes);
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
 
 /* -------------------- 404 + Errors -------------------- */

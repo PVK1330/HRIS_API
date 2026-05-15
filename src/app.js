@@ -150,6 +150,7 @@ app.use('/api/v1/visa-records', visaRecordsRoutes);
 app.use('/api/v1/admin/announcements', require('./modules/announcements/announcements.routes'));
 app.use('/api/v1/admin/settings', tenantSettingsRoutes);
 app.use('/api/v1/admin/documents', adminDocumentsRoutes);
+app.use('/api/v1/admin/payroll', require('./modules/payroll/payroll.routes'));
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
 
 /* -------------------- 404 + Errors -------------------- */

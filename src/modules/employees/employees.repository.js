@@ -1,5 +1,7 @@
 "use strict";
 
+const { applyEmployeeListScope } = require("../../utils/applyDataScope");
+
 function buildEmployeeListWhere({
   search = "",
   department = "",
@@ -84,9 +86,10 @@ async function findAll(
     sortOrder = "desc",
     limit = 20,
     offset = 0,
+    auth = null,
   } = {},
 ) {
-  const { where, params: baseParams } = buildEmployeeListWhere({
+  let { where, params: baseParams } = buildEmployeeListWhere({
     search,
     department,
     status,
@@ -96,6 +99,12 @@ async function findAll(
     joinDateFrom,
     joinDateTo,
   });
+  if (auth) {
+    ({ where, params: baseParams } = applyEmployeeListScope(auth, {
+      where,
+      params: baseParams,
+    }));
+  }
   const params = [...baseParams, limit, offset];
   const orderSql = listOrderClause(sortBy, sortOrder);
 
@@ -128,7 +137,7 @@ async function findAll(
 const DROPDOWN_MAX = 10000;
 
 /** Minimal columns for selects / modals — full list, no pagination (capped). */
-async function findAllForDropdown(pool, { search = "" } = {}) {
+async function findAllForDropdown(pool, { search = "", auth = null } = {}) {
   const conditions = ["e.deleted_at IS NULL"];
   const params = [];
   const q = String(search || "").trim();
@@ -137,7 +146,10 @@ async function findAllForDropdown(pool, { search = "" } = {}) {
     const n = params.length;
     conditions.push(`(e.full_name ILIKE $${n} OR e.emp_id ILIKE $${n})`);
   }
-  const where = `WHERE ${conditions.join(" AND ")}`;
+  let where = `WHERE ${conditions.join(" AND ")}`;
+  if (auth) {
+    ({ where, params } = applyEmployeeListScope(auth, { where, params }));
+  }
   params.push(DROPDOWN_MAX);
   const limIdx = params.length;
   const { rows } = await pool.query(
@@ -162,9 +174,10 @@ async function countAll(
     workLocation = "",
     joinDateFrom = "",
     joinDateTo = "",
+    auth = null,
   } = {},
 ) {
-  const { where, params } = buildEmployeeListWhere({
+  let { where, params } = buildEmployeeListWhere({
     search,
     department,
     status,
@@ -174,6 +187,9 @@ async function countAll(
     joinDateFrom,
     joinDateTo,
   });
+  if (auth) {
+    ({ where, params } = applyEmployeeListScope(auth, { where, params }));
+  }
   const { rows } = await pool.query(
     `SELECT COUNT(*)::int AS total FROM employees e ${where}`,
     params,
@@ -194,9 +210,10 @@ async function findAllForExport(
     joinDateTo = "",
     sortBy = "created_at",
     sortOrder = "desc",
+    auth = null,
   } = {},
 ) {
-  const { where, params: baseParams } = buildEmployeeListWhere({
+  let { where, params: baseParams } = buildEmployeeListWhere({
     search,
     department,
     status,
@@ -206,6 +223,12 @@ async function findAllForExport(
     joinDateFrom,
     joinDateTo,
   });
+  if (auth) {
+    ({ where, params: baseParams } = applyEmployeeListScope(auth, {
+      where,
+      params: baseParams,
+    }));
+  }
   const orderSql = listOrderClause(sortBy, sortOrder);
   const params = [...baseParams];
   const { rows } = await pool.query(

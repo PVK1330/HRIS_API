@@ -4,9 +4,19 @@ const { Router } = require('express');
 const { body, param, query } = require('express-validator');
 const validate = require('../../../middlewares/validate.middleware');
 const ctrl = require('./leave.controller');
+const {
+  authenticate,
+  loadAuthContext,
+  requirePermission,
+} = require('../../../middlewares/auth.middleware');
+const { P } = require('../../../constants/permissions');
+const { requireEmployeeScopeAccess } = require('../../../middlewares/employeeScope.middleware');
 
 // ─── Employee-scoped: mounted at /api/v1/employees/:employeeId/leave ──────────
 const employeeRouter = Router({ mergeParams: true });
+
+employeeRouter.use(requirePermission(P.LEAVE_VIEW));
+employeeRouter.use(requireEmployeeScopeAccess('employeeId'));
 
 employeeRouter.get('/', [
   param('employeeId').isInt({ min: 1 }),
@@ -15,9 +25,9 @@ employeeRouter.get('/', [
 ], validate, ctrl.list);
 
 // ─── Admin-level: mounted at /api/v1/leave ────────────────────────────────────
-const { authenticate, requireRole } = require('../../../middlewares/auth.middleware');
 const adminRouter = Router();
-adminRouter.use(authenticate, requireRole('admin', 'hr_admin', 'hr_executive', 'manager'));
+adminRouter.use(authenticate, loadAuthContext);
+adminRouter.use(requirePermission(P.LEAVE_VIEW));
 
 adminRouter.get('/balances', [
   query('year').optional().isInt({ min: 2000, max: 2100 }),

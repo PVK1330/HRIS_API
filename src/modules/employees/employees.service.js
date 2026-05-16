@@ -10,6 +10,7 @@ const { sanitizeEmployeePayload } = require("../../utils/sanitize");
 const { runTenantMigrations } = require("../tenant/tenant.service");
 const repo = require("./employees.repository");
 const { sendEmployeeWelcomeEmail } = require("./employees.mailer");
+const { assertEmployeeRecordAccess } = require("../../utils/applyDataScope");
 
 const BCRYPT_ROUNDS = 12;
 
@@ -44,7 +45,7 @@ function fmtDateFilter(v) {
   return String(v).trim().slice(0, 10);
 }
 
-async function listEmployees(user, query = {}) {
+async function listEmployees(user, query = {}, auth = null) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
 
@@ -65,6 +66,7 @@ async function listEmployees(user, query = {}) {
     sortOrder: query.sortOrder || "desc",
     limit,
     offset,
+    auth,
   };
 
   const [records, total, options] = await Promise.all([
@@ -104,20 +106,22 @@ async function listEmployees(user, query = {}) {
 }
 
 /** Full employee id / name list for dropdowns (no pagination, capped in repository). */
-async function listEmployeesDropdown(user, query = {}) {
+async function listEmployeesDropdown(user, query = {}, auth = null) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
   const employees = await repo.findAllForDropdown(pool, {
     search: query.search || "",
+    auth,
   });
   return { employees };
 }
 
-async function listEmployeesForExport(user, query = {}) {
+async function listEmployeesForExport(user, query = {}, auth = null) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
   return repo.findAllForExport(pool, {
     search: query.search || "",
+    auth,
     department: query.department || "",
     status: query.status || "",
     workMode: query.workMode || "",
@@ -130,11 +134,12 @@ async function listEmployeesForExport(user, query = {}) {
   });
 }
 
-async function getEmployee(user, id) {
+async function getEmployee(user, id, auth = null) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
   const emp = await repo.findById(pool, id);
   if (!emp) throw ApiError.notFound("Employee not found");
+  if (auth) assertEmployeeRecordAccess(auth, emp);
   return omitPassword(emp);
 }
 
@@ -227,12 +232,13 @@ async function createEmployee(user, data) {
   return omitPassword(created);
 }
 
-async function updateEmployee(user, id, data) {
+async function updateEmployee(user, id, data, auth = null) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
 
   const existing = await repo.findById(pool, id);
   if (!existing) throw ApiError.notFound("Employee not found");
+  if (auth) assertEmployeeRecordAccess(auth, existing);
 
   const sanitized = sanitizeEmployeePayload({ ...data });
 
@@ -307,11 +313,12 @@ async function updateEmployee(user, id, data) {
   return omitPassword(full || updated);
 }
 
-async function deleteEmployee(user, id) {
+async function deleteEmployee(user, id, auth = null) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
   const existing = await repo.findById(pool, id);
   if (!existing) throw ApiError.notFound("Employee not found");
+  if (auth) assertEmployeeRecordAccess(auth, existing);
   const deleted = await repo.softDelete(pool, id);
   if (!deleted) throw ApiError.notFound("Employee not found");
 }

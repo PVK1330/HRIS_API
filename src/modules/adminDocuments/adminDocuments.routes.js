@@ -3,18 +3,24 @@
 const { Router } = require('express');
 const { body, param } = require('express-validator');
 const validate = require('../../middlewares/validate.middleware');
-const { authenticate, requireRole } = require('../../middlewares/auth.middleware');
+const {
+  authenticate,
+  loadAuthContext,
+  requirePermission,
+} = require('../../middlewares/auth.middleware');
+const { P } = require('../../constants/permissions');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
 const ctrl = require('./adminDocuments.controller');
 
 const router = Router();
 
-router.use(authenticate, tenantResolver, requireRole('superadmin', 'admin', 'hr_admin', 'hr_executive'));
+router.use(authenticate, tenantResolver, loadAuthContext);
 
-router.get('/', ctrl.listAll);
+router.get('/', requirePermission(P.DOCUMENT_VIEW), ctrl.listAll);
 
 router.put(
   '/:id/status',
+  requirePermission(P.DOCUMENT_UPLOAD),
   [
     param('id').isInt({ min: 1 }),
     body('status').isIn(['Approved', 'Rejected']),

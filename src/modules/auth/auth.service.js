@@ -11,6 +11,10 @@ const env = require('../../config/env');
 const ApiError = require('../../utils/ApiError');
 
 const { renderEmail } = require('../../utils/emailTemplate');
+const {
+  expandPermissionKeys,
+  toAllowedModuleKeys,
+} = require('../../constants/permissions');
 
 async function gatherTenantFeatures(tenantId) {
   const accessResult = await superAdminPool.query(
@@ -243,7 +247,7 @@ async function login(email, password, options = {}) {
     const empRes = await tenantPool.query(
       `
         SELECT id, full_name, work_email, password_hash, portal_enabled,
-               rbac_role_id, employment_status
+               rbac_role_id, employment_status, department
         FROM employees
         WHERE LOWER(TRIM(work_email)) = $1 AND deleted_at IS NULL
         LIMIT 1
@@ -265,7 +269,11 @@ async function login(email, password, options = {}) {
       let allowedModules = ['dashboard'];
       if (emp.rbac_role_id) {
         const keys = await rbacRepo.permissionKeysForRole(tenantPool, emp.rbac_role_id);
-        allowedModules = keys.length ? Array.from(new Set(['dashboard', ...keys])) : ['dashboard'];
+        const expanded = expandPermissionKeys(keys);
+        allowedModules = toAllowedModuleKeys(expanded);
+        if (!allowedModules.includes('dashboard')) {
+          allowedModules = ['dashboard', ...allowedModules];
+        }
       }
 
       const token = jwt.sign(
@@ -275,6 +283,10 @@ async function login(email, password, options = {}) {
           role: 'employee',
           tenant_id: tenant.id,
           db_name: tenant.db_name,
+          rbacRoleId: emp.rbac_role_id || null,
+          employeeId: emp.id,
+          department: emp.department || null,
+          userType: 'employee',
         },
         env.JWT.secret,
         { expiresIn: env.JWT.expiresIn },
@@ -290,6 +302,8 @@ async function login(email, password, options = {}) {
           tenantId: tenant.id,
           tenantName: tenant.name,
           rbacRoleId: emp.rbac_role_id,
+          employeeId: emp.id,
+          department: emp.department || null,
         },
         plan_details: planDetails,
         plan_features: planFeatures,
@@ -321,6 +335,7 @@ async function login(email, password, options = {}) {
         role: 'admin',
         tenant_id: tenant.id,
         db_name: tenant.db_name,
+        userType: 'admin',
       },
       env.JWT.secret,
       { expiresIn: env.JWT.expiresIn },
@@ -518,8 +533,8 @@ async function generateImpersonationToken(tenantId) {
 }
 
 async function getAccessProfile(currentUser) {
-  if (!currentUser || currentUser.role !== 'admin') {
-    throw ApiError.forbidden('Access profile is only available for tenant admins');
+  if (!currentUser || !['admin', 'employee'].includes(currentUser.role)) {
+    throw ApiError.forbidden('Access profile is only available for tenant users');
   }
   if (!currentUser.tenant_id) {
     throw ApiError.badRequest('tenant_id is missing in auth token');
@@ -566,6 +581,22 @@ async function getAccessProfile(currentUser) {
     is_enabled: row.is_enabled,
   }));
 
+  const { getTenantPool } = require('../../config/db');
+  const rbacRepo = require('../rbac/rbac.repository');
+
+  let allowedModules = ['dashboard'];
+  const tenantPool = getTenantPool(tenant.db_name);
+  if (currentUser.role === 'admin') {
+    allowedModules = await adminModulesForJwt(tenantPool);
+  } else if (currentUser.rbacRoleId) {
+    const keys = await rbacRepo.permissionKeysForRole(tenantPool, currentUser.rbacRoleId);
+    const expanded = expandPermissionKeys(keys);
+    allowedModules = toAllowedModuleKeys(expanded);
+    if (!allowedModules.includes('dashboard')) {
+      allowedModules = ['dashboard', ...allowedModules];
+    }
+  }
+
   return {
     tenant: {
       id: tenant.id,
@@ -576,6 +607,7 @@ async function getAccessProfile(currentUser) {
     },
     plan_details: planDetails ? [planDetails] : [],
     tenant_features: tenantFeatures,
+    allowedModules,
     refreshed_at: new Date().toISOString(),
   };
 }

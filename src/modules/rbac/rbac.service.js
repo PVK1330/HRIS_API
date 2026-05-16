@@ -35,25 +35,45 @@ async function listRoles(req) {
 }
 
 async function createRole(req) {
-  const { name, description } = req.body;
+  const { name, description, scope } = req.body;
   const pool = resolvePool(req.user.db_name);
   await ensureMigrated(req.user.db_name);
   try {
-    return await rbacRepo.insertRole(pool, { name, description });
+    return await rbacRepo.insertRole(pool, { name, description, scope });
   } catch (e) {
     if (e && e.code === '23505') throw ApiError.conflict('Role name already exists');
+    if (e && e.message && e.message.includes('Invalid data scope')) {
+      throw ApiError.badRequest(e.message);
+    }
     throw e;
   }
 }
 
 async function updateRolePermissions(req) {
   const roleId = Number(req.params.roleId);
-  const { permissionIds } = req.body;
+  const { permissionIds, scope } = req.body;
   const pool = resolvePool(req.user.db_name);
   await ensureMigrated(req.user.db_name);
   const roles = await rbacRepo.findAllRoles(pool);
   const role = roles.find((r) => r.id === roleId);
   if (!role) throw ApiError.notFound('Role not found');
+
+  if (scope !== undefined && scope !== null) {
+    const isOrgAdmin =
+      role.is_system && String(role.name).trim() === 'Organization Admin';
+    if (isOrgAdmin && String(scope).toUpperCase() !== 'ALL') {
+      throw ApiError.badRequest('Organization Admin must use ALL data scope');
+    }
+    try {
+      await rbacRepo.setRoleDataScope(pool, roleId, scope);
+    } catch (e) {
+      if (e && e.message && e.message.includes('Invalid data scope')) {
+        throw ApiError.badRequest(e.message);
+      }
+      throw e;
+    }
+  }
+
   await rbacRepo.setRolePermissions(pool, roleId, Array.isArray(permissionIds) ? permissionIds : []);
   return rbacRepo.findAllRoles(pool).then((rs) => rs.find((r) => r.id === roleId));
 }

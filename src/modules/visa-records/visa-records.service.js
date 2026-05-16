@@ -7,6 +7,10 @@ const crypto = require('crypto');
 const { getTenantPool } = require('../../config/db');
 const env = require('../../config/env');
 const ApiError = require('../../utils/ApiError');
+const {
+  appendScopeToConditions,
+  assertEmployeeRecordAccess,
+} = require('../../utils/applyDataScope');
 
 const SORT = {
   visa_expiry_date: 'evr.visa_expiry_date',
@@ -35,9 +39,9 @@ async function persistVisaFile(employeeId, file) {
   return `/uploads/visa-docs/${employeeId}/${fname}`;
 }
 
-function buildListFilters(query) {
-  const cond = ['evr.is_active = true', 'e.deleted_at IS NULL'];
-  const params = [];
+function buildListFilters(query, auth = null) {
+  let cond = ['evr.is_active = true', 'e.deleted_at IS NULL'];
+  let params = [];
   let i = 1;
 
   const search = (query.search || '').trim();
@@ -94,10 +98,14 @@ function buildListFilters(query) {
     );
   }
 
+  if (auth) {
+    ({ conditions: cond, params } = appendScopeToConditions(auth, cond, params, 'e'));
+  }
+
   return { where: cond.join(' AND '), params, nextIdx: i };
 }
 
-async function listVisaRecords(tenant, query = {}) {
+async function listVisaRecords(tenant, query = {}, auth = null) {
   const pool = await getTenantPool(tenant.dbName);
   const page = Math.max(1, parseInt(query.page, 10) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 10));
@@ -105,7 +113,7 @@ async function listVisaRecords(tenant, query = {}) {
   const sortBy = SORT[query.sortBy] ? query.sortBy : 'visa_expiry_date';
   const sortOrder = String(query.sortOrder || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
 
-  const { where, params } = buildListFilters(query);
+  const { where, params } = buildListFilters(query, auth);
   const from = `
     FROM employee_visa_records evr
     INNER JOIN employees e ON e.id = evr.employee_id
@@ -147,11 +155,11 @@ async function listVisaRecords(tenant, query = {}) {
   };
 }
 
-async function listAllForExport(tenant, query) {
+async function listAllForExport(tenant, query, auth = null) {
   const pool = await getTenantPool(tenant.dbName);
   const sortBy = SORT[query.sortBy] ? query.sortBy : 'visa_expiry_date';
   const sortOrder = String(query.sortOrder || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
-  const { where, params } = buildListFilters(query);
+  const { where, params } = buildListFilters(query, auth);
   const { rows } = await pool.query(
     `SELECT
        evr.*,
@@ -224,10 +232,11 @@ async function getFilterOptions(tenant) {
   };
 }
 
-async function getVisaRecord(tenant, id) {
+async function getVisaRecord(tenant, id, auth = null) {
   const pool = await getTenantPool(tenant.dbName);
   const { rows } = await pool.query(
     `SELECT evr.*, e.full_name, e.department, e.work_location, e.work_email,
+            e.reporting_manager_id,
             COALESCE(evr.visa_type_name, vt.name) AS visa_type_display
      FROM employee_visa_records evr
      INNER JOIN employees e ON e.id = evr.employee_id
@@ -236,6 +245,13 @@ async function getVisaRecord(tenant, id) {
     [id],
   );
   if (!rows[0]) throw new ApiError(404, 'Record not found');
+  if (auth) {
+    assertEmployeeRecordAccess(auth, {
+      id: rows[0].employee_id,
+      department: rows[0].department,
+      reporting_manager_id: rows[0].reporting_manager_id,
+    });
+  }
   return rows[0];
 }
 

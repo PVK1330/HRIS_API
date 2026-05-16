@@ -3,11 +3,16 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('./assets.controller');
-const { authenticate } = require('../../middlewares/auth.middleware');
+const {
+  authenticate,
+  loadAuthContext,
+  requirePermission,
+} = require('../../middlewares/auth.middleware');
+const { P } = require('../../constants/permissions');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
 
-router.use(authenticate);
-router.use(tenantResolver);
+router.use(authenticate, tenantResolver, loadAuthContext);
+router.use(requirePermission(P.ASSETS_VIEW));
 
 router.get('/', controller.list);
 router.get('/:id', controller.getOne);

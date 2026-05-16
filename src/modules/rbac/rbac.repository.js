@@ -99,31 +99,92 @@ async function filterPermissionsByTenantPlan(superAdminPool, tenantId, allPermis
 }
 
 async function findAllRoles(pool) {
-  const { rows } = await pool.query(`
-    SELECT
-      r.id, r.name, r.description, r.is_system,
-      COALESCE(
-        json_agg(
-          json_build_object('id', p.id, 'key', p.key, 'name', p.label)
-          ORDER BY p.sort_order ASC, p.id ASC
-        ) FILTER (WHERE p.id IS NOT NULL),
-        '[]'::json
-      ) AS permissions
-    FROM rbac_roles r
-    LEFT JOIN rbac_role_permissions rp ON rp.role_id = r.id
-    LEFT JOIN rbac_permissions p ON p.id = rp.permission_id
-    GROUP BY r.id
-    ORDER BY r.is_system DESC, LOWER(r.name) ASC
-  `);
+  let rows;
+  try {
+    const result = await pool.query(`
+      SELECT
+        r.id, r.name, r.description, r.is_system,
+        COALESCE(rds.scope, 'SELF') AS data_scope,
+        COALESCE(
+          json_agg(
+            json_build_object('id', p.id, 'key', p.key, 'name', p.label)
+            ORDER BY p.sort_order ASC, p.id ASC
+          ) FILTER (WHERE p.id IS NOT NULL),
+          '[]'::json
+        ) AS permissions
+      FROM rbac_roles r
+      LEFT JOIN role_data_scopes rds ON rds.role_id = r.id
+      LEFT JOIN rbac_role_permissions rp ON rp.role_id = r.id
+      LEFT JOIN rbac_permissions p ON p.id = rp.permission_id
+      GROUP BY r.id, rds.scope
+      ORDER BY r.is_system DESC, LOWER(r.name) ASC
+    `);
+    rows = result.rows;
+  } catch (_e) {
+    const result = await pool.query(`
+      SELECT
+        r.id, r.name, r.description, r.is_system,
+        'SELF' AS data_scope,
+        COALESCE(
+          json_agg(
+            json_build_object('id', p.id, 'key', p.key, 'name', p.label)
+            ORDER BY p.sort_order ASC, p.id ASC
+          ) FILTER (WHERE p.id IS NOT NULL),
+          '[]'::json
+        ) AS permissions
+      FROM rbac_roles r
+      LEFT JOIN rbac_role_permissions rp ON rp.role_id = r.id
+      LEFT JOIN rbac_permissions p ON p.id = rp.permission_id
+      GROUP BY r.id
+      ORDER BY r.is_system DESC, LOWER(r.name) ASC
+    `);
+    rows = result.rows;
+  }
   return rows;
 }
 
-async function insertRole(pool, { name, description }) {
+async function setRoleDataScope(pool, roleId, scope) {
+  const normalized = String(scope || 'SELF').toUpperCase();
+  const allowed = ['SELF', 'TEAM', 'DEPARTMENT', 'ALL'];
+  if (!allowed.includes(normalized)) {
+    throw new Error(`Invalid data scope: ${scope}`);
+  }
+  await pool.query(
+    `INSERT INTO role_data_scopes (role_id, scope)
+     VALUES ($1, $2)
+     ON CONFLICT (role_id) DO UPDATE SET scope = EXCLUDED.scope`,
+    [roleId, normalized],
+  );
+  return normalized;
+}
+
+async function getRoleDataScope(pool, roleId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT scope FROM role_data_scopes WHERE role_id = $1 LIMIT 1`,
+      [roleId],
+    );
+    return rows[0]?.scope || 'SELF';
+  } catch (_e) {
+    return 'SELF';
+  }
+}
+
+async function insertRole(pool, { name, description, scope = 'SELF' }) {
   const { rows } = await pool.query(
     `INSERT INTO rbac_roles (name, description, is_system) VALUES ($1, $2, FALSE) RETURNING id, name, description, is_system`,
     [name.trim(), description || null],
   );
-  return rows[0];
+  const role = rows[0];
+  if (role?.id) {
+    try {
+      await setRoleDataScope(pool, role.id, scope);
+      role.data_scope = String(scope || 'SELF').toUpperCase();
+    } catch (_e) {
+      role.data_scope = 'SELF';
+    }
+  }
+  return role;
 }
 
 async function updateRole(pool, id, { name, description }) {
@@ -188,5 +249,7 @@ module.exports = {
   updateRole,
   deleteRole,
   setRolePermissions,
+  setRoleDataScope,
+  getRoleDataScope,
   permissionKeysForRole,
 };

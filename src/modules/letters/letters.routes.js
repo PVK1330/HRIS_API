@@ -3,14 +3,19 @@
 const { Router } = require('express');
 const { body, param } = require('express-validator');
 
-const validate  = require('../../middlewares/validate.middleware');
-const { authenticate, requireRole } = require('../../middlewares/auth.middleware');
+const validate = require('../../middlewares/validate.middleware');
+const {
+  authenticate,
+  loadAuthContext,
+  requirePermission,
+} = require('../../middlewares/auth.middleware');
+const { tenantResolver } = require('../../middlewares/tenant.middleware');
 const controller = require('./letters.controller');
 
 const router = Router();
 
-// All routes require a logged-in tenant admin
-router.use(authenticate, requireRole('admin', 'hr_admin', 'hr_executive', 'manager'));
+router.use(authenticate, tenantResolver, loadAuthContext);
+router.use(requirePermission('letter-templates'));
 
 // ─── KPIs ─────────────────────────────────────────────────────────────────────
 router.get('/kpis', controller.getKpis);

@@ -10,6 +10,7 @@ const ApiError = require('../../../utils/ApiError');
 const { runTenantMigrations } = require('../../tenant/tenant.service');
 const empRepo = require('../employees.repository');
 const repo = require('./documents.repository');
+const { assertEmployeeRecordAccess } = require('../../../utils/applyDataScope');
 
 const _cache = new Map();
 async function ensureMigrated(dbName) {
@@ -27,20 +28,22 @@ function pool(user) {
   return getTenantPool(user.db_name);
 }
 
-async function getDocuments(user, employeeId) {
+async function getDocuments(user, employeeId, auth = null) {
   const p = pool(user);
   await ensureMigrated(user.db_name);
   const emp = await empRepo.findById(p, employeeId);
   if (!emp) throw ApiError.notFound('Employee not found');
+  if (auth) assertEmployeeRecordAccess(auth, emp);
   const documents = await repo.findByEmployee(p, employeeId);
   return { documents };
 }
 
-async function listCatalogTypes(user, employeeId) {
+async function listCatalogTypes(user, employeeId, auth = null) {
   const p = pool(user);
   await ensureMigrated(user.db_name);
   const emp = await empRepo.findById(p, employeeId);
   if (!emp) throw ApiError.notFound('Employee not found');
+  if (auth) assertEmployeeRecordAccess(auth, emp);
   const types = await repo.listActiveDocumentTypes(p);
   return { types };
 }
@@ -65,7 +68,7 @@ async function persistEmployeeDocFile(employeeId, file) {
   return `/uploads/employee-docs/${employeeId}/${fname}`;
 }
 
-async function createDocument(user, employeeId, body, file) {
+async function createDocument(user, employeeId, body, file, auth = null) {
   if (!file || !file.buffer) {
     throw ApiError.badRequest('File is required (field name: file)');
   }
@@ -73,6 +76,7 @@ async function createDocument(user, employeeId, body, file) {
   await ensureMigrated(user.db_name);
   const emp = await empRepo.findById(p, employeeId);
   if (!emp) throw ApiError.notFound('Employee not found');
+  if (auth) assertEmployeeRecordAccess(auth, emp);
 
   const document_type = String(body.document_type || '').trim();
   if (!document_type) throw ApiError.badRequest('document_type is required');

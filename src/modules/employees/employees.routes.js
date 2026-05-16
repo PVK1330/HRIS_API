@@ -4,7 +4,12 @@ const { Router } = require('express');
 const { body, param, query } = require('express-validator');
 const validate = require('../../middlewares/validate.middleware');
 const { validateWithJoi } = require('../../middlewares/joiValidate.middleware');
-const { authenticate, requireRole } = require('../../middlewares/auth.middleware');
+const {
+  authenticate,
+  loadAuthContext,
+  requirePermission,
+} = require('../../middlewares/auth.middleware');
+const { P } = require('../../constants/permissions');
 const ctrl = require('./employees.controller');
 const empV = require('./employees.validator');
 
@@ -16,18 +21,18 @@ const performanceRoutes = require('./performance/performance.routes');
 const assetsRoutes      = require('./assets/assets.routes');
 
 const router = Router();
-router.use(authenticate, requireRole('superadmin', 'admin', 'hr_admin', 'hr_executive', 'manager'));
+router.use(authenticate, loadAuthContext);
 
 // ─── Read-only ────────────────────────────────────────────────────────────────
-router.get('/stats',   ctrl.stats);
-router.get('/filters', ctrl.filterOptions);
-router.get('/filter-options', ctrl.filterOptions);
+router.get('/stats', requirePermission(P.EMPLOYEE_VIEW), ctrl.stats);
+router.get('/filters', requirePermission(P.EMPLOYEE_VIEW), ctrl.filterOptions);
+router.get('/filter-options', requirePermission(P.EMPLOYEE_VIEW), ctrl.filterOptions);
 
-router.get('/export', validateWithJoi(empV.exportQuery, 'query'), ctrl.exportList);
+router.get('/export', requirePermission(P.EMPLOYEE_VIEW), validateWithJoi(empV.exportQuery, 'query'), ctrl.exportList);
 
-router.get('/', validateWithJoi(empV.listingQuery, 'query'), ctrl.list);
+router.get('/', requirePermission(P.EMPLOYEE_VIEW), validateWithJoi(empV.listingQuery, 'query'), ctrl.list);
 
-router.get('/dropdown', validateWithJoi(empV.dropdownQuery, 'query'), ctrl.dropdownList);
+router.get('/dropdown', requirePermission(P.EMPLOYEE_VIEW), validateWithJoi(empV.dropdownQuery, 'query'), ctrl.dropdownList);
 
 // Sub-resources must be registered before `/:id` so paths like `/123/documents` are not
 // captured by the single-segment employee profile route.
@@ -37,12 +42,12 @@ router.use('/:employeeId/documents',   documentsRoutes);
 router.use('/:employeeId/performance', performanceRoutes);
 router.use('/:employeeId/assets',      assetsRoutes);
 
-router.get('/:id', [
+router.get('/:id', requirePermission(P.EMPLOYEE_VIEW), [
   param('id').isInt({ min: 1 }).withMessage('id must be a positive integer'),
 ], validate, ctrl.getOne);
 
-// ─── Write (hr_admin / admin only) ───────────────────────────────────────────
-router.post('/', requireRole('admin', 'hr_admin'), [
+// ─── Write ───────────────────────────────────────────────────────────────────
+router.post('/', requirePermission(P.EMPLOYEE_CREATE), [
   body('empId').exists({ checkFalsy: true }).withMessage('empId is required').isString().trim().isLength({ max: 20 }),
   body('fullName').exists({ checkFalsy: true }).withMessage('fullName is required').isString().trim().isLength({ min: 2, max: 255 }),
   body('jobTitle').exists({ checkFalsy: true }).withMessage('jobTitle is required').isString().trim(),
@@ -85,7 +90,7 @@ router.post('/', requireRole('admin', 'hr_admin'), [
   body('costCenter').optional({ nullable: true }).isString().trim().isLength({ max: 120 }),
 ], validate, ctrl.create);
 
-router.patch('/:id', requireRole('admin', 'hr_admin'), [
+router.patch('/:id', requirePermission(P.EMPLOYEE_EDIT), [
   param('id').isInt({ min: 1 }),
   body('fullName').optional().isString().trim().isLength({ min: 2, max: 255 }),
   body('jobTitle').optional().isString().trim(),
@@ -128,7 +133,7 @@ router.patch('/:id', requireRole('admin', 'hr_admin'), [
   body('costCenter').optional({ nullable: true }).isString().trim().isLength({ max: 120 }),
 ], validate, ctrl.update);
 
-router.put('/:id', requireRole('admin', 'hr_admin'), [
+router.put('/:id', requirePermission(P.EMPLOYEE_EDIT), [
   param('id').isInt({ min: 1 }),
   body('fullName').optional().isString().trim().isLength({ min: 2, max: 255 }),
   body('jobTitle').optional().isString().trim(),
@@ -171,7 +176,7 @@ router.put('/:id', requireRole('admin', 'hr_admin'), [
   body('costCenter').optional({ nullable: true }).isString().trim().isLength({ max: 120 }),
 ], validate, ctrl.update);
 
-router.delete('/:id', requireRole('admin', 'hr_admin'), [
+router.delete('/:id', requirePermission(P.EMPLOYEE_DELETE), [
   param('id').isInt({ min: 1 }),
 ], validate, ctrl.remove);
 

@@ -2,40 +2,41 @@
 
 const { Router } = require('express');
 const { validateWithJoi } = require('../../middlewares/joiValidate.middleware');
-const { authenticate, requirePermission } = require('../../middlewares/auth.middleware');
+const { authenticate, loadAuthContext, requirePermission } = require('../../middlewares/auth.middleware');
+const { P } = require('../../constants/permissions');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
 const ctrl = require('./departments.controller');
 const v = require('./departments.validator');
 
 const router = Router();
 
-router.use(authenticate, tenantResolver);
+router.use(authenticate, tenantResolver, loadAuthContext);
 
-router.get('/', validateWithJoi(v.listingQuery, 'query'), ctrl.list);
+router.get('/', requirePermission(P.DEPARTMENTS_MANAGE), validateWithJoi(v.listingQuery, 'query'), ctrl.list);
 
-router.get('/filter-options', validateWithJoi(v.filterOptionsQuery, 'query'), ctrl.filterOptions);
+router.get('/filter-options', requirePermission(P.DEPARTMENTS_MANAGE), validateWithJoi(v.filterOptionsQuery, 'query'), ctrl.filterOptions);
 
-router.get('/export', validateWithJoi(v.exportQuery, 'query'), ctrl.exportList);
+router.get('/export', requirePermission(P.DEPARTMENTS_MANAGE), validateWithJoi(v.exportQuery, 'query'), ctrl.exportList);
 
-router.get('/managers', ctrl.listManagers);
+router.get('/managers', requirePermission(P.DEPARTMENTS_MANAGE), ctrl.listManagers);
 
-router.get('/:id', validateWithJoi(v.idParam, 'params'), ctrl.getOne);
+router.get('/:id', requirePermission(P.DEPARTMENTS_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.getOne);
 
 router.post(
   '/',
-  requirePermission('departments'),
+  requirePermission(P.DEPARTMENTS_MANAGE),
   validateWithJoi(v.createBody, 'body'),
   ctrl.create,
 );
 
 router.put(
   '/:id',
-  requirePermission('departments'),
+  requirePermission(P.DEPARTMENTS_MANAGE),
   validateWithJoi(v.idParam, 'params'),
   validateWithJoi(v.updateBody, 'body'),
   ctrl.update,
 );
 
-router.delete('/:id', requirePermission('departments'), validateWithJoi(v.idParam, 'params'), ctrl.remove);
+router.delete('/:id', requirePermission(P.DEPARTMENTS_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.remove);
 
 module.exports = router;

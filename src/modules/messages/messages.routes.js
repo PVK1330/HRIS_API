@@ -3,11 +3,17 @@
 const { Router } = require('express');
 const { body, param, query } = require('express-validator');
 const validate = require('../../middlewares/validate.middleware');
-const { authenticate, requireRole } = require('../../middlewares/auth.middleware');
+const {
+  authenticate,
+  loadAuthContext,
+  requirePermission,
+} = require('../../middlewares/auth.middleware');
+const { P } = require('../../constants/permissions');
 const ctrl = require('./messages.controller');
 
 const router = Router();
-router.use(authenticate, requireRole('admin', 'hr_admin', 'hr_executive', 'manager', 'employee'));
+router.use(authenticate, loadAuthContext);
+router.use(requirePermission(P.MESSAGES_VIEW));
 
 router.get('/unread', ctrl.unreadCount);
 

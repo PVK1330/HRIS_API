@@ -3,13 +3,18 @@
 const { Router } = require('express');
 const { body, param } = require('express-validator');
 const validate = require('../../../middlewares/validate.middleware');
-const { requireRole } = require('../../../middlewares/auth.middleware');
+const { requirePermission } = require('../../../middlewares/auth.middleware');
+const { P } = require('../../../constants/permissions');
 const ApiError = require('../../../utils/ApiError');
 const { uploadEmployeeDocument } = require('../../../middlewares/employeeDocumentUpload.middleware');
 const ctrl = require('./documents.controller');
 const multer = require('multer');
 
+const { requireEmployeeScopeAccess } = require('../../../middlewares/employeeScope.middleware');
+
 const router = Router({ mergeParams: true });
+
+router.use(requireEmployeeScopeAccess('employeeId'));
 
 const employeeIdParam = param('employeeId').isInt({ min: 1 });
 
@@ -24,13 +29,13 @@ function handleMulter(req, res, next) {
   });
 }
 
-router.get('/catalog', [employeeIdParam], validate, ctrl.listCatalog);
+router.get('/catalog', requirePermission(P.DOCUMENT_VIEW), [employeeIdParam], validate, ctrl.listCatalog);
 
-router.get('/', [employeeIdParam], validate, ctrl.list);
+router.get('/', requirePermission(P.DOCUMENT_VIEW), [employeeIdParam], validate, ctrl.list);
 
 router.post(
   '/',
-  requireRole('superadmin', 'admin', 'hr_admin', 'hr_executive'),
+  requirePermission(P.DOCUMENT_UPLOAD),
   [employeeIdParam],
   validate,
   handleMulter,

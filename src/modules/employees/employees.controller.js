@@ -16,13 +16,13 @@ function exportFilename(entity, ext) {
 
 // GET /api/v1/employees?page=1&limit=20&search=&department=&status=&workMode=&jobTitle=&workLocation=
 const list = asyncHandler(async (req, res) => {
-  const result = await service.listEmployees(req.user, req.query);
+  const result = await service.listEmployees(req.user, req.query, req.auth);
   return ApiResponse.ok(res, result, "Employees retrieved successfully");
 });
 
 /** GET /employees/dropdown — full id/name list for selects (no pagination). */
 const dropdownList = asyncHandler(async (req, res) => {
-  const result = await service.listEmployeesDropdown(req.user, req.query);
+  const result = await service.listEmployeesDropdown(req.user, req.query, req.auth);
   return ApiResponse.ok(res, result, "Employees retrieved successfully");
 });
 
@@ -32,7 +32,7 @@ const exportList = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Query param type must be pdf or excel");
   }
   const { type: _t, ...rest } = req.query;
-  const rows = await service.listEmployeesForExport(req.user, rest);
+  const rows = await service.listEmployeesForExport(req.user, rest, req.auth);
   const applied = { ...rest, type };
   if (type === "excel") {
     const name = exportFilename("employees", "xlsx");
@@ -57,7 +57,7 @@ const filterOptions = asyncHandler(async (req, res) => {
 });
 
 const getOne = asyncHandler(async (req, res) => {
-  const emp = await service.getEmployee(req.user, req.params.id);
+  const emp = await service.getEmployee(req.user, req.params.id, req.auth);
   return ApiResponse.ok(
     res,
     { employee: emp },
@@ -75,7 +75,7 @@ const create = asyncHandler(async (req, res) => {
 });
 
 const update = asyncHandler(async (req, res) => {
-  const emp = await service.updateEmployee(req.user, req.params.id, req.body);
+  const emp = await service.updateEmployee(req.user, req.params.id, req.body, req.auth);
   return ApiResponse.ok(
     res,
     { employee: emp },
@@ -85,7 +85,7 @@ const update = asyncHandler(async (req, res) => {
 
 // DELETE /api/v1/employees/:id
 const remove = asyncHandler(async (req, res) => {
-  await service.deleteEmployee(req.user, req.params.id);
+  await service.deleteEmployee(req.user, req.params.id, req.auth);
   return ApiResponse.ok(res, null, "Employee deleted successfully");
 });
 

@@ -3,17 +3,19 @@
 const express = require('express');
 const router = express.Router();
 const payrollController = require('./payroll.controller');
-const { authenticate, requireRole } = require('../../middlewares/auth.middleware');
+const {
+  authenticate,
+  loadAuthContext,
+  requirePermission,
+} = require('../../middlewares/auth.middleware');
+const { P } = require('../../constants/permissions');
 
-// All routes require tenant authentication
-router.use(authenticate);
+router.use(authenticate, loadAuthContext);
 
-// Salary Routes
-router.get('/salaries', requireRole(['admin', 'hr']), payrollController.getSalaries);
-router.post('/salaries', requireRole(['admin', 'hr']), payrollController.upsertSalary);
+router.get('/salaries', requirePermission(P.PAYROLL_VIEW), payrollController.getSalaries);
+router.post('/salaries', requirePermission(P.PAYROLL_VIEW), payrollController.upsertSalary);
 
-// Items Routes
-router.get('/items', requireRole(['admin', 'hr']), payrollController.getItems);
-router.post('/items', requireRole(['admin', 'hr']), payrollController.createItem);
+router.get('/items', requirePermission(P.PAYROLL_VIEW), payrollController.getItems);
+router.post('/items', requirePermission(P.PAYROLL_VIEW), payrollController.createItem);
 
 module.exports = router;

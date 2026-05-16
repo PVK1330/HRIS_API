@@ -15,7 +15,7 @@ function exportFilename(ext) {
 }
 
 const list = asyncHandler(async (req, res) => {
-  const data = await service.listVisaRecords(req.tenant, req.query);
+  const data = await service.listVisaRecords(req.tenant, req.query, req.auth);
   return ApiResponse.ok(res, data, 'Visa records retrieved successfully');
 });
 
@@ -35,7 +35,7 @@ const exportList = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'Query param type must be pdf or excel');
   }
   const { type: _t, ...rest } = req.query;
-  const rows = await service.listAllForExport(req.tenant, rest);
+  const rows = await service.listAllForExport(req.tenant, rest, req.auth);
   const applied = { ...rest, type };
   if (type === 'excel') {
     res.setHeader('Content-Disposition', `attachment; filename="${exportFilename('xlsx')}"`);
@@ -48,7 +48,7 @@ const exportList = asyncHandler(async (req, res) => {
 });
 
 const getOne = asyncHandler(async (req, res) => {
-  const row = await service.getVisaRecord(req.tenant, req.params.id);
+  const row = await service.getVisaRecord(req.tenant, req.params.id, req.auth);
   return ApiResponse.ok(res, row, 'Visa record retrieved successfully');
 });
 

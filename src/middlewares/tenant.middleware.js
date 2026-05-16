@@ -9,11 +9,18 @@ async function tenantResolver(req, _res, next) {
   try {
     let tenantIdentifier;
 
-    // Strategy 1: Subdomain
-    const host = req.headers.host || '';
+    // Strategy 1: Subdomain (incl. org.localhost for Vite dev)
+    const host = (req.headers.host || '').split(':')[0];
     if (host.includes('.')) {
-      const parts = host.split('.');
-      if (parts.length > 2) {
+      const parts = host.split('.').filter(Boolean);
+      const last = parts[parts.length - 1];
+      const isLocalDev = last === 'localhost' || last === '127.0.0.1';
+      if (isLocalDev && parts.length >= 2) {
+        const subdomain = parts[0];
+        if (subdomain && subdomain !== 'www' && subdomain !== 'api') {
+          tenantIdentifier = subdomain;
+        }
+      } else if (parts.length > 2) {
         const subdomain = parts[0];
         if (subdomain && subdomain !== 'www' && subdomain !== 'api') {
           tenantIdentifier = subdomain;
@@ -40,15 +47,42 @@ async function tenantResolver(req, _res, next) {
       return next(new ApiError(400, 'Invalid tenant identifier format'));
     }
 
-    const { rows } = await superAdminPool.query(
+    let rows;
+    const slugNorm = String(tenantIdentifier)
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, '-')
+      .replace(/[^\w-]+/g, '')
+      .replace(/--+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    const byKey = await superAdminPool.query(
       `SELECT id, db_name, schema_name, status, timezone, date_format, time_format, admin_email, name
        FROM public.tenants
        WHERE schema_name = $1
           OR admin_email = $1
           OR id::text = $1
        LIMIT 1`,
-      [tenantIdentifier]
+      [tenantIdentifier],
     );
+    rows = byKey.rows;
+    if (!rows.length && slugNorm) {
+      const all = await superAdminPool.query(
+        `SELECT id, db_name, schema_name, status, timezone, date_format, time_format, admin_email, name
+         FROM public.tenants`,
+      );
+      const match = all.rows.find((t) => {
+        const n = String(t.name || '')
+          .toLowerCase()
+          .trim()
+          .replace(/\s+/g, '-')
+          .replace(/[^\w-]+/g, '')
+          .replace(/--+/g, '-')
+          .replace(/^-|-$/g, '');
+        return n === slugNorm;
+      });
+      if (match) rows = [match];
+    }
 
     if (!rows.length) return next(new ApiError(404, 'Tenant not found'));
     const tenant = rows[0];

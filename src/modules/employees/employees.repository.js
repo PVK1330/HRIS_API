@@ -1,6 +1,7 @@
 "use strict";
 
 const { applyEmployeeListScope } = require("../../utils/applyDataScope");
+const { formatEmpId } = require("../../utils/empIdFormat");
 
 function buildEmployeeListWhere({
   search = "",
@@ -291,6 +292,22 @@ async function findByEmpId(pool, empId) {
     [empId],
   );
   return rows[0] || null;
+}
+
+/** Next sequential emp_id: "EMP-1", "EMP-2", … */
+async function getNextEmpId(pool) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(MAX(
+       CASE
+         WHEN TRIM(emp_id) ~ '^[0-9]+$' THEN TRIM(emp_id)::bigint
+         WHEN TRIM(emp_id) ~ '[0-9]+' THEN (regexp_match(TRIM(emp_id), '([0-9]+)'))[1]::bigint
+         ELSE NULL
+       END
+     ), 0) + 1 AS next_id
+     FROM employees
+     WHERE deleted_at IS NULL AND emp_id IS NOT NULL AND TRIM(emp_id) <> ''`,
+  );
+  return formatEmpId(rows[0]?.next_id ?? 1);
 }
 
 async function findByWorkEmail(pool, email, excludeId = null) {
@@ -946,6 +963,7 @@ module.exports = {
   findAllForExport,
   findById,
   findByEmpId,
+  getNextEmpId,
   findByWorkEmail,
   insert,
   update,

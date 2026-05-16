@@ -57,14 +57,37 @@ async function fetchPlanBundles(planId) {
   return { planDetails: planDetails ? [planDetails] : [], planFeatures };
 }
 
+/**
+ * Tenant admin sidebar modules follow the "Organization Admin" RBAC role
+ * (Settings → Roles & permissions), not every permission in the database.
+ */
 async function adminModulesForJwt(tenantPool) {
+  const rbacRepo = require('../rbac/rbac.repository');
   try {
+    const { rows: roleRows } = await tenantPool.query(
+      `SELECT id FROM rbac_roles
+       WHERE is_system = TRUE AND name = 'Organization Admin'
+       LIMIT 1`,
+    );
+    const orgAdminRoleId = roleRows[0]?.id;
+    if (orgAdminRoleId) {
+      const keys = await rbacRepo.permissionKeysForRole(tenantPool, orgAdminRoleId);
+      if (keys.length) {
+        const expanded = expandPermissionKeys(keys);
+        const modules = toAllowedModuleKeys(expanded);
+        if (!modules.includes('dashboard')) modules.unshift('dashboard');
+        if (!modules.includes('system-settings')) modules.push('system-settings');
+        return modules;
+      }
+    }
     const { rows } = await tenantPool.query(
       `SELECT key FROM rbac_permissions ORDER BY sort_order ASC, id ASC`,
     );
-    return rows.length ? rows.map((r) => r.key) : ['dashboard'];
+    const modules = rows.length ? rows.map((r) => r.key) : ['dashboard'];
+    if (!modules.includes('system-settings')) modules.push('system-settings');
+    return modules;
   } catch (_e) {
-    return ['dashboard'];
+    return ['dashboard', 'system-settings'];
   }
 }
 
@@ -211,9 +234,56 @@ async function verify2FA(userId, code) {
   return { success: true };
 }
 
+function slugifyTenantName(name) {
+  return String(name || '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^\w-]+/g, '')
+    .replace(/--+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+/**
+ * Resolve tenant for workspace login (numeric id, subdomain slug, or schema_name).
+ */
+async function resolveTenantForLogin({ tenantId, tenantSlug }) {
+  const idParsed =
+    tenantId != null && `${tenantId}`.trim() !== ''
+      ? parseInt(String(tenantId), 10)
+      : NaN;
+
+  if (Number.isInteger(idParsed) && idParsed > 0) {
+    const { rows } = await superAdminPool.query(
+      `SELECT id, name, db_name, status, plan_id, admin_email
+       FROM public.tenants WHERE id = $1 LIMIT 1`,
+      [idParsed],
+    );
+    if (rows.length) return rows[0];
+  }
+
+  const slugRaw = String(tenantSlug || '').trim().toLowerCase();
+  if (!slugRaw) return null;
+
+  const { rows: bySchema } = await superAdminPool.query(
+    `SELECT id, name, db_name, status, plan_id, admin_email
+     FROM public.tenants
+     WHERE LOWER(schema_name) = $1 OR id::text = $1
+     LIMIT 1`,
+    [slugRaw],
+  );
+  if (bySchema.length) return bySchema[0];
+
+  const slugNorm = slugifyTenantName(slugRaw);
+  const { rows: all } = await superAdminPool.query(
+    `SELECT id, name, db_name, status, plan_id, admin_email FROM public.tenants`,
+  );
+  return all.find((t) => slugifyTenantName(t.name) === slugNorm) || null;
+}
+
 /**
  * Tenant workspace login.
- * • With `tenantId`: employee portal (`work_email`) first, otherwise `admin_users` in that org.
+ * • With `tenantId` or `tenantSlug`: employee portal first, then `admin_users` in that org.
  * • Legacy: tenant resolved solely by matching `admin_email` on central `tenants`.
  */
 async function login(email, password, options = {}) {
@@ -227,19 +297,24 @@ async function login(email, password, options = {}) {
   const rbacRepo = require('../rbac/rbac.repository');
   const { runTenantMigrations } = require('../tenant/tenant.service');
 
-  /** Scoped login when client sends organization id */
-  if (Number.isInteger(tenantIdParsed) && tenantIdParsed > 0) {
-    const tRes = await superAdminPool.query(
-      `SELECT id, name, db_name, status, plan_id FROM public.tenants WHERE id = $1 LIMIT 1`,
-      [tenantIdParsed],
+  const tenant = await resolveTenantForLogin({
+    tenantId: Number.isInteger(tenantIdParsed) && tenantIdParsed > 0 ? tenantIdParsed : null,
+    tenantSlug: options?.tenantSlug,
+  });
+
+  if (options?.tenantSlug && String(options.tenantSlug).trim() && !tenant) {
+    throw ApiError.unauthorized(
+      'Organization workspace not found. Verify the URL or sign in from your company login link.',
     );
-    if (!tRes.rows.length) throw ApiError.unauthorized('Invalid email or password');
-    const tenant = tRes.rows[0];
+  }
+
+  /** Scoped login when tenant is known (org id or subdomain slug) */
+  if (tenant) {
     if (tenant.status !== 'active') {
       throw ApiError.unauthorized('Account is suspended or inactive');
     }
 
-    await runTenantMigrations(tenant.db_name).catch(() => { });
+    await runTenantMigrations(tenant.db_name).catch(() => {});
     const tenantPool = getTenantPool(tenant.db_name);
     const tenantFeatures = await gatherTenantFeatures(tenant.id);
     const { planDetails, planFeatures } = await fetchPlanBundles(tenant.plan_id);
@@ -367,13 +442,13 @@ async function login(email, password, options = {}) {
     throw ApiError.unauthorized('Invalid email or password');
   }
 
-  const tenant = centralResult.rows[0];
-  if (tenant.status !== 'active') {
+  const centralTenant = centralResult.rows[0];
+  if (centralTenant.status !== 'active') {
     throw ApiError.unauthorized('Account is suspended or inactive');
   }
 
-  const tenantPool = getTenantPool(tenant.db_name);
-  await runTenantMigrations(tenant.db_name).catch(() => { });
+  const tenantPool = getTenantPool(centralTenant.db_name);
+  await runTenantMigrations(centralTenant.db_name).catch(() => { });
 
   const userResult = await tenantPool.query(
     'SELECT id, email, password_hash, name, status FROM admin_users WHERE LOWER(TRIM(email)) = $1',
@@ -394,8 +469,8 @@ async function login(email, password, options = {}) {
     throw ApiError.unauthorized('Invalid email or password');
   }
 
-  const tenantFeatures = await gatherTenantFeatures(tenant.id);
-  const { planDetails, planFeatures } = await fetchPlanBundles(tenant.plan_id);
+  const tenantFeatures = await gatherTenantFeatures(centralTenant.id);
+  const { planDetails, planFeatures } = await fetchPlanBundles(centralTenant.plan_id);
   const allowedModules = await adminModulesForJwt(tenantPool);
 
   const token = jwt.sign(
@@ -403,8 +478,8 @@ async function login(email, password, options = {}) {
       id: user.id,
       email: user.email,
       role: 'admin',
-      tenant_id: tenant.id,
-      db_name: tenant.db_name,
+      tenant_id: centralTenant.id,
+      db_name: centralTenant.db_name,
     },
     env.JWT.secret,
     { expiresIn: env.JWT.expiresIn },
@@ -417,8 +492,8 @@ async function login(email, password, options = {}) {
       name: user.name,
       email: user.email,
       role: 'admin',
-      tenantId: tenant.id,
-      tenantName: tenant.name,
+      tenantId: centralTenant.id,
+      tenantName: centralTenant.name,
     },
     plan_details: planDetails,
     plan_features: planFeatures,

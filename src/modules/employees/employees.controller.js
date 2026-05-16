@@ -56,6 +56,11 @@ const filterOptions = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, "Filter options retrieved successfully");
 });
 
+const nextEmpId = asyncHandler(async (req, res) => {
+  const nextId = await service.getNextEmployeeId(req.user);
+  return ApiResponse.ok(res, { nextEmpId: nextId }, "Next employee ID");
+});
+
 const getOne = asyncHandler(async (req, res) => {
   const emp = await service.getEmployee(req.user, req.params.id, req.auth);
   return ApiResponse.ok(
@@ -95,6 +100,7 @@ module.exports = {
   exportList,
   stats,
   filterOptions,
+  nextEmpId,
   getOne,
   create,
   update,

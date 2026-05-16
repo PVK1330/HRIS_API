@@ -7,6 +7,7 @@ const helmet = require('helmet');
 const cors = require('cors');
 
 const env = require('./config/env');
+const { createCorsOptions } = require('./config/cors');
 const ApiResponse = require('./utils/ApiResponse');
 const ApiError = require('./utils/ApiError');
 const { notFoundHandler, errorHandler } = require('./middlewares/error.middleware');
@@ -48,13 +49,7 @@ const app = express();
 /* -------------------- Security & parsers -------------------- */
 
 app.disable('x-powered-by');
-const allowedOrigins = env.CORS_ORIGINS;
-const corsOptions = {
-  origin: allowedOrigins,
-  credentials: true,
-  optionsSuccessStatus: 200,
-};
-app.use(cors(corsOptions));
+app.use(cors(createCorsOptions()));
 
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },

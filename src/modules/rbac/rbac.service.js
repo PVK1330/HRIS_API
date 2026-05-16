@@ -19,13 +19,18 @@ async function ensureMigrated(dbName) {
 async function listPermissions(req) {
   const pool = resolvePool(req.user.db_name);
   await ensureMigrated(req.user.db_name);
+  return rbacRepo.findAllPermissions(pool);
+}
+
+async function listAvailablePermissions(req) {
+  const pool = resolvePool(req.user.db_name);
+  await ensureMigrated(req.user.db_name);
   const all = await rbacRepo.findAllPermissions(pool);
-  const payload = rbacRepo.filterPermissionsByTenantPlan(
+  return rbacRepo.filterPermissionsByTenantPlan(
     superAdminPool,
     Number(req.user.tenant_id),
     all,
   );
-  return payload;
 }
 
 async function listRoles(req) {
@@ -89,6 +94,7 @@ async function deleteRole(req) {
 
 module.exports = {
   listPermissions,
+  listAvailablePermissions,
   listRoles,
   createRole,
   updateRolePermissions,

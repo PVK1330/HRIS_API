@@ -11,6 +11,7 @@ const { runTenantMigrations } = require("../tenant/tenant.service");
 const repo = require("./employees.repository");
 const { sendEmployeeWelcomeEmail } = require("./employees.mailer");
 const { assertEmployeeRecordAccess } = require("../../utils/applyDataScope");
+const { formatEmpId, parseEmpIdSequence } = require("../../utils/empIdFormat");
 
 const BCRYPT_ROUNDS = 12;
 
@@ -143,6 +144,12 @@ async function getEmployee(user, id, auth = null) {
   return omitPassword(emp);
 }
 
+async function getNextEmployeeId(user) {
+  const pool = resolvePool(user);
+  await ensureMigrated(user.db_name);
+  return repo.getNextEmpId(pool);
+}
+
 async function createEmployee(user, data) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
@@ -154,9 +161,21 @@ async function createEmployee(user, data) {
 
   const sanitized = sanitizeEmployeePayload({ ...data });
 
-  if (await repo.findByEmpId(pool, sanitized.empId)) {
-    throw ApiError.conflict(`Employee ID "${sanitized.empId}" already exists`);
+  let empId = String(sanitized.empId || "").trim();
+  if (!empId) {
+    empId = await repo.getNextEmpId(pool);
+  } else {
+    const seq = parseEmpIdSequence(empId);
+    if (seq > 0) empId = formatEmpId(seq);
   }
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (!(await repo.findByEmpId(pool, empId))) break;
+    empId = await repo.getNextEmpId(pool);
+  }
+  if (await repo.findByEmpId(pool, empId)) {
+    throw ApiError.conflict(`Employee ID "${empId}" already exists`);
+  }
+  sanitized.empId = empId;
   if (sanitized.workEmail && (await repo.findByWorkEmail(pool, sanitized.workEmail))) {
     throw ApiError.conflict(`Work email "${sanitized.workEmail}" already in use`);
   }
@@ -345,6 +364,7 @@ async function getStats(user) {
 }
 
 module.exports = {
+  getNextEmployeeId,
   listEmployees,
   listEmployeesDropdown,
   listEmployeesForExport,

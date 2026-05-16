@@ -1,5 +1,7 @@
 'use strict';
 
+const { ACTION_TO_LEGACY_KEYS } = require('../../constants/permissions');
+
 async function findAllPermissions(pool) {
   const { rows } = await pool.query(
     `SELECT id, key, label AS name, sort_order FROM rbac_permissions ORDER BY sort_order ASC, id ASC`,
@@ -53,8 +55,10 @@ function buildFeatureCodeKeySet(enabledRows) {
     shift_management: ['shift-management'],
     overtime_management: ['overtime-management'],
     training_development: ['training-development'],
-    department: ['departments'],
-    departments: ['departments'],
+    department: ['departments', 'designations'],
+    departments: ['departments', 'designations'],
+    designation: ['departments', 'designations'],
+    designations: ['departments', 'designations'],
     visa_management: ['visa-nationality'],
     visa_nationality: ['visa-nationality'],
     visa_and_nationality: ['visa-nationality'],
@@ -95,7 +99,12 @@ async function filterPermissionsByTenantPlan(superAdminPool, tenantId, allPermis
 
   const keySet = buildFeatureCodeKeySet(rows);
 
-  return allPermissions.filter((p) => keySet.has(p.key));
+  return allPermissions.filter((p) => {
+    if (keySet.has(p.key)) return true;
+    const legacyTargets = ACTION_TO_LEGACY_KEYS[p.key];
+    if (legacyTargets && legacyTargets.some((l) => keySet.has(l))) return true;
+    return false;
+  });
 }
 
 async function findAllRoles(pool) {

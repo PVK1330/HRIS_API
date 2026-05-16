@@ -2,7 +2,7 @@
 
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
-const env = require('../config/env');
+const { socketCorsOrigin } = require('../config/cors');
 const { getTenantPool } = require('../config/db');
 const { runTenantMigrations } = require('../modules/tenant/tenant.service');
 const repo = require('../modules/messages/messages.repository');
@@ -37,7 +37,7 @@ async function ensureMigrated(dbName) {
 function initSocket(httpServer) {
   const io = new Server(httpServer, {
     cors: {
-      origin: env.CORS_ORIGINS,
+      origin: socketCorsOrigin,
       credentials: true,
     },
     path: '/socket.io',

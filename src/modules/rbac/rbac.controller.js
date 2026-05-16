@@ -10,7 +10,7 @@ const listPermissions = asyncHandler(async (req, res) => {
 });
 
 const listAvailablePermissions = asyncHandler(async (req, res) => {
-  const data = await service.listPermissions(req);
+  const data = await service.listAvailablePermissions(req);
   return ApiResponse.ok(res, data, 'Permissions retrieved successfully');
 });
 

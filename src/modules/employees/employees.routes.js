@@ -28,6 +28,8 @@ router.get('/stats', requirePermission(P.EMPLOYEE_VIEW), ctrl.stats);
 router.get('/filters', requirePermission(P.EMPLOYEE_VIEW), ctrl.filterOptions);
 router.get('/filter-options', requirePermission(P.EMPLOYEE_VIEW), ctrl.filterOptions);
 
+router.get('/next-emp-id', requirePermission(P.EMPLOYEE_CREATE), ctrl.nextEmpId);
+
 router.get('/export', requirePermission(P.EMPLOYEE_VIEW), validateWithJoi(empV.exportQuery, 'query'), ctrl.exportList);
 
 router.get('/', requirePermission(P.EMPLOYEE_VIEW), validateWithJoi(empV.listingQuery, 'query'), ctrl.list);
@@ -48,7 +50,7 @@ router.get('/:id', requirePermission(P.EMPLOYEE_VIEW), [
 
 // ─── Write ───────────────────────────────────────────────────────────────────
 router.post('/', requirePermission(P.EMPLOYEE_CREATE), [
-  body('empId').exists({ checkFalsy: true }).withMessage('empId is required').isString().trim().isLength({ max: 20 }),
+  body('empId').optional({ nullable: true }).isString().trim().isLength({ max: 20 }),
   body('fullName').exists({ checkFalsy: true }).withMessage('fullName is required').isString().trim().isLength({ min: 2, max: 255 }),
   body('jobTitle').exists({ checkFalsy: true }).withMessage('jobTitle is required').isString().trim(),
   body('department').exists({ checkFalsy: true }).withMessage('department is required').isString().trim(),

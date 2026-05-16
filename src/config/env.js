@@ -43,6 +43,21 @@ const env = Object.freeze({
     .map((s) => s.trim())
     .filter(Boolean),
 
+  /** Allow http(s)://*.localhost:PORT (tenant workspace subdomains in dev) */
+  CORS_ALLOW_SUBDOMAIN_ORIGINS: process.env.CORS_ALLOW_SUBDOMAIN_ORIGINS !== 'false',
+
+  /** Dev only: allow any browser origin (cannot use with credentials + literal *) */
+  CORS_ALLOW_ALL: process.env.CORS_ALLOW_ALL === 'true',
+
+  /** Comma ports for *.localhost origins, e.g. 5173,4173 */
+  CORS_LOCALHOST_PORTS: (process.env.CORS_LOCALHOST_PORTS || '5173,4173')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+
+  /** e.g. hris.example.com — allows https://acme.hris.example.com */
+  CORS_SUBDOMAIN_HOST_SUFFIX: (process.env.CORS_SUBDOMAIN_HOST_SUFFIX || '').trim(),
+
   DB: {
     user: process.env.DB_USER,
     password: process.env.DB_PASS,

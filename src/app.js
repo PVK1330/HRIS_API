@@ -118,6 +118,7 @@ app.use('/api/v1/superadmin/features', featuresRoutes);
 app.use('/api/v1/tenants', tenantRoutes);
 app.use('/api/v1/settings', settingsRoutes);
 app.use('/api/v1/payment-gateways', paymentGatewaysRoutes);
+app.use('/api/v1/billing', require('./modules/billing/billing.routes'));
 app.use('/api/v1/recaptcha', recaptchaRoutes);
 app.use('/api/v1/free-trial', freeTrialRoutes);
 app.use('/api/v1/account-settings', accountSettingsRoutes);

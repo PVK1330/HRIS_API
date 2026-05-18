@@ -110,6 +110,8 @@ const updateValidators = [
 
 router.get('/', controller.list);
 
+router.get('/enabled', controller.listEnabled);
+
 router.get('/:slug',
   [slugParam],
   validate,

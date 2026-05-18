@@ -14,6 +14,8 @@ const { renderEmail } = require("../../utils/emailTemplate");
 const ApiError = require("../../utils/ApiError");
 const logger = require("../../utils/logger");
 const repo = require("./tenant.repository");
+const { formatDate } = require("../../utils/timezone");
+const { getPlatformContext } = require("../../utils/platformSettings");
 
 const SALT_ROUNDS = env.BCRYPT_SALT_ROUNDS;
 const TENANT_MIGRATIONS_DIR = path.join(
@@ -172,6 +174,17 @@ async function dropTenantDatabaseIfExists(dbName) {
   }
 }
 
+function paymentMethodLabel(gateway) {
+  const map = {
+    stripe: "Stripe",
+    paypal: "PayPal",
+    razorpay: "Razorpay",
+    offline: "Bank Transfer",
+    manual: "Manual",
+  };
+  return map[String(gateway || "").toLowerCase()] || String(gateway || "Manual");
+}
+
 async function createTenant({
   name,
   adminEmail,
@@ -179,6 +192,10 @@ async function createTenant({
   adminPassword,
   createdBy,
   plan_id,
+  billing_cycle = "monthly",
+  payment_gateway = "manual",
+  payment_collection = "trial",
+  payment_reference = null,
 }) {
   const normalizedEmail = String(adminEmail).trim().toLowerCase();
   const cleanName = String(name).trim();
@@ -222,9 +239,17 @@ async function createTenant({
       adminClient.release();
     }
 
-    // 4. Calculate trial end date (14 days from now)
+    // 4. Plan + trial window
+    let planDetails = null;
+    if (plan_id) {
+      const plansRepo = require("../superadmin/plans.repository");
+      planDetails = await plansRepo.findById(plan_id);
+    }
+    const trialDays = Number(planDetails?.trial_days) > 0 ? Number(planDetails.trial_days) : 14;
     const trialEndsAt = new Date();
-    trialEndsAt.setDate(trialEndsAt.getDate() + 14);
+    trialEndsAt.setDate(trialEndsAt.getDate() + trialDays);
+    const billingCycle =
+      String(billing_cycle || "monthly").toLowerCase() === "annual" ? "annual" : "monthly";
 
     // 5. Insert into public.tenants (registry in hrs_backend).
     let tenantRow;
@@ -274,13 +299,19 @@ async function createTenant({
     let subscriptionRow = null;
     if (plan_id) {
       try {
+        const subStatus =
+          String(payment_collection || "trial").toLowerCase() === "completed"
+            ? "active"
+            : "trial";
+        const periodInterval =
+          billingCycle === "annual" ? "INTERVAL '1 year'" : "INTERVAL '1 month'";
         const subResult = await db.superAdminPool.query(
           `INSERT INTO public.tenant_subscriptions (
             tenant_id, plan_id, status, billing_cycle,
             current_period_start, current_period_end, trial_end
-          ) VALUES ($1, $2, 'trial', 'monthly', NOW(), NOW() + INTERVAL '14 days', $3)
+          ) VALUES ($1, $2, $3, $4, NOW(), NOW() + ${periodInterval}, $5)
           RETURNING id`,
-          [tenantRow.id, plan_id, trialEndsAt],
+          [tenantRow.id, plan_id, subStatus, billingCycle, trialEndsAt],
         );
         subscriptionRow = subResult.rows[0];
       } catch (subErr) {
@@ -304,6 +335,9 @@ async function createTenant({
     });
 
     logger.info(`Tenant created: ${tenantRow.name} (db=${tenantRow.db_name})`);
+
+    let lastPaymentId = null;
+    let lastPaymentAmount = 0;
 
     const tenant = {
       id: tenantRow.id,
@@ -333,44 +367,65 @@ async function createTenant({
     }
 
     // 10. Create and Send Invoice
-    if (plan_id && subscriptionRow) {
+    if (plan_id && subscriptionRow && planDetails) {
       try {
-        const plansRepo = require("../superadmin/plans.repository");
-        const planDetails = await plansRepo.findById(plan_id);
-
         if (planDetails) {
-          // Create a payment record as an "invoice"
+          const platform = await getPlatformContext();
+          const platformCurrency = platform.currency;
+          const platformTz = platform.timezone;
+          const amount =
+            billingCycle === "annual"
+              ? Number(planDetails.annual_price) || 0
+              : Number(planDetails.monthly_price) || 0;
+          const collection = String(payment_collection || "trial").toLowerCase();
+          let paymentStatus = "pending";
+          if (collection === "completed") paymentStatus = "completed";
+          else if (collection === "trial" && amount <= 0) paymentStatus = "completed";
+
+          const methodLabel = paymentMethodLabel(payment_gateway);
+          const refNote = payment_reference
+            ? ` Reference: ${String(payment_reference).trim()}`
+            : "";
+
           const paymentResult = await db.superAdminPool.query(
             `INSERT INTO public.payments (
               tenant_id, subscription_id, amount, currency, 
-              payment_method, status, billing_start_date, billing_end_date, notes
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+              payment_method, payment_reference, status, billing_start_date, billing_end_date, notes,
+              processed_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING id`,
             [
               tenantRow.id,
               subscriptionRow.id,
-              planDetails.monthly_price || 0,
-              "AED", // Default currency
-              "Manual",
-              planDetails.monthly_price > 0 ? "pending" : "completed",
+              amount,
+              platformCurrency,
+              methodLabel,
+              payment_reference ? String(payment_reference).trim() : null,
+              paymentStatus,
               new Date(),
               trialEndsAt,
-              `Onboarding Invoice for ${planDetails.plan_name}`,
+              `Onboarding invoice — ${planDetails.plan_name} (${billingCycle}) via ${methodLabel}.${refNote}`,
+              paymentStatus === "completed" ? new Date() : null,
             ],
           );
 
           const paymentId = paymentResult.rows[0].id;
+          lastPaymentId = paymentId;
+          lastPaymentAmount = amount;
 
           // Send Invoice Email
           const invoiceHtml = await renderEmail("invoice", {
             name: cleanAdminName,
             email: normalizedEmail,
             invoiceId: paymentId,
-            date: new Date().toLocaleDateString(),
+            date: formatDate(new Date(), platformTz, "DD/MM/YYYY"),
             planName: planDetails.plan_name,
-            billingCycle: "Monthly",
-            currency: "AED",
-            amount: planDetails.monthly_price || 0,
+            billingCycle: billingCycle === "annual" ? "Annual" : "Monthly",
+            currency: platformCurrency,
+            amount:
+              billingCycle === "annual"
+                ? planDetails.annual_price || 0
+                : planDetails.monthly_price || 0,
             status:
               planDetails.monthly_price > 0
                 ? "PENDING PAYMENT"
@@ -393,7 +448,14 @@ async function createTenant({
       }
     }
 
-    return tenant;
+    return {
+      ...tenant,
+      paymentId: lastPaymentId,
+      paymentAmount: lastPaymentAmount,
+      subscriptionId: subscriptionRow?.id ?? null,
+      planId: plan_id ?? null,
+      billingCycle,
+    };
   } catch (err) {
     // ---- Cleanup / rollback ----
     if (tenantInserted) {

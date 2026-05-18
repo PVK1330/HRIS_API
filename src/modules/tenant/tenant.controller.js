@@ -10,7 +10,17 @@ const service = require('./tenant.service');
  * Body: { name, adminEmail, adminName, adminPassword, plan_id }
  */
 const createTenant = asyncHandler(async (req, res) => {
-  const { name, adminEmail, adminName, adminPassword, plan_id } = req.body;
+  const {
+    name,
+    adminEmail,
+    adminName,
+    adminPassword,
+    plan_id,
+    billing_cycle,
+    payment_gateway,
+    payment_collection,
+    payment_reference,
+  } = req.body;
 
   const tenant = await service.createTenant({
     name,
@@ -18,6 +28,10 @@ const createTenant = asyncHandler(async (req, res) => {
     adminName,
     adminPassword,
     plan_id,
+    billing_cycle,
+    payment_gateway,
+    payment_collection,
+    payment_reference,
     createdBy: req.user.id,
   });
 

@@ -41,6 +41,10 @@ router.post(
       .optional()
       .isString().withMessage('plan_id must be a string')
       .trim(),
+    body('billing_cycle').optional().isIn(['monthly', 'annual', 'Monthly', 'Annual']),
+    body('payment_gateway').optional().isString().trim().isLength({ max: 40 }),
+    body('payment_collection').optional().isIn(['trial', 'pending', 'completed']),
+    body('payment_reference').optional({ nullable: true }).isString().trim().isLength({ max: 255 }),
   ],
   validate,
   controller.createTenant

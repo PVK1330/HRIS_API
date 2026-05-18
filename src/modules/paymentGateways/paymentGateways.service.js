@@ -69,6 +69,18 @@ async function getAllGateways() {
   return rows.map(rowToApi);
 }
 
+/** Public list for onboarding UIs — enabled gateways only, no credentials. */
+async function listEnabledGateways() {
+  const rows = await repo.findAll();
+  return rows
+    .filter((r) => r.is_enabled)
+    .map((r) => ({
+      slug: r.slug,
+      name: r.name,
+      testMode: !!r.test_mode,
+    }));
+}
+
 async function getGatewayBySlug(slug) {
   assertValidSlug(slug);
   const row = await repo.findBySlug(slug);
@@ -155,6 +167,7 @@ async function testGateway(slug) {
 
 module.exports = {
   getAllGateways,
+  listEnabledGateways,
   getGatewayBySlug,
   updateGateway,
   testGateway,

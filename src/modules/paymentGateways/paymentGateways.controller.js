@@ -9,6 +9,11 @@ const list = asyncHandler(async (_req, res) => {
   return ApiResponse.ok(res, data, 'Payment gateways retrieved');
 });
 
+const listEnabled = asyncHandler(async (_req, res) => {
+  const data = await service.listEnabledGateways();
+  return ApiResponse.ok(res, data, 'Enabled payment gateways retrieved');
+});
+
 const getOne = asyncHandler(async (req, res) => {
   const data = await service.getGatewayBySlug(req.params.slug);
   return ApiResponse.ok(res, data, 'Payment gateway retrieved');
@@ -26,6 +31,7 @@ const test = asyncHandler(async (req, res) => {
 
 module.exports = {
   list,
+  listEnabled,
   getOne,
   update,
   test,

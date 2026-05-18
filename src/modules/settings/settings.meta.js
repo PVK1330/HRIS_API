@@ -57,7 +57,7 @@ const settingsMeta = {
       { value: 'Asia/Dubai', label: 'Asia/Dubai' },
       { value: 'America/New_York', label: 'America/New_York' },
       { value: 'America/Los_Angeles', label: 'America/Los_Angeles' },
-      { value: 'Europe/London', label: 'Europe/London' },
+      { value: 'Europe/London', label: 'UK — Europe/London' },
       { value: 'Europe/Paris', label: 'Europe/Paris' },
       { value: 'Asia/Tokyo', label: 'Asia/Tokyo' },
     ],

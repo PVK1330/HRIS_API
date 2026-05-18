@@ -140,7 +140,7 @@ const DROPDOWN_MAX = 10000;
 /** Minimal columns for selects / modals — full list, no pagination (capped). */
 async function findAllForDropdown(pool, { search = "", auth = null } = {}) {
   const conditions = ["e.deleted_at IS NULL"];
-  const params = [];
+  let params = [];
   const q = String(search || "").trim();
   if (q) {
     params.push(`%${q}%`);

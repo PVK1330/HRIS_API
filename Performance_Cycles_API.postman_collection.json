@@ -1,0 +1,203 @@
+{
+  "info": {
+    "_postman_id": "performance-cycles-api",
+    "name": "Performance Cycles API Collection",
+    "description": "Complete API collection for Performance Cycle Management\n\nBase URL: http://localhost:5000/api/v1\n\nAuthentication: Bearer Token (Include JWT token in Authorization header)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Performance Cycles",
+      "item": [
+        {
+          "name": "Get All Cycles",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/performance-cycles?search=&status=&page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["performance-cycles"],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "",
+                  "description": "Search term for cycle name (optional)"
+                },
+                {
+                  "key": "status",
+                  "value": "",
+                  "description": "Filter by status: ACTIVE, UPCOMING, COMPLETED (optional)"
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Page number (default: 1)"
+                },
+                {
+                  "key": "limit",
+                  "value": "10",
+                  "description": "Records per page (default: 10, max: 100)"
+                }
+              ]
+            },
+            "description": "Retrieve all performance cycles with optional filters and pagination"
+          },
+          "response": [
+            {
+              "name": "Success Response",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/performance-cycles",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["performance-cycles"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "body": "{\n  \"success\": true,\n  \"message\": \"Performance cycles retrieved successfully\",\n  \"data\": {\n    \"cycles\": [\n      {\n        \"id\": 1,\n        \"cycle_name\": \"Q1 2026 Performance Review\",\n        \"start_date\": \"2026-01-01T00:00:00.000Z\",\n        \"end_date\": \"2026-03-31T23:59:59.000Z\",\n        \"submission_deadline\": \"2026-04-15T23:59:59.000Z\",\n        \"automated_reminder\": true,\n        \"status\": \"ACTIVE\",\n        \"completion_percentage\": 45,\n        \"created_at\": \"2026-05-18T10:30:00.000Z\",\n        \"updated_at\": \"2026-05-18T10:30:00.000Z\"\n      },\n      {\n        \"id\": 2,\n        \"cycle_name\": \"H1 2026 Performance Appraisal\",\n        \"start_date\": \"2026-01-01T00:00:00.000Z\",\n        \"end_date\": \"2026-06-30T23:59:59.000Z\",\n        \"submission_deadline\": \"2026-07-15T23:59:59.000Z\",\n        \"automated_reminder\": false,\n        \"status\": \"ACTIVE\",\n        \"completion_percentage\": 22,\n        \"created_at\": \"2026-05-18T10:30:00.000Z\",\n        \"updated_at\": \"2026-05-18T10:30:00.000Z\"\n      }\n    ],\n    \"total\": 2,\n    \"page\": 1,\n    \"limit\": 10,\n    \"totalPages\": 1\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Cycle by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/performance-cycles/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["performance-cycles", "1"]
+            },
+            "description": "Retrieve a single performance cycle by ID"
+          }
+        },
+        {
+          "name": "Create New Cycle",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cycleName\": \"Q2 2026 Performance Review\",\n  \"startDate\": \"2026-04-01T00:00:00.000Z\",\n  \"endDate\": \"2026-06-30T23:59:59.000Z\",\n  \"submissionDeadline\": \"2026-07-15T23:59:59.000Z\",\n  \"automatedReminder\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/performance-cycles",
+              "host": ["{{baseUrl}}"],
+              "path": ["performance-cycles"]
+            },
+            "description": "Create a new performance cycle\n\nRequired fields:\n- cycleName (string, 3-255 chars)\n- startDate (ISO date)\n- endDate (ISO date, must be after startDate)\n- submissionDeadline (ISO date)\n\nOptional fields:\n- automatedReminder (boolean, default: false)"
+          }
+        },
+        {
+          "name": "Update Cycle",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cycleName\": \"Q2 2026 Performance Review - Updated\",\n  \"automatedReminder\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/performance-cycles/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["performance-cycles", "1"]
+            },
+            "description": "Update an existing performance cycle\n\nAll fields are optional:\n- cycleName (string)\n- startDate (ISO date)\n- endDate (ISO date)\n- submissionDeadline (ISO date)\n- automatedReminder (boolean)\n\nStatus and completion percentage are automatically updated based on current date and cycle dates."
+          }
+        },
+        {
+          "name": "Delete Cycle",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/performance-cycles/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["performance-cycles", "1"]
+            },
+            "description": "Delete a performance cycle (soft delete - record is marked as deleted but not removed)"
+          }
+        },
+        {
+          "name": "Get Cycles Summary",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/performance-cycles/summary",
+              "host": ["{{baseUrl}}"],
+              "path": ["performance-cycles", "summary"]
+            },
+            "description": "Get summary statistics of performance cycles\n\nReturns:\n- activeCycles: Number of currently active cycles\n- upcomingCycles: Number of cycles that haven't started yet\n- completedCycles: Number of cycles that have ended"
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000/api/v1",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "your_jwt_token_here",
+      "type": "string"
+    }
+  ]
+}

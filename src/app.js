@@ -41,6 +41,11 @@ const visaTypesRoutes = require('./modules/visa-types/visa-types.routes');
 const visaRecordsRoutes = require('./modules/visa-records/visa-records.routes');
 const publicOnboardingRoutes = require('./routes/public/onboardingRoutes');
 const adminDocumentsRoutes = require('./modules/adminDocuments/adminDocuments.routes');
+const performanceCyclesRoutes = require('./modules/performanceCycles/performanceCycles.routes');
+const competencyRoutes = require('./routes/competencyRoutes');
+const employeePerformanceRoutes = require('./routes/employeePerformanceRoutes');
+const { getCyclesDropdown, getCompetenciesDropdown } = require('./controllers/employeePerformanceController');
+const { authenticate, loadAuthContext } = require('./middlewares/auth.middleware');
 
 const { generalLimiter } = require('./middlewares/rateLimit.middleware');
 
@@ -128,6 +133,20 @@ app.use('/api/v1/letters', lettersRoutes);
 app.use('/api/v1/employees', employeesRoutes);
 app.use('/api/v1/attendance', attendanceAdminRoutes);
 app.use('/api/v1/leave',      leaveAdminRoutes);
+// Standalone dropdowns (placed BEFORE general routers to avoid wildcard matching)
+app.get('/api/v1/performance-cycles/dropdown', authenticate, loadAuthContext, getCyclesDropdown);
+app.get('/api/performance-cycles/dropdown', authenticate, loadAuthContext, getCyclesDropdown);
+app.get('/api/v1/competencies/dropdown', authenticate, loadAuthContext, getCompetenciesDropdown);
+app.get('/api/competencies/dropdown', authenticate, loadAuthContext, getCompetenciesDropdown);
+
+app.use('/api/v1/performance-cycles', performanceCyclesRoutes);
+app.use('/api/v1/competencies', competencyRoutes);
+app.use('/api/competencies', competencyRoutes);
+
+// Employee Performance Assessment endpoints
+app.use('/api/v1/employee-performance', employeePerformanceRoutes);
+app.use('/api/employee-performance', employeePerformanceRoutes);
+
 app.use('/api/v1/messages',   messagesRoutes);
 app.use('/api/v1/admin/settings/assets', assetSettingsRoutes);
 app.use('/api/v1/admin/settings/attendance', attendanceSettingsRoutes);

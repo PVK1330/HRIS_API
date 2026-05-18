@@ -1,17 +1,23 @@
 "use strict";
 
 const db = require("../../config/db");
-
-const DB_NAME_RE = /^tenant_[a-z0-9_]+$/i;
+const { isValidTenantDbName } = require("../../utils/tenantDbName");
 
 function assertSafeDbName(dbName) {
-  if (
-    typeof dbName !== "string" ||
-    !DB_NAME_RE.test(dbName) ||
-    dbName.length > 63
-  ) {
+  if (!isValidTenantDbName(dbName)) {
     throw new Error(`Unsafe or invalid tenant database name: ${dbName}`);
   }
+}
+
+async function reserveTenantId(client = db) {
+  const { rows } = await client.query(
+    `SELECT nextval(pg_get_serial_sequence('public.tenants', 'id'))::integer AS id`,
+  );
+  const id = rows[0]?.id;
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new Error("Failed to reserve tenant id");
+  }
+  return id;
 }
 
 let accessControlsSchemaPromise = null;
@@ -72,27 +78,55 @@ async function findTenantById(id, client = db) {
 }
 
 async function insertTenant(
-  { name, dbName, adminEmail, adminName, createdBy, planId, trialEndsAt },
+  {
+    id,
+    name,
+    dbName,
+    adminEmail,
+    adminName,
+    createdBy,
+    planId,
+    trialEndsAt,
+  },
   client = db,
 ) {
-  const sql = `
-    INSERT INTO public.tenants (
-      name, db_name, admin_email, admin_name, company_name, 
-      status, created_by, plan_id, subscription_status, trial_ends_at
-    )
-    VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, 'trial', $8)
-    RETURNING id, name, db_name, admin_email, status, created_by, created_at, plan_id, subscription_status, trial_ends_at
-  `;
-  const { rows } = await client.query(sql, [
+  const columns = [
+    "name",
+    "db_name",
+    "admin_email",
+    "admin_name",
+    "company_name",
+    "status",
+    "created_by",
+    "plan_id",
+    "subscription_status",
+    "trial_ends_at",
+  ];
+  const values = [
     name,
     dbName,
     adminEmail,
     adminName || null,
-    name, // using name as company_name too
+    null,
+    "active",
     createdBy,
     planId || null,
+    "trial",
     trialEndsAt || null,
-  ]);
+  ];
+
+  if (id != null) {
+    columns.unshift("id");
+    values.unshift(id);
+  }
+
+  const placeholders = values.map((_, i) => `$${i + 1}`).join(", ");
+  const sql = `
+    INSERT INTO public.tenants (${columns.join(", ")})
+    VALUES (${placeholders})
+    RETURNING id, name, db_name, admin_email, status, created_by, created_at, plan_id, subscription_status, trial_ends_at
+  `;
+  const { rows } = await client.query(sql, values);
   return rows[0];
 }
 
@@ -296,6 +330,7 @@ async function upsertTenantFeatureAccess(tenantId, featureId, isEnabled, client 
 
 module.exports = {
   // public.tenants
+  reserveTenantId,
   findTenantByAdminEmail,
   findTenantByDbName,
   findTenantById,

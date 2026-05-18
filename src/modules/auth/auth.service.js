@@ -2,6 +2,9 @@
 
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
+const { comparePassword, hashPassword } = require('../../utils/password');
+const logger = require('../../utils/logger');
+const { slugifyTenantName } = require('../../utils/tenantSlug');
 const speakeasy = require('speakeasy');
 const QRCode = require('qrcode');
 const { superAdminPool } = require('../../config/db');
@@ -234,14 +237,8 @@ async function verify2FA(userId, code) {
   return { success: true };
 }
 
-function slugifyTenantName(name) {
-  return String(name || '')
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, '-')
-    .replace(/[^\w-]+/g, '')
-    .replace(/--+/g, '-')
-    .replace(/^-|-$/g, '');
+function normalizeLoginId(raw) {
+  return String(raw || '').trim().toLowerCase();
 }
 
 /**
@@ -281,20 +278,164 @@ async function resolveTenantForLogin({ tenantId, tenantSlug }) {
   return all.find((t) => slugifyTenantName(t.name) === slugNorm) || null;
 }
 
+async function findEmployeeForLogin(tenantPool, loginId) {
+  const { rows } = await tenantPool.query(
+    `
+      SELECT id, full_name, work_email, username, password_hash, portal_enabled,
+             rbac_role_id, employment_status, department
+      FROM employees
+      WHERE deleted_at IS NULL
+        AND (
+          LOWER(TRIM(work_email)) = $1
+          OR LOWER(TRIM(COALESCE(username, ''))) = $1
+        )
+      LIMIT 1
+    `,
+    [loginId],
+  );
+  return rows[0] || null;
+}
+
+async function provisionTenantAdminUser(tenantPool, tenant, { email, passwordHash, name }) {
+  const normalized = normalizeLoginId(email);
+  if (!normalized || !passwordHash) return null;
+
+  const { rows } = await tenantPool.query(
+    `
+      INSERT INTO admin_users (tenant_id, email, password_hash, name, status)
+      VALUES ($1, $2, $3, $4, 'active')
+      ON CONFLICT (email) DO UPDATE
+        SET password_hash = EXCLUDED.password_hash,
+            name = COALESCE(NULLIF(EXCLUDED.name, ''), admin_users.name),
+            status = 'active'
+      RETURNING id, email, password_hash, name, status
+    `,
+    [tenant.id, normalized, passwordHash, name || 'Organization Admin'],
+  );
+  logger.info(`[auth] provisioned admin_users for tenant ${tenant.id} (${normalized})`);
+  return rows[0] || null;
+}
+
+async function findTenantAdminForLogin(tenantPool, loginId, tenantAdminEmail) {
+  const { rows } = await tenantPool.query(
+    `
+      SELECT id, email, password_hash, name, status
+      FROM admin_users
+      WHERE LOWER(TRIM(email)) = $1
+      LIMIT 1
+    `,
+    [loginId],
+  );
+  if (rows.length > 0) return rows[0];
+
+  const registryEmail = normalizeLoginId(tenantAdminEmail);
+  if (!registryEmail || registryEmail !== loginId) return null;
+
+  const fallback = await tenantPool.query(
+    `
+      SELECT id, email, password_hash, name, status
+      FROM admin_users
+      WHERE status = 'active'
+      ORDER BY id ASC
+      LIMIT 1
+    `,
+  );
+  return fallback.rows[0] || null;
+}
+
+async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures, planDetails, planFeatures) {
+  const rbacRepo = require('../rbac/rbac.repository');
+  let allowedModules = ['dashboard'];
+  if (emp.rbac_role_id) {
+    const keys = await rbacRepo.permissionKeysForRole(tenantPool, emp.rbac_role_id);
+    const expanded = expandPermissionKeys(keys);
+    allowedModules = toAllowedModuleKeys(expanded);
+    if (!allowedModules.includes('dashboard')) {
+      allowedModules = ['dashboard', ...allowedModules];
+    }
+  }
+
+  const token = jwt.sign(
+    {
+      id: emp.id,
+      email: emp.work_email,
+      role: 'employee',
+      tenant_id: tenant.id,
+      db_name: tenant.db_name,
+      rbacRoleId: emp.rbac_role_id || null,
+      employeeId: emp.id,
+      department: emp.department || null,
+      userType: 'employee',
+    },
+    env.JWT.secret,
+    { expiresIn: env.JWT.expiresIn },
+  );
+
+  return {
+    token,
+    user: {
+      id: emp.id,
+      name: emp.full_name,
+      email: emp.work_email,
+      role: 'employee',
+      tenantId: tenant.id,
+      tenantName: tenant.name,
+      rbacRoleId: emp.rbac_role_id,
+      employeeId: emp.id,
+      department: emp.department || null,
+    },
+    plan_details: planDetails,
+    plan_features: planFeatures,
+    tenant_features: tenantFeatures,
+    allowedModules,
+  };
+}
+
+async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatures, planDetails, planFeatures) {
+  const allowedModules = await adminModulesForJwt(tenantPool);
+  const token = jwt.sign(
+    {
+      id: adminUser.id,
+      email: adminUser.email,
+      role: 'admin',
+      tenant_id: tenant.id,
+      db_name: tenant.db_name,
+      userType: 'admin',
+    },
+    env.JWT.secret,
+    { expiresIn: env.JWT.expiresIn },
+  );
+
+  return {
+    token,
+    user: {
+      id: adminUser.id,
+      name: adminUser.name,
+      email: adminUser.email,
+      role: 'admin',
+      tenantId: tenant.id,
+      tenantName: tenant.name,
+    },
+    plan_details: planDetails,
+    plan_features: planFeatures,
+    tenant_features: tenantFeatures,
+    allowedModules,
+  };
+}
+
 /**
  * Tenant workspace login.
- * • With `tenantId` or `tenantSlug`: employee portal first, then `admin_users` in that org.
+ * • With `tenantId` or `tenantSlug`: employee portal (if enabled), then org admin.
  * • Legacy: tenant resolved solely by matching `admin_email` on central `tenants`.
  */
 async function login(email, password, options = {}) {
-  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const loginId = normalizeLoginId(email);
   const tenantIdParsed =
     options?.tenantId != null && `${options.tenantId}`.trim() !== ''
       ? parseInt(String(options.tenantId), 10)
       : NaN;
 
   const { getTenantPool } = require('../../config/db');
-  const rbacRepo = require('../rbac/rbac.repository');
   const { runTenantMigrations } = require('../tenant/tenant.service');
 
   const tenant = await resolveTenantForLogin({
@@ -319,123 +460,124 @@ async function login(email, password, options = {}) {
     const tenantFeatures = await gatherTenantFeatures(tenant.id);
     const { planDetails, planFeatures } = await fetchPlanBundles(tenant.plan_id);
 
-    const empRes = await tenantPool.query(
-      `
-        SELECT id, full_name, work_email, password_hash, portal_enabled,
-               rbac_role_id, employment_status, department
-        FROM employees
-        WHERE LOWER(TRIM(work_email)) = $1 AND deleted_at IS NULL
-        LIMIT 1
-      `,
-      [normalizedEmail],
-    );
+    const registryEmail = normalizeLoginId(tenant.admin_email);
 
-    if (empRes.rows.length > 0) {
-      const emp = empRes.rows[0];
-      if (!emp.portal_enabled || !emp.password_hash) {
-        throw ApiError.unauthorized('Invalid email or password');
-      }
-      if (String(emp.employment_status || '').toLowerCase() === 'terminated') {
-        throw ApiError.unauthorized('User account is inactive');
-      }
-      const okEmp = await bcrypt.compare(password, emp.password_hash);
-      if (!okEmp) throw ApiError.unauthorized('Invalid email or password');
+    // Primary org admin (central registry email) — try before employee portal
+    if (loginId.includes('@') && registryEmail && loginId === registryEmail) {
+      let adminUser = await findTenantAdminForLogin(
+        tenantPool,
+        loginId,
+        tenant.admin_email,
+      );
 
-      let allowedModules = ['dashboard'];
-      if (emp.rbac_role_id) {
-        const keys = await rbacRepo.permissionKeysForRole(tenantPool, emp.rbac_role_id);
-        const expanded = expandPermissionKeys(keys);
-        allowedModules = toAllowedModuleKeys(expanded);
-        if (!allowedModules.includes('dashboard')) {
-          allowedModules = ['dashboard', ...allowedModules];
+      if (!adminUser) {
+        const emp = await findEmployeeForLogin(tenantPool, loginId);
+        if (
+          emp &&
+          emp.password_hash &&
+          (await comparePassword(password, emp.password_hash))
+        ) {
+          adminUser = await provisionTenantAdminUser(tenantPool, tenant, {
+            email: loginId,
+            passwordHash: emp.password_hash,
+            name: emp.full_name,
+          });
         }
       }
 
-      const token = jwt.sign(
-        {
-          id: emp.id,
-          email: emp.work_email,
-          role: 'employee',
-          tenant_id: tenant.id,
-          db_name: tenant.db_name,
-          rbacRoleId: emp.rbac_role_id || null,
-          employeeId: emp.id,
-          department: emp.department || null,
-          userType: 'employee',
-        },
-        env.JWT.secret,
-        { expiresIn: env.JWT.expiresIn },
-      );
-
-      return {
-        token,
-        user: {
-          id: emp.id,
-          name: emp.full_name,
-          email: emp.work_email,
-          role: 'employee',
-          tenantId: tenant.id,
-          tenantName: tenant.name,
-          rbacRoleId: emp.rbac_role_id,
-          employeeId: emp.id,
-          department: emp.department || null,
-        },
-        plan_details: planDetails,
-        plan_features: planFeatures,
-        tenant_features: tenantFeatures,
-        allowedModules,
-      };
+      if (adminUser) {
+        if (adminUser.status !== 'active') {
+          throw ApiError.unauthorized('User account is inactive');
+        }
+        let okRegistry = await comparePassword(password, adminUser.password_hash);
+        if (!okRegistry) {
+          const empForSync = await findEmployeeForLogin(tenantPool, loginId);
+          if (
+            empForSync?.password_hash &&
+            (await comparePassword(password, empForSync.password_hash))
+          ) {
+            await tenantPool.query(
+              `UPDATE admin_users SET password_hash = $1 WHERE id = $2`,
+              [empForSync.password_hash, adminUser.id],
+            );
+            adminUser.password_hash = empForSync.password_hash;
+            okRegistry = true;
+            logger.info(
+              `[auth] synced admin_users password from employee record for ${loginId}`,
+            );
+          }
+        }
+        if (okRegistry) {
+          return buildAdminLoginResult(
+            adminUser,
+            tenant,
+            tenantPool,
+            tenantFeatures,
+            planDetails,
+            planFeatures,
+          );
+        }
+      }
     }
 
-    const adminRes = await tenantPool.query(
-      `SELECT id, email, password_hash, name, status FROM admin_users WHERE LOWER(TRIM(email)) = $1`,
-      [normalizedEmail],
-    );
-    if (adminRes.rows.length === 0) {
+    const emp = await findEmployeeForLogin(tenantPool, loginId);
+    const employeePortalActive =
+      emp && emp.portal_enabled && emp.password_hash;
+
+    if (employeePortalActive) {
+      if (String(emp.employment_status || '').toLowerCase() === 'terminated') {
+        throw ApiError.unauthorized('User account is inactive');
+      }
+      const okEmp = await comparePassword(password, emp.password_hash);
+      if (okEmp) {
+        return buildEmployeeLoginResult(
+          emp,
+          tenant,
+          tenantPool,
+          tenantFeatures,
+          planDetails,
+          planFeatures,
+        );
+      }
+    }
+
+    if (!loginId.includes('@')) {
       throw ApiError.unauthorized('Invalid email or password');
     }
-    const adminUser = adminRes.rows[0];
+
+    const adminUser = await findTenantAdminForLogin(
+      tenantPool,
+      loginId,
+      tenant.admin_email,
+    );
+    if (!adminUser) {
+      throw ApiError.unauthorized('Invalid email or password');
+    }
     if (adminUser.status !== 'active') {
       throw ApiError.unauthorized('User account is inactive');
     }
-    const okAdm = await bcrypt.compare(password, adminUser.password_hash);
-    if (!okAdm) throw ApiError.unauthorized('Invalid email or password');
+    const okAdm = await comparePassword(password, adminUser.password_hash);
+    if (!okAdm) {
+      throw ApiError.unauthorized('Invalid email or password');
+    }
 
-    const allowedModules = await adminModulesForJwt(tenantPool);
-
-    const token = jwt.sign(
-      {
-        id: adminUser.id,
-        email: adminUser.email,
-        role: 'admin',
-        tenant_id: tenant.id,
-        db_name: tenant.db_name,
-        userType: 'admin',
-      },
-      env.JWT.secret,
-      { expiresIn: env.JWT.expiresIn },
+    return buildAdminLoginResult(
+      adminUser,
+      tenant,
+      tenantPool,
+      tenantFeatures,
+      planDetails,
+      planFeatures,
     );
+  }
 
-    return {
-      token,
-      user: {
-        id: adminUser.id,
-        name: adminUser.name,
-        email: adminUser.email,
-        role: 'admin',
-        tenantId: tenant.id,
-        tenantName: tenant.name,
-      },
-      plan_details: planDetails,
-      plan_features: planFeatures,
-      tenant_features: tenantFeatures,
-      allowedModules,
-    };
+  if (!loginId.includes('@')) {
+    throw ApiError.unauthorized('Invalid email or password');
   }
 
   const centralResult = await superAdminPool.query(
-    'SELECT id, name, db_name, status, plan_id FROM public.tenants WHERE admin_email = $1',
-    [normalizedEmail],
+    'SELECT id, name, db_name, status, plan_id FROM public.tenants WHERE LOWER(TRIM(admin_email)) = $1',
+    [loginId],
   );
 
   if (centralResult.rows.length === 0) {
@@ -452,7 +594,7 @@ async function login(email, password, options = {}) {
 
   const userResult = await tenantPool.query(
     'SELECT id, email, password_hash, name, status FROM admin_users WHERE LOWER(TRIM(email)) = $1',
-    [normalizedEmail],
+    [loginId],
   );
 
   if (userResult.rows.length === 0) {
@@ -464,42 +606,22 @@ async function login(email, password, options = {}) {
     throw ApiError.unauthorized('User account is inactive');
   }
 
-  const passwordMatches = await bcrypt.compare(password, user.password_hash);
+  const passwordMatches = await comparePassword(password, user.password_hash);
   if (!passwordMatches) {
     throw ApiError.unauthorized('Invalid email or password');
   }
 
   const tenantFeatures = await gatherTenantFeatures(centralTenant.id);
   const { planDetails, planFeatures } = await fetchPlanBundles(centralTenant.plan_id);
-  const allowedModules = await adminModulesForJwt(tenantPool);
 
-  const token = jwt.sign(
-    {
-      id: user.id,
-      email: user.email,
-      role: 'admin',
-      tenant_id: centralTenant.id,
-      db_name: centralTenant.db_name,
-    },
-    env.JWT.secret,
-    { expiresIn: env.JWT.expiresIn },
+  return buildAdminLoginResult(
+    user,
+    centralTenant,
+    tenantPool,
+    tenantFeatures,
+    planDetails,
+    planFeatures,
   );
-
-  return {
-    token,
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: 'admin',
-      tenantId: centralTenant.id,
-      tenantName: centralTenant.name,
-    },
-    plan_details: planDetails,
-    plan_features: planFeatures,
-    tenant_features: tenantFeatures,
-    allowedModules,
-  };
 }
 
 async function generateImpersonationToken(tenantId) {
@@ -579,16 +701,19 @@ async function generateImpersonationToken(tenantId) {
     is_enabled: row.is_enabled,
   }));
 
+  const allowedModules = await adminModulesForJwt(tenantPool);
+
   const token = jwt.sign(
     {
       id: user.id,
       email: user.email,
       role: 'admin',
       tenant_id: tenant.id,
-      db_name: tenant.db_name
+      db_name: tenant.db_name,
+      userType: 'admin',
     },
     env.JWT.secret,
-    { expiresIn: env.JWT.expiresIn }
+    { expiresIn: env.JWT.expiresIn },
   );
 
   return {
@@ -599,11 +724,13 @@ async function generateImpersonationToken(tenantId) {
       email: user.email,
       role: 'admin',
       tenantId: tenant.id,
-      tenantName: tenant.name
+      tenantName: tenant.name,
+      allowedModules,
     },
     plan_details: planDetails ? [planDetails] : [],
     plan_features: planFeatures,
-    tenant_features: tenantFeatures
+    tenant_features: tenantFeatures,
+    allowedModules,
   };
 }
 

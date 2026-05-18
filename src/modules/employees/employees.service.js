@@ -2,7 +2,7 @@
 
 const { getTenantPool } = require("../../config/db");
 
-const bcrypt = require("bcryptjs");
+const { hashPassword } = require("../../utils/password");
 
 const ApiError = require("../../utils/ApiError");
 const logger = require("../../utils/logger");
@@ -13,7 +13,6 @@ const { sendEmployeeWelcomeEmail } = require("./employees.mailer");
 const { assertEmployeeRecordAccess } = require("../../utils/applyDataScope");
 const { formatEmpId, parseEmpIdSequence } = require("../../utils/empIdFormat");
 
-const BCRYPT_ROUNDS = 12;
 
 function omitPassword(obj) {
   if (!obj || typeof obj !== "object") return obj;
@@ -200,10 +199,15 @@ async function createEmployee(user, data) {
   }
 
   if (sanitized.portalPassword && String(sanitized.portalPassword).trim()) {
-    payload.passwordHash = await bcrypt.hash(String(sanitized.portalPassword), BCRYPT_ROUNDS);
+    payload.passwordHash = await hashPassword(String(sanitized.portalPassword));
+    payload.portalEnabled = true;
     delete payload.portalPassword;
   } else if (payload.portalEnabled === false) {
     payload.passwordHash = null;
+  }
+
+  if (data.departmentId != null || data.department_id != null) {
+    payload.departmentId = data.departmentId ?? data.department_id;
   }
 
   delete payload.portalPassword;
@@ -295,8 +299,13 @@ async function updateEmployee(user, id, data, auth = null) {
     }
   }
 
+  if (data.departmentId != null || data.department_id != null) {
+    patch.departmentId = data.departmentId ?? data.department_id;
+  }
+
   if (data.portalPassword && String(data.portalPassword).trim()) {
-    patch.passwordHash = await bcrypt.hash(String(data.portalPassword), BCRYPT_ROUNDS);
+    patch.passwordHash = await hashPassword(String(data.portalPassword));
+    patch.portalEnabled = true;
   }
   delete patch.portalPassword;
 

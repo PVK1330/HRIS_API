@@ -9,19 +9,37 @@ const { authenticate } = require('../../middlewares/auth.middleware');
 
 const router = Router();
 
-/**
- * Public Authentication Routes
- */
+function loginIdentifierValidator(value) {
+  const v = String(value || '').trim();
+  if (!v) throw new Error('Email or username is required');
+  if (v.includes('@')) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
+      throw new Error('Enter a valid email address');
+    }
+    return true;
+  }
+  if (!/^[a-zA-Z0-9._-]{2,120}$/.test(v)) {
+    throw new Error('Enter a valid portal username (letters, numbers, . _ -)');
+  }
+  return true;
+}
 
 router.post(
   '/login',
   authLimiter,
   [
-    body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
+    body('email')
+      .trim()
+      .notEmpty()
+      .withMessage('Email or username is required')
+      .custom(loginIdentifierValidator)
+      .customSanitizer((v) => String(v).trim().toLowerCase()),
     body('password').notEmpty().withMessage('Password is required'),
+    body('tenantId').optional({ nullable: true }).isInt({ min: 1 }),
+    body('tenantSlug').optional({ nullable: true }).isString().trim().isLength({ max: 120 }),
   ],
   validate,
-  controller.login
+  controller.login,
 );
 
 router.post(
@@ -31,7 +49,7 @@ router.post(
     body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
   ],
   validate,
-  controller.forgotPassword
+  controller.forgotPassword,
 );
 
 router.post(
@@ -42,7 +60,7 @@ router.post(
     body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
   ],
   validate,
-  controller.verifyOtp
+  controller.verifyOtp,
 );
 
 router.post(
@@ -54,13 +72,9 @@ router.post(
     body('newPassword').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
   ],
   validate,
-  controller.resetPassword
+  controller.resetPassword,
 );
 
-router.get(
-  '/access-profile',
-  authenticate,
-  controller.getAccessProfile
-);
+router.get('/access-profile', authenticate, controller.getAccessProfile);
 
 module.exports = router;

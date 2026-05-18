@@ -4,9 +4,11 @@ const fs = require("fs");
 const path = require("path");
 const { Pool } = require("pg");
 const bcrypt = require("bcrypt");
-const { v4: uuidv4 } = require("uuid");
-
 const crypto = require("crypto");
+const {
+  generateTenantDbName,
+  slugifyOrgNameForDb,
+} = require("../../utils/tenantDbName");
 const db = require("../../config/db");
 const env = require("../../config/env");
 const { sendMail } = require("../../utils/mail");
@@ -33,16 +35,23 @@ const TENANT_TRACKING_TABLE_SQL = `
   )
 `;
 
+/** Per-process cache so login is not blocked by 50+ migration checks every request */
+const tenantMigrationsReady = new Set();
+
 /**
  * Runs every *.sql file in src/migrations/tenants/ inside the given tenant
  * DATABASE (not schema). Uses a temporary pg.Pool so we don't pollute the
  * cached tenant pool, and tracks applied filenames in a `tenant_migrations`
  * table inside the tenant DB so subsequent runs are idempotent.
  *
- * @param {string} dbName  e.g. "tenant_ab12_cd34_..."
+ * @param {string} dbName  e.g. "hrs_hris_global_42"
  */
 async function runTenantMigrations(dbName) {
   repo.assertSafeDbName(dbName);
+
+  if (tenantMigrationsReady.has(dbName)) {
+    return { applied: 0, skipped: 0, cached: true };
+  }
 
   if (!fs.existsSync(TENANT_MIGRATIONS_DIR)) {
     throw new Error(
@@ -131,6 +140,7 @@ async function runTenantMigrations(dbName) {
     }
   }
 
+  tenantMigrationsReady.add(dbName);
   logger.info(
     `[tenant:${dbName}] migrations complete (applied=${applied}, skipped=${skipped})`,
   );
@@ -201,18 +211,30 @@ async function createTenant({
   const cleanName = String(name).trim();
   const cleanAdminName = String(adminName).trim();
 
+  if (!slugifyOrgNameForDb(cleanName)) {
+    throw ApiError.badRequest(
+      "Organization name must include at least one letter or number",
+    );
+  }
+
   // 1. Cheap uniqueness check (gives a clean 409 instead of a raw PG error).
   const existing = await repo.findTenantByAdminEmail(normalizedEmail);
   if (existing) {
     throw ApiError.conflict("A tenant with this admin email already exists");
   }
 
-  // 2. Generate safe db_name (system-generated UUID — interpolation is safe).
-  const dbName = `tenant_${uuidv4().replace(/-/g, "_")}`;
-  if (dbName.length > 63) {
-    throw ApiError.internal("Generated database name exceeds 63 characters");
-  }
+  // 2. Reserve tenant id and build db_name: {centralPrefix}_{orgSlug}_{id}
+  const reservedTenantId = await repo.reserveTenantId();
+  let dbName = generateTenantDbName(cleanName, { tenantId: reservedTenantId });
   repo.assertSafeDbName(dbName);
+
+  const existingDb = await repo.findTenantByDbName(dbName);
+  if (existingDb) {
+    dbName = generateTenantDbName(cleanName, {
+      randomSuffix: `${reservedTenantId}_${crypto.randomBytes(4).toString("hex")}`,
+    });
+    repo.assertSafeDbName(dbName);
+  }
 
   const passwordHash = await bcrypt.hash(adminPassword, SALT_ROUNDS);
 
@@ -255,6 +277,7 @@ async function createTenant({
     let tenantRow;
     try {
       tenantRow = await repo.insertTenant({
+        id: reservedTenantId,
         name: cleanName,
         dbName,
         adminEmail: normalizedEmail,
@@ -327,12 +350,15 @@ async function createTenant({
 
     // 8. Insert admin_users row inside the tenant DB via cached pool.
     const tenantPool = db.getTenantPool(dbName);
-    await repo.insertAdminUser(tenantPool, {
+    const adminRow = await repo.insertAdminUser(tenantPool, {
       tenantId: tenantRow.id,
       email: normalizedEmail,
       passwordHash,
       name: cleanAdminName,
     });
+    if (!adminRow?.id) {
+      throw ApiError.internal("Failed to create organization admin account");
+    }
 
     logger.info(`Tenant created: ${tenantRow.name} (db=${tenantRow.db_name})`);
 

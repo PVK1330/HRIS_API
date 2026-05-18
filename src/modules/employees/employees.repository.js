@@ -3,6 +3,44 @@
 const { applyEmployeeListScope } = require("../../utils/applyDataScope");
 const { formatEmpId } = require("../../utils/empIdFormat");
 
+/**
+ * Resolve departments.id from departmentId and/or department name string.
+ */
+async function resolveDepartmentId(pool, { departmentId, departmentName } = {}) {
+  const rawId = departmentId ?? null;
+  if (rawId != null && String(rawId).trim() !== "") {
+    const id = parseInt(String(rawId), 10);
+    if (Number.isInteger(id) && id > 0) {
+      const { rows } = await pool.query(
+        `SELECT id, name FROM departments WHERE id = $1 AND is_active = true LIMIT 1`,
+        [id],
+      );
+      if (rows[0]) {
+        return { id: rows[0].id, name: rows[0].name };
+      }
+    }
+  }
+
+  const name = String(departmentName || "").trim();
+  if (!name) return { id: null, name: null };
+
+  const { rows } = await pool.query(
+    `SELECT id, name FROM departments
+     WHERE is_active = true
+       AND (
+         LOWER(TRIM(name)) = LOWER(TRIM($1))
+         OR LOWER(TRIM(COALESCE(code, ''))) = LOWER(TRIM($1))
+         OR id::text = $1
+       )
+     LIMIT 1`,
+    [name],
+  );
+  if (rows[0]) {
+    return { id: rows[0].id, name: rows[0].name };
+  }
+  return { id: null, name };
+}
+
 function buildEmployeeListWhere({
   search = "",
   department = "",
@@ -337,6 +375,7 @@ async function insert(pool, data) {
     homeAddress,
     jobTitle,
     department,
+    departmentId,
     employmentType,
     workLocation,
     workMode,
@@ -389,11 +428,19 @@ async function insert(pool, data) {
   const edu = Array.isArray(education) ? education : [];
   const wx = Array.isArray(workExperience) ? workExperience : [];
 
+  const deptResolved = await resolveDepartmentId(pool, {
+    departmentId,
+    departmentName: department,
+  });
+  const departmentIdValue = deptResolved.id;
+  const departmentLabel =
+    deptResolved.name || (department != null ? String(department).trim() : null) || null;
+
   const { rows } = await pool.query(
     `INSERT INTO employees (
        emp_id, full_name, first_name, last_name, date_of_birth, gender, nationality,
        personal_email, phone_number, emergency_contact_name, emergency_contact_phone,
-       home_address, job_title, department, employment_type, work_location, work_mode,
+       home_address, job_title, department, department_id, employment_type, work_location, work_mode,
        reporting_manager_id, join_date, probation_end_date, work_email, salary,
        employment_status, grade, cost_center, marital_status, dependents,
        passport_number, passport_expiry, emirates_id_number, emirates_id_expiry,
@@ -406,7 +453,7 @@ async function insert(pool, data) {
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
        $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,
-       $40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57
+       $40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58
      )
      RETURNING id, emp_id, full_name, job_title, department, employment_status,
                work_email, work_location, work_mode,
@@ -427,8 +474,9 @@ async function insert(pool, data) {
       emergencyContactPhone || null, // $10–$11
       homeAddress || null,
       jobTitle,
-      department,
-      employmentType, // $12–$15
+      departmentLabel,
+      departmentIdValue,
+      employmentType, // $12–$16
       workLocation || null,
       workMode || null, // $16–$17
       reportingManagerId || null,
@@ -491,6 +539,15 @@ async function insert(pool, data) {
 }
 
 async function update(pool, id, data) {
+  if ("department" in data || "departmentId" in data) {
+    const deptResolved = await resolveDepartmentId(pool, {
+      departmentId: data.departmentId,
+      departmentName: data.department,
+    });
+    if (deptResolved.name) data.department = deptResolved.name;
+    data.departmentId = deptResolved.id;
+  }
+
   const allowed = [
     "full_name",
     "first_name",
@@ -505,6 +562,7 @@ async function update(pool, id, data) {
     "home_address",
     "job_title",
     "department",
+    "department_id",
     "employment_type",
     "work_location",
     "work_mode",
@@ -563,6 +621,7 @@ async function update(pool, id, data) {
     homeAddress: "home_address",
     jobTitle: "job_title",
     department: "department",
+    departmentId: "department_id",
     employmentType: "employment_type",
     workLocation: "work_location",
     workMode: "work_mode",

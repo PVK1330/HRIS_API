@@ -8,6 +8,7 @@
     "dev": "nodemon src/server.js",
     "migrate": "node src/scripts/runMigrations.js",
     "migrate:tenants": "node src/scripts/migrateTenants.js",
+    "repair:tenant-admins": "node src/scripts/repairTenantAdmins.js",
     "seed:superadmin": "node src/scripts/seedSuperAdmin.js",
     "seed:tenants": "node src/scripts/seedTenants.js",
     "db:reset": "node src/scripts/resetDb.js",

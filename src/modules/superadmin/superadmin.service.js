@@ -1,6 +1,7 @@
 'use strict';
 
 const bcrypt = require('bcrypt');
+const { comparePassword } = require('../../utils/password');
 const jwt = require('jsonwebtoken');
 
 const env = require('../../config/env');
@@ -23,7 +24,7 @@ async function login({ email, password }) {
     throw ApiError.unauthorized('Invalid email or password');
   }
 
-  const passwordMatches = await bcrypt.compare(password, record.password_hash);
+  const passwordMatches = await comparePassword(password, record.password_hash);
   if (!passwordMatches) {
     throw ApiError.unauthorized('Invalid email or password');
   }

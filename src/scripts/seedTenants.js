@@ -27,7 +27,7 @@ async function seedTenants() {
       name: t.name,
       adminEmail: t.admin_email,
       adminName: t.admin_name,
-      adminPassword: 'admin@acme.com',
+      adminPassword: process.env.SEED_TENANT_PASSWORD || 'ChangeMe123!',
       createdBy: 1 // Root SuperAdmin
     });
 

@@ -78,10 +78,8 @@ const loginAsTenant = asyncHandler(async (req, res) => {
 
   const result = await authService.generateImpersonationToken(id);
   const tenant = await repo.findTenantById(Number(id));
-  const slug = tenant.name.toString().toLowerCase().trim()
-    .replace(/\s+/g, '-')
-    .replace(/[^\w-]+/g, '')
-    .replace(/--+/g, '-');
+  const { slugifyTenantName } = require('../../utils/tenantSlug');
+  const slug = slugifyTenantName(tenant.name);
 
   const host = req.hostname || '';
   const isLocalHost = host === 'localhost' || host === '127.0.0.1';
@@ -91,7 +89,12 @@ const loginAsTenant = asyncHandler(async (req, res) => {
   const tenantOrigin = isLocalHost
     ? `${req.protocol}://${slug}.localhost:5173`
     : `https://${slug}.${baseDomain}`;
-  const tenantUrl = `${tenantOrigin}/login?token=${result.token}&user=${encodeURIComponent(JSON.stringify(result.user))}`;
+  const tenantUrl = `${tenantOrigin}/login?token=${result.token}&user=${encodeURIComponent(
+    JSON.stringify({
+      ...result.user,
+      allowedModules: result.allowedModules || ['dashboard'],
+    }),
+  )}`;
 
   return ApiResponse.ok(res, { loginUrl: tenantUrl }, 'Impersonation link generated');
 });

@@ -31,7 +31,7 @@ const tenantPools = new Map();
  * Uses the same DB credentials/host/port as superAdminPool — only the
  * database name changes.
  *
- * @param {string} databaseName  e.g. "tenant_ab12_cd34_..."
+ * @param {string} databaseName  e.g. "hrs_hris_global_42"
  * @returns {Pool}
  */
 function getTenantPool(databaseName) {

@@ -104,6 +104,8 @@ class EmployeePerformance {
     this.growthObjectives = data.growth_objectives || '';
     this.performanceBand = data.performance_band || '';
     this.performanceLead = data.performance_lead || '';
+    this.remarks = data.remarks || '';
+    this.assessmentDate = data.assessment_date;
     this.status = data.status || 'Pending';
     this.createdAt = data.created_at;
     this.updatedAt = data.updated_at;
@@ -115,10 +117,10 @@ class EmployeePerformance {
    */
   static async populate(pool, rows) {
     if (!rows || rows.length === 0) return [];
-    
+
     const empIds = [...new Set(rows.map(r => r.employee_id).filter(Boolean))];
     const cycleIds = [...new Set(rows.map(r => r.performance_cycle_id).filter(Boolean))];
-    
+
     const competencyIds = new Set();
     rows.forEach(r => {
       const crs = Array.isArray(r.competency_ratings) ? r.competency_ratings : [];
@@ -126,7 +128,7 @@ class EmployeePerformance {
         if (cr.competency) competencyIds.add(Number(cr.competency));
       });
     });
-    
+
     // Fetch Employees
     let employeesMap = {};
     if (empIds.length > 0) {
@@ -138,7 +140,7 @@ class EmployeePerformance {
         employeesMap[e.id] = { id: e.id, empId: e.emp_id, fullName: e.full_name };
       });
     }
-    
+
     // Fetch Cycles
     let cyclesMap = {};
     if (cycleIds.length > 0) {
@@ -150,7 +152,7 @@ class EmployeePerformance {
         cyclesMap[c.id] = { id: c.id, cycleName: c.cycle_name };
       });
     }
-    
+
     // Fetch Competencies
     let competenciesMap = {};
     const compIdsArr = [...competencyIds];
@@ -163,7 +165,7 @@ class EmployeePerformance {
         competenciesMap[c.id] = { id: c.id, competencyName: c.competency_name };
       });
     }
-    
+
     // Assemble populated objects
     return rows.map(r => {
       const crs = Array.isArray(r.competency_ratings) ? r.competency_ratings : [];
@@ -171,7 +173,7 @@ class EmployeePerformance {
         competency: competenciesMap[cr.competency] || { id: cr.competency, competencyName: 'Unknown Competency' },
         rating: Number(cr.rating)
       }));
-      
+
       return {
         id: r.id,
         employee: employeesMap[r.employee_id] || { id: r.employee_id, empId: '', fullName: 'Unknown Employee' },
@@ -182,6 +184,8 @@ class EmployeePerformance {
         growthObjectives: r.growth_objectives || '',
         performanceBand: r.performance_band || '',
         performanceLead: r.performance_lead || '',
+        remarks: r.remarks || '',
+        assessmentDate: r.assessment_date,
         status: r.status || 'Pending',
         createdAt: r.created_at,
         updatedAt: r.updated_at
@@ -200,6 +204,8 @@ class EmployeePerformance {
       keyContributions = '',
       growthObjectives = '',
       performanceLead = '',
+      remarks = '',
+      assessmentDate = null,
       status = 'Completed' // default to Completed for submitted assessments, or let user set it
     } = assessmentData;
 
@@ -216,13 +222,15 @@ class EmployeePerformance {
         growth_objectives,
         performance_band,
         performance_lead,
+        remarks,
+        assessment_date,
         status,
         created_by,
         updated_by,
         created_at,
         updated_at
       )
-      VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $10, NOW(), NOW())
+      VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, NOW(), NOW())
       RETURNING *;
     `;
 
@@ -235,6 +243,8 @@ class EmployeePerformance {
       growthObjectives.trim(),
       performanceBand,
       performanceLead.trim(),
+      remarks.trim(),
+      assessmentDate,
       status,
       userId
     ];
@@ -330,7 +340,7 @@ class EmployeePerformance {
     `;
     const { rows } = await pool.query(query, [id]);
     if (rows.length === 0) return null;
-    
+
     const populated = await this.populate(pool, [rows[0]]);
     return populated[0];
   }
@@ -347,6 +357,8 @@ class EmployeePerformance {
       keyContributions,
       growthObjectives,
       performanceLead,
+      remarks,
+      assessmentDate,
       status
     } = updateData;
 
@@ -361,7 +373,7 @@ class EmployeePerformance {
     if (competencyRatings !== undefined) {
       calculatedRating = calculateOverallRating(competencyRatings);
       calculatedBand = calculatePerformanceBand(calculatedRating);
-      
+
       setClause.push(`competency_ratings = $${paramCount}::jsonb`);
       values.push(JSON.stringify(competencyRatings));
       paramCount++;
@@ -390,6 +402,18 @@ class EmployeePerformance {
     if (performanceLead !== undefined) {
       setClause.push(`performance_lead = $${paramCount}`);
       values.push(performanceLead.trim());
+      paramCount++;
+    }
+
+    if (remarks !== undefined) {
+      setClause.push(`remarks = $${paramCount}`);
+      values.push(remarks.trim());
+      paramCount++;
+    }
+
+    if (assessmentDate !== undefined) {
+      setClause.push(`assessment_date = $${paramCount}`);
+      values.push(assessmentDate);
       paramCount++;
     }
 
@@ -458,6 +482,62 @@ class EmployeePerformance {
       totalAssessments: parseInt(data.total_assessments || 0, 10),
       pendingReviews: parseInt(data.pending_reviews || 0, 10),
       completedReviews: parseInt(data.completed_reviews || 0, 10)
+    };
+  }
+
+  /**
+   * Find all assessments for a specific employee
+   */
+  static async findByEmployeeId(pool, employeeId) {
+    const query = `
+      SELECT * FROM employee_performance
+      WHERE employee_id = $1 AND deleted_at IS NULL
+      ORDER BY created_at DESC;
+    `;
+    const { rows } = await pool.query(query, [employeeId]);
+    return await this.populate(pool, rows);
+  }
+
+  /**
+   * Get employee performance summary
+   */
+  static async getEmployeeSummary(pool, employeeId) {
+    const query = `
+      SELECT * FROM employee_performance
+      WHERE employee_id = $1 AND deleted_at IS NULL AND status = 'Completed'
+      ORDER BY created_at DESC;
+    `;
+    const { rows } = await pool.query(query, [employeeId]);
+    
+    const totalAssessments = rows.length;
+    let averageRating = 0;
+    let performanceRatio = 0;
+    let currentCycleRating = 0;
+    let latestStatus = 'N/A';
+    
+    if (totalAssessments > 0) {
+      const sumRatings = rows.reduce((acc, curr) => acc + Number(curr.overall_rating || 0), 0);
+      averageRating = Math.round((sumRatings / totalAssessments) * 100) / 100;
+      performanceRatio = Math.round((averageRating / 5) * 100);
+      currentCycleRating = Number(rows[0].overall_rating || 0);
+      latestStatus = rows[0].performance_band || 'N/A';
+    }
+
+    const allAssessmentsQuery = `
+      SELECT COUNT(*) as total
+      FROM employee_performance
+      WHERE employee_id = $1 AND deleted_at IS NULL;
+    `;
+    const allRes = await pool.query(allAssessmentsQuery, [employeeId]);
+    const totalAllAssessments = parseInt(allRes.rows[0].total, 10);
+
+    return {
+      totalAssessments: totalAllAssessments,
+      completedCycles: totalAssessments,
+      averageRating,
+      performanceRatio,
+      currentCycleRating,
+      latestPerformanceStatus: latestStatus
     };
   }
 }

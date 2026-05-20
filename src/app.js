@@ -132,7 +132,7 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/letters', lettersRoutes);
 app.use('/api/v1/employees', employeesRoutes);
 app.use('/api/v1/attendance', attendanceAdminRoutes);
-app.use('/api/v1/leave',      leaveAdminRoutes);
+app.use('/api/v1/leave', leaveAdminRoutes);
 // Standalone dropdowns (placed BEFORE general routers to avoid wildcard matching)
 app.get('/api/v1/performance-cycles/dropdown', authenticate, loadAuthContext, getCyclesDropdown);
 app.get('/api/performance-cycles/dropdown', authenticate, loadAuthContext, getCyclesDropdown);
@@ -147,7 +147,7 @@ app.use('/api/competencies', competencyRoutes);
 app.use('/api/v1/employee-performance', employeePerformanceRoutes);
 app.use('/api/employee-performance', employeePerformanceRoutes);
 
-app.use('/api/v1/messages',   messagesRoutes);
+app.use('/api/v1/messages', messagesRoutes);
 app.use('/api/v1/admin/settings/assets', assetSettingsRoutes);
 app.use('/api/v1/admin/settings/attendance', attendanceSettingsRoutes);
 app.use('/api/v1/admin/settings/password-security', passwordSecurityRoutes);

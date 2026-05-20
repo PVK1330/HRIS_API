@@ -19,6 +19,10 @@ router.get('/competencies/dropdown', ctrl.getCompetenciesDropdown);
 // Summary count metrics
 router.get('/summary', ctrl.getSummaryMetrics);
 
+// Employee Portal Specific
+router.get('/employee/:employeeId', ctrl.getAssessmentsByEmployeeId);
+router.get('/performance-summary/:employeeId', ctrl.getEmployeePerformanceSummary);
+
 // General CRUD operations
 router.get('/', ctrl.getAllAssessments);
 router.post('/', ctrl.createAssessment);

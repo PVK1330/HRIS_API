@@ -28,6 +28,8 @@ const createAssessment = asyncHandler(async (req, res) => {
     keyContributions,
     growthObjectives,
     performanceLead,
+    remarks,
+    assessmentDate,
     status
   } = req.body;
 
@@ -68,6 +70,8 @@ const createAssessment = asyncHandler(async (req, res) => {
     keyContributions: keyContributions || '',
     growthObjectives: growthObjectives || '',
     performanceLead: performanceLead || '',
+    remarks: remarks || '',
+    assessmentDate: assessmentDate || null,
     status: status || 'Completed' // standard submitted assessments are 'Completed' or 'Pending'
   }, req.user.id);
 
@@ -148,6 +152,8 @@ const updateAssessment = asyncHandler(async (req, res) => {
     keyContributions,
     growthObjectives,
     performanceLead,
+    remarks,
+    assessmentDate,
     status
   } = req.body;
 
@@ -181,6 +187,8 @@ const updateAssessment = asyncHandler(async (req, res) => {
     keyContributions,
     growthObjectives,
     performanceLead,
+    remarks,
+    assessmentDate,
     status
   }, req.user.id);
 
@@ -246,6 +254,36 @@ const getCompetenciesDropdown = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, formatted, 'Competencies dropdown retrieved successfully');
 });
 
+/**
+ * GET /api/employee-performance/employee/:employeeId
+ * Retrieve all assessments for a specific employee
+ */
+const getAssessmentsByEmployeeId = asyncHandler(async (req, res) => {
+  const { employeeId } = req.params;
+  const pool = getTenantDbPool(req.user);
+
+  if (!employeeId) throw ApiError.badRequest('Employee ID is required');
+
+  const assessments = await EmployeePerformance.findByEmployeeId(pool, employeeId);
+
+  return ApiResponse.ok(res, assessments, 'Employee assessments retrieved successfully');
+});
+
+/**
+ * GET /api/employee-performance/performance-summary/:employeeId
+ * Retrieve performance summary for a specific employee
+ */
+const getEmployeePerformanceSummary = asyncHandler(async (req, res) => {
+  const { employeeId } = req.params;
+  const pool = getTenantDbPool(req.user);
+
+  if (!employeeId) throw ApiError.badRequest('Employee ID is required');
+
+  const summary = await EmployeePerformance.getEmployeeSummary(pool, employeeId);
+
+  return ApiResponse.ok(res, summary, 'Employee performance summary retrieved successfully');
+});
+
 module.exports = {
   createAssessment,
   getAllAssessments,
@@ -254,5 +292,7 @@ module.exports = {
   updateAssessment,
   deleteAssessment,
   getCyclesDropdown,
-  getCompetenciesDropdown
+  getCompetenciesDropdown,
+  getAssessmentsByEmployeeId,
+  getEmployeePerformanceSummary
 };

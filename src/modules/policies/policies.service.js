@@ -1,6 +1,7 @@
 'use strict';
 
 const repo = require('./policies.repository');
+const employeePolicies = require('./policies.employee');
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
 
@@ -44,14 +45,28 @@ async function getCompliance(tenant, id) {
   return repo.getAcknowledgements(pool, id);
 }
 
+async function listMyPolicies(tenant, user) {
+  const pool = await getTenantPool(tenant.dbName);
+  return employeePolicies.listMyPolicies(pool, user);
+}
+
+async function getMyPolicy(tenant, user, policyId) {
+  const pool = await getTenantPool(tenant.dbName);
+  return employeePolicies.getMyPolicy(pool, user, policyId);
+}
+
 async function acknowledgePolicy(tenant, user, policyId) {
   const pool = await getTenantPool(tenant.dbName);
-  return repo.acknowledge(pool, policyId, user.id);
+  return employeePolicies.acknowledgeMyPolicy(pool, user, policyId);
+}
+
+async function autoAssignForEmployee(tenant, employeeId) {
+  return employeePolicies.autoAssignPoliciesForEmployee(tenant, employeeId);
 }
 
 async function listCategories(tenant) {
   const pool = await getTenantPool(tenant.dbName);
-  return repo.listCategories(pool);
+  return repo.listCategoriesWithStats(pool);
 }
 
 async function createCategory(tenant, data) {
@@ -76,9 +91,12 @@ module.exports = {
   updatePolicy,
   deletePolicy,
   getCompliance,
+  listMyPolicies,
+  getMyPolicy,
   acknowledgePolicy,
+  autoAssignForEmployee,
   listCategories,
   createCategory,
   updateCategory,
-  deleteCategory
+  deleteCategory,
 };

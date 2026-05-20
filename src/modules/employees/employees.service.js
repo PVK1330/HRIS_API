@@ -233,6 +233,16 @@ async function createEmployee(user, data) {
     await repo.syncEmployeeSections(pool, employeeId, data);
     const full = await repo.findById(pool, employeeId);
     if (full) {
+      try {
+        const policiesService = require("../policies/policies.service");
+        await policiesService.autoAssignForEmployee(
+          { dbName: user.db_name },
+          employeeId,
+        );
+      } catch (policyErr) {
+        logger.warn(`Policy auto-assign skipped: ${policyErr.message}`);
+      }
+
       if (welcomePlain && full.work_email) {
         try {
           await sendEmployeeWelcomeEmail({

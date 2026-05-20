@@ -2,6 +2,7 @@
 
 const asyncHandler = require('../../utils/asyncHandler');
 const ApiResponse = require('../../utils/ApiResponse');
+const ApiError = require('../../utils/ApiError');
 const service = require('./policies.service');
 
 const list = asyncHandler(async (req, res) => {
@@ -34,9 +35,22 @@ const getTracking = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, tracking, 'Compliance tracking retrieved successfully');
 });
 
+const listMine = asyncHandler(async (req, res) => {
+  const policies = await service.listMyPolicies(req.tenant, req.user);
+  return ApiResponse.ok(res, policies, 'Your policies retrieved successfully');
+});
+
+const getMine = asyncHandler(async (req, res) => {
+  const policy = await service.getMyPolicy(req.tenant, req.user, req.params.id);
+  return ApiResponse.ok(res, policy, 'Policy retrieved successfully');
+});
+
 const acknowledge = asyncHandler(async (req, res) => {
   const ack = await service.acknowledgePolicy(req.tenant, req.user, req.params.id);
-  return ApiResponse.ok(res, ack, 'Policy acknowledged successfully');
+  const message = ack.alreadyAcknowledged
+    ? 'Policy was already acknowledged'
+    : 'Policy acknowledged successfully';
+  return ApiResponse.ok(res, ack, message);
 });
 
 const listCategories = asyncHandler(async (req, res) => {
@@ -77,6 +91,8 @@ const uploadFile = asyncHandler(async (req, res) => {
 module.exports = {
   list,
   getOne,
+  listMine,
+  getMine,
   create,
   update,
   remove,

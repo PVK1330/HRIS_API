@@ -237,8 +237,39 @@ async function verify2FA(userId, code) {
   return { success: true };
 }
 
+/**
+ * Normalize login identifiers. For @gmail.com and @googlemail.com, strip dots in
+ * the local part (Gmail treats them as equivalent). Other domains keep dots.
+ */
 function normalizeLoginId(raw) {
-  return String(raw || '').trim().toLowerCase();
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s.includes('@')) return s;
+  const at = s.lastIndexOf('@');
+  const local = s.slice(0, at);
+  const domain = s.slice(at + 1);
+  if (domain === 'gmail.com' || domain === 'googlemail.com') {
+    return `${local.replace(/\./g, '')}@${domain}`;
+  }
+  return s;
+}
+
+/**
+ * SQL: column matches normalized login $1, with Gmail / Googlemail dot-equivalence.
+ */
+function sqlEmailMatchesLogin(col) {
+  return `(
+    LOWER(TRIM(${col})) = $1
+    OR (
+      $1 LIKE '%@gmail.com'
+      AND RIGHT(LOWER(TRIM(${col})), 10) = '@gmail.com'
+      AND regexp_replace(split_part(LOWER(TRIM(${col})), '@', 1), '\\.', '', 'g') || '@gmail.com' = $1
+    )
+    OR (
+      $1 LIKE '%@googlemail.com'
+      AND RIGHT(LOWER(TRIM(${col})), 14) = '@googlemail.com'
+      AND regexp_replace(split_part(LOWER(TRIM(${col})), '@', 1), '\\.', '', 'g') || '@googlemail.com' = $1
+    )
+  )`;
 }
 
 /**
@@ -286,8 +317,8 @@ async function findEmployeeForLogin(tenantPool, loginId) {
       FROM employees
       WHERE deleted_at IS NULL
         AND (
-          LOWER(TRIM(work_email)) = $1
-          OR LOWER(TRIM(COALESCE(username, ''))) = $1
+          ${sqlEmailMatchesLogin('work_email')}
+          OR ${sqlEmailMatchesLogin('username')}
         )
       LIMIT 1
     `,
@@ -321,7 +352,7 @@ async function findTenantAdminForLogin(tenantPool, loginId, tenantAdminEmail) {
     `
       SELECT id, email, password_hash, name, status
       FROM admin_users
-      WHERE LOWER(TRIM(email)) = $1
+      WHERE ${sqlEmailMatchesLogin('email')}
       LIMIT 1
     `,
     [loginId],
@@ -576,7 +607,7 @@ async function login(email, password, options = {}) {
   }
 
   const centralResult = await superAdminPool.query(
-    'SELECT id, name, db_name, status, plan_id FROM public.tenants WHERE LOWER(TRIM(admin_email)) = $1',
+    `SELECT id, name, db_name, status, plan_id FROM public.tenants WHERE ${sqlEmailMatchesLogin('admin_email')}`,
     [loginId],
   );
 
@@ -593,7 +624,7 @@ async function login(email, password, options = {}) {
   await runTenantMigrations(centralTenant.db_name).catch(() => { });
 
   const userResult = await tenantPool.query(
-    'SELECT id, email, password_hash, name, status FROM admin_users WHERE LOWER(TRIM(email)) = $1',
+    `SELECT id, email, password_hash, name, status FROM admin_users WHERE ${sqlEmailMatchesLogin('email')}`,
     [loginId],
   );
 

@@ -25,6 +25,9 @@ router.post('/', uploadFile('receipt', 'receipt'), ctrl.create);
 // Get single claim by ID
 router.get('/:id', ctrl.getOne);
 
+// Update claim (draft / rejected — fields as JSON)
+router.patch('/:id', ctrl.update);
+
 // Update claim status
 router.put('/:id/status', ctrl.updateStatus);
 

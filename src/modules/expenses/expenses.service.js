@@ -3,16 +3,57 @@
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
 
-const STATUSES = new Set(['Pending', 'Approved', 'Declined', 'Rejected', 'Paid', 'Reimbursed']);
+const STATUSES = new Set([
+  'Draft',
+  'Pending',
+  'Approved',
+  'Declined',
+  'Rejected',
+  'Paid',
+  'Reimbursed',
+  'Processed',
+]);
 
 async function ensureTableColumns(pool) {
   try {
     await pool.query('ALTER TABLE expenses ADD COLUMN IF NOT EXISTS vendor VARCHAR(255);');
     await pool.query('ALTER TABLE expenses ADD COLUMN IF NOT EXISTS project_client VARCHAR(255);');
     await pool.query('ALTER TABLE expenses ADD COLUMN IF NOT EXISTS employee_name VARCHAR(255);');
+    await pool.query(
+      'ALTER TABLE expenses ADD COLUMN IF NOT EXISTS expense_category_id INTEGER;',
+    );
   } catch (err) {
     console.error('Error running migrations/alters for expenses table:', err);
   }
+}
+
+async function resolveExpenseCategory(pool, data) {
+  const rawId = data.expenseCategoryId ?? data.categoryId;
+  const nameFallback = String(data.expenseCategory || data.expense_category || '').trim();
+
+  if (rawId != null && String(rawId).trim() !== '') {
+    const idNum = parseInt(String(rawId), 10);
+    if (Number.isNaN(idNum)) throw new ApiError(400, 'Invalid expense category id');
+    const { rows } = await pool.query(
+      `SELECT id, name FROM expense_categories WHERE id = $1 AND is_active = TRUE`,
+      [idNum],
+    );
+    if (!rows[0]) throw new ApiError(400, 'Invalid or inactive expense category');
+    return { id: rows[0].id, name: rows[0].name };
+  }
+
+  if (nameFallback) {
+    const { rows } = await pool.query(
+      `SELECT id, name FROM expense_categories
+       WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) AND is_active = TRUE
+       LIMIT 1`,
+      [nameFallback],
+    );
+    if (rows[0]) return { id: rows[0].id, name: rows[0].name };
+    return { id: null, name: nameFallback };
+  }
+
+  throw new ApiError(400, 'Expense category is required');
 }
 
 async function listExpenses(tenant, query = {}) {
@@ -25,6 +66,18 @@ async function listExpenses(tenant, query = {}) {
 
   let whereClause = 'WHERE 1=1';
   const params = [];
+
+  const employeeIdFilter = (query.employeeId || query.employee_id || '').toString().trim();
+  if (employeeIdFilter) {
+    whereClause += ` AND ex.employee_id = $${params.length + 1}`;
+    params.push(parseInt(employeeIdFilter, 10));
+  }
+
+  const categoryIdFilter = (query.expenseCategoryId || query.categoryId || '').toString().trim();
+  if (categoryIdFilter && !Number.isNaN(parseInt(categoryIdFilter, 10))) {
+    whereClause += ` AND ex.expense_category_id = $${params.length + 1}`;
+    params.push(parseInt(categoryIdFilter, 10));
+  }
 
   // Search by employee name using regex matching (~* is case-insensitive POSIX regex in Postgres)
   const search = (query.search || '').trim();
@@ -71,6 +124,7 @@ async function listExpenses(tenant, query = {}) {
       COALESCE(ex.employee_name, emp.full_name) AS employee_name,
       COALESCE(emp.department, 'Operations') AS department,
       ex.expense_category,
+      ex.expense_category_id,
       ex.expense_title AS claim_title,
       ex.amount,
       ex.currency,
@@ -123,18 +177,6 @@ async function getExpense(tenant, id) {
   return row;
 }
 
-function calculateAutomaticStatus(amount, receiptFile) {
-  const numericAmount = parseFloat(amount);
-  if (isNaN(numericAmount) || numericAmount <= 0) {
-    return 'Rejected';
-  }
-  // Auto-approve claims below 100 AED/USD if a receipt is uploaded
-  if (numericAmount < 100 && receiptFile) {
-    return 'Approved';
-  }
-  return 'Pending';
-}
-
 async function createExpense(tenant, data, receiptFile) {
   const pool = await getTenantPool(tenant.dbName);
   await ensureTableColumns(pool);
@@ -143,7 +185,6 @@ async function createExpense(tenant, data, receiptFile) {
     employeeId,
     employeeName,
     claimTitle,
-    expenseCategory,
     expenseDate,
     amount,
     currency,
@@ -153,12 +194,20 @@ async function createExpense(tenant, data, receiptFile) {
     projectClient
   } = data;
 
-  if (!employeeId || !claimTitle || !expenseCategory || !expenseDate || !amount) {
+  if (!employeeId || !claimTitle || !expenseDate || !amount) {
     throw new ApiError(400, 'Missing required fields');
   }
 
-  // Automatic status calculation before saving/updating
-  const status = calculateAutomaticStatus(amount, receiptFile);
+  let cat;
+  cat = await resolveExpenseCategory(pool, data);
+
+  const isDraft = data.isDraft === true || data.isDraft === 'true';
+  const numericAmount = parseFloat(amount);
+  if (Number.isNaN(numericAmount) || numericAmount <= 0) {
+    throw new ApiError(400, 'Invalid amount');
+  }
+
+  const status = isDraft ? 'Draft' : 'Pending';
 
   const receiptUrl = receiptFile ? `/uploads/logos/${receiptFile.filename}` : null;
 
@@ -168,6 +217,7 @@ async function createExpense(tenant, data, receiptFile) {
       employee_name,
       expense_title,
       expense_category,
+      expense_category_id,
       expense_date,
       amount,
       currency,
@@ -179,7 +229,7 @@ async function createExpense(tenant, data, receiptFile) {
       receipt_url,
       status
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
     RETURNING *;
   `;
 
@@ -187,9 +237,10 @@ async function createExpense(tenant, data, receiptFile) {
     parseInt(employeeId, 10),
     employeeName || null,
     claimTitle,
-    expenseCategory,
+    cat.name,
+    cat.id,
     expenseDate,
-    parseFloat(amount),
+    numericAmount,
     currency || 'INR',
     paymentMethod || null,
     vendor || null,
@@ -204,29 +255,183 @@ async function createExpense(tenant, data, receiptFile) {
   return getExpense(tenant, rows[0].id);
 }
 
-async function updateExpenseStatus(tenant, id, status, userId) {
+async function updateExpenseClaim(tenant, id, data, user) {
+  const pool = await getTenantPool(tenant.dbName);
+  await ensureTableColumns(pool);
+  const existing = await getExpense(tenant, id);
+  const role = user?.role;
+  const empId = user?.employeeId;
+
+  const employeeOwned =
+    empId != null && parseInt(String(existing.employee_id), 10) === parseInt(String(empId), 10);
+
+  const st = String(existing.status);
+  const editableStatus = ['Draft', 'Rejected', 'Declined'].includes(st);
+
+  const canEdit =
+    (role === 'admin' && editableStatus) ||
+    (role === 'employee' && employeeOwned && editableStatus);
+
+  if (!canEdit) {
+    throw new ApiError(403, 'You cannot edit this expense claim');
+  }
+
+  const submitNow = data.submitNow === true || data.submitNow === 'true';
+  const keepDraft = data.isDraft === true || data.isDraft === 'true';
+
+  let nextStatus = String(existing.status);
+  if (submitNow && ['Draft', 'Rejected', 'Declined'].includes(nextStatus)) {
+    nextStatus = 'Pending';
+  } else if (keepDraft) {
+    nextStatus = 'Draft';
+  }
+
+  const claimTitle = data.claimTitle ?? data.claim_title ?? existing.expense_title;
+  let expenseCategoryName = existing.expense_category;
+  let expenseCategoryId = existing.expense_category_id;
+
+  const hasCatUpdate =
+    (data.expenseCategoryId != null && String(data.expenseCategoryId).trim() !== '') ||
+    (data.categoryId != null && String(data.categoryId).trim() !== '') ||
+    (data.expenseCategory != null && String(data.expenseCategory).trim() !== '') ||
+    (data.expense_category != null && String(data.expense_category).trim() !== '');
+
+  if (hasCatUpdate) {
+    const cat = await resolveExpenseCategory(pool, {
+      expenseCategoryId: data.expenseCategoryId ?? data.categoryId,
+      expenseCategory: data.expenseCategory ?? data.expense_category,
+    });
+    expenseCategoryName = cat.name;
+    expenseCategoryId = cat.id;
+  }
+
+  const expenseDateRaw = data.expenseDate ?? data.expense_date ?? existing.expense_date;
+  const expenseDate =
+    expenseDateRaw instanceof Date
+      ? expenseDateRaw.toISOString().slice(0, 10)
+      : String(expenseDateRaw).slice(0, 10);
+  const amountVal =
+    data.amount != null ? parseFloat(String(data.amount)) : parseFloat(String(existing.amount));
+  const currency = data.currency ?? existing.currency;
+  const paymentMethod = data.paymentMethod ?? data.payment_method ?? existing.payment_method;
+  const description = data.description ?? existing.description;
+
+  if (!claimTitle || !expenseCategoryName || !expenseDate || Number.isNaN(amountVal) || amountVal <= 0) {
+    throw new ApiError(400, 'Missing or invalid required fields');
+  }
+
+  await pool.query(
+    `
+    UPDATE expenses SET
+      expense_title = $1,
+      expense_category = $2,
+      expense_category_id = $3,
+      expense_date = $4,
+      amount = $5,
+      currency = $6,
+      payment_method = $7,
+      description = $8,
+      status = $9,
+      updated_at = NOW()
+    WHERE id = $10
+    `,
+    [
+      claimTitle,
+      expenseCategoryName,
+      expenseCategoryId,
+      expenseDate,
+      amountVal,
+      currency || 'INR',
+      paymentMethod || null,
+      description || null,
+      nextStatus,
+      id,
+    ],
+  );
+
+  return getExpense(tenant, id);
+}
+
+async function updateExpenseStatus(tenant, id, payload, userId) {
   const pool = await getTenantPool(tenant.dbName);
   await ensureTableColumns(pool);
 
-  const query = `
-    UPDATE expenses
-    SET 
-      status = $1,
-      approved_by = $2,
-      approved_at = NOW(),
-      updated_at = NOW()
-    WHERE id = $3
-    RETURNING *;
-  `;
+  const status = payload.status;
+  const rejectionReason = payload.rejectionReason ?? payload.rejection_reason;
+  const approver = userId || null;
+  const isReject = status === 'Rejected' || status === 'Declined';
+  const isApprove = status === 'Approved';
+  const isPaid = status === 'Paid' || status === 'Reimbursed' || status === 'Processed';
 
-  const { rows } = await pool.query(query, [status, userId || null, id]);
+  let query;
+  let values;
+  if (isReject) {
+    query = `
+      UPDATE expenses
+      SET
+        status = $1,
+        rejection_reason = $2,
+        approved_by = $3,
+        approved_at = NOW(),
+        updated_at = NOW()
+      WHERE id = $4
+      RETURNING *;
+    `;
+    values = [status, rejectionReason || null, approver, id];
+  } else if (isApprove) {
+    query = `
+      UPDATE expenses
+      SET
+        status = $1,
+        approved_by = $2,
+        approved_at = NOW(),
+        rejection_reason = NULL,
+        updated_at = NOW()
+      WHERE id = $3
+      RETURNING *;
+    `;
+    values = [status, approver, id];
+  } else if (isPaid) {
+    query = `
+      UPDATE expenses
+      SET
+        status = $1,
+        reimbursed_at = COALESCE(reimbursed_at, NOW()),
+        updated_at = NOW()
+      WHERE id = $2
+      RETURNING *;
+    `;
+    values = [status, id];
+  } else {
+    query = `
+      UPDATE expenses
+      SET
+        status = $1,
+        updated_at = NOW()
+      WHERE id = $2
+      RETURNING *;
+    `;
+    values = [status, id];
+  }
+
+  const { rows } = await pool.query(query, values);
   if (!rows.length) throw new ApiError(404, 'Expense claim not found');
   return getExpense(tenant, id);
 }
 
-async function deleteExpense(tenant, id) {
+async function deleteExpense(tenant, id, user) {
   const pool = await getTenantPool(tenant.dbName);
   await ensureTableColumns(pool);
+
+  if (user?.role === 'employee' && user?.employeeId) {
+    const row = await getExpense(tenant, id);
+    if (parseInt(String(row.employee_id), 10) !== parseInt(String(user.employeeId), 10)) {
+      throw new ApiError(403, 'You cannot delete this expense claim');
+    }
+    if (String(row.status) !== 'Draft') {
+      throw new ApiError(400, 'Only draft claims can be deleted');
+    }
+  }
 
   const query = `
     DELETE FROM expenses
@@ -255,6 +460,7 @@ async function getExpensesStats(tenant, query = {}) {
   const statsQuery = `
     SELECT
       COALESCE(COUNT(*), 0)::int as total,
+      COALESCE(COUNT(CASE WHEN status = 'Draft' THEN 1 END), 0)::int as drafts,
       COALESCE(COUNT(CASE WHEN status = 'Pending' THEN 1 END), 0)::int as pending,
       COALESCE(COUNT(CASE WHEN status = 'Approved' THEN 1 END), 0)::int as approved,
       COALESCE(COUNT(CASE WHEN status = 'Declined' OR status = 'Rejected' THEN 1 END), 0)::int as declined,
@@ -268,14 +474,16 @@ async function getExpensesStats(tenant, query = {}) {
   
   return {
     total: row.total,
+    drafts: row.drafts,
     pending: row.pending,
     approved: row.approved,
     declined: row.declined,
     paid: row.paid,
     totalClaims: row.total,
+    draftClaims: row.drafts,
     pendingClaims: row.pending,
     approvedClaims: row.approved,
-    rejectedClaims: row.declined
+    rejectedClaims: row.declined,
   };
 }
 
@@ -283,7 +491,8 @@ module.exports = {
   listExpenses,
   getExpense,
   createExpense,
+  updateExpenseClaim,
   updateExpenseStatus,
   deleteExpense,
-  getExpensesStats
+  getExpensesStats,
 };

@@ -159,6 +159,8 @@ app.use('/api/v1/departments', departmentsRoutes);
 app.use('/api/v1/assets', require('./modules/assets/assets.routes'));
 app.use('/api/v1/notifications', require('./modules/notifications/notifications.routes'));
 app.use('/api/v1/policies', require('./modules/policies/policies.routes'));
+app.use('/api/v1/expenses', require('./modules/expenses/expenses.routes'));
+app.use('/api/v1/expense-categories', require('./modules/expenseCategories/expenseCategories.routes'));
 app.use('/api/v1/designations', designationsRoutes);
 app.use('/api/v1/visa-types', visaTypesRoutes);
 app.use('/api/v1/visa-records', visaRecordsRoutes);

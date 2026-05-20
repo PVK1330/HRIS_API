@@ -32,7 +32,7 @@ const update = asyncHandler(async (req, res) => {
 
 const remove = asyncHandler(async (req, res) => {
   await service.deleteExpenseCategory(req.tenant, req.params.id);
-  return ApiResponse.ok(res, null, 'Expense category deactivated successfully');
+  return ApiResponse.ok(res, null, 'Expense category deleted successfully');
 });
 
 module.exports = {

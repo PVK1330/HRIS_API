@@ -16,7 +16,7 @@ async function listExpenseCategories(tenant, query = {}) {
 
   const { rows } = await pool.query(
     `
-    SELECT id, name, limit_amount, is_active, sort_order, created_at, updated_at
+    SELECT id, name, description, limit_amount, is_active, sort_order, created_at, updated_at
     FROM expense_categories
     ${where}
     ORDER BY sort_order ASC, name ASC
@@ -29,12 +29,32 @@ async function listExpenseCategories(tenant, query = {}) {
 async function getExpenseCategory(tenant, id) {
   const pool = await getTenantPool(tenant.dbName);
   const { rows } = await pool.query(
-    `SELECT id, name, limit_amount, is_active, sort_order, created_at, updated_at
+    `SELECT id, name, description, limit_amount, is_active, sort_order, created_at, updated_at
      FROM expense_categories WHERE id = $1`,
     [id]
   );
   if (!rows[0]) throw new ApiError(404, 'Expense category not found');
   return rows[0];
+}
+
+async function findCategoryByName(pool, name, { activeOnly } = {}) {
+  const params = [name];
+  let activeClause = '';
+  if (activeOnly === true) activeClause = ' AND is_active = TRUE';
+  if (activeOnly === false) activeClause = ' AND is_active = FALSE';
+
+  const { rows } = await pool.query(
+    `
+    SELECT id, name, description, limit_amount, is_active, sort_order, created_at, updated_at
+    FROM expense_categories
+    WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))
+    ${activeClause}
+    ORDER BY id ASC
+    LIMIT 1
+    `,
+    params
+  );
+  return rows[0] || null;
 }
 
 async function createExpenseCategory(tenant, body) {
@@ -47,15 +67,30 @@ async function createExpenseCategory(tenant, body) {
       ? parseFloat(body.limitAmount)
       : null;
   const sortOrder = parseInt(body.sortOrder ?? body.sort_order ?? 0, 10) || 0;
+  const resolvedLimit = Number.isNaN(limitAmount) ? null : limitAmount;
+  const description =
+    body.description != null ? String(body.description).trim() : '';
+
+  const existingActive = await findCategoryByName(pool, name, { activeOnly: true });
+  if (existingActive) {
+    throw new ApiError(409, 'A category with this name already exists');
+  }
+
+  // Remove leftover soft-deleted rows so recreate is a brand-new category (new id).
+  await pool.query(
+    `DELETE FROM expense_categories
+     WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) AND is_active = FALSE`,
+    [name]
+  );
 
   try {
     const { rows } = await pool.query(
       `
-      INSERT INTO expense_categories (name, limit_amount, sort_order)
-      VALUES ($1, $2, $3)
-      RETURNING id, name, limit_amount, is_active, sort_order, created_at, updated_at
+      INSERT INTO expense_categories (name, description, limit_amount, sort_order)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, name, description, limit_amount, is_active, sort_order, created_at, updated_at
       `,
-      [name, Number.isNaN(limitAmount) ? null : limitAmount, sortOrder]
+      [name, description || null, resolvedLimit, sortOrder]
     );
     return rows[0];
   } catch (e) {
@@ -72,6 +107,13 @@ async function updateExpenseCategory(tenant, id, body) {
 
   const name = body.name != null ? String(body.name).trim() : existing.name;
   if (!name) throw new ApiError(400, 'Name cannot be empty');
+
+  if (name.toLowerCase() !== String(existing.name || '').trim().toLowerCase()) {
+    const dup = await findCategoryByName(pool, name, { activeOnly: true });
+    if (dup && dup.id !== Number(id)) {
+      throw new ApiError(409, 'A category with this name already exists');
+    }
+  }
 
   let limitAmount = existing.limit_amount;
   if (body.limitAmount !== undefined || body.limit_amount !== undefined) {
@@ -94,19 +136,25 @@ async function updateExpenseCategory(tenant, id, body) {
         ? Boolean(body.isActive)
         : existing.is_active;
 
+  let description = existing.description;
+  if (body.description !== undefined) {
+    description = body.description == null ? null : String(body.description).trim();
+  }
+
   try {
     const { rows } = await pool.query(
       `
       UPDATE expense_categories
       SET name = $1,
-          limit_amount = $2,
-          sort_order = $3,
-          is_active = $4,
+          description = $2,
+          limit_amount = $3,
+          sort_order = $4,
+          is_active = $5,
           updated_at = NOW()
-      WHERE id = $5
-      RETURNING id, name, limit_amount, is_active, sort_order, created_at, updated_at
+      WHERE id = $6
+      RETURNING id, name, description, limit_amount, is_active, sort_order, created_at, updated_at
       `,
-      [name, limitAmount, sortOrder, isActive, id]
+      [name, description || null, limitAmount, sortOrder, isActive, id]
     );
     const row = rows[0];
 
@@ -127,8 +175,10 @@ async function updateExpenseCategory(tenant, id, body) {
 async function deleteExpenseCategory(tenant, id) {
   const pool = await getTenantPool(tenant.dbName);
   await getExpenseCategory(tenant, id);
+
+  // Permanently remove; existing claims keep expense_category text, FK sets category_id NULL.
   const { rows } = await pool.query(
-    `UPDATE expense_categories SET is_active = FALSE, updated_at = NOW() WHERE id = $1 RETURNING id`,
+    `DELETE FROM expense_categories WHERE id = $1 RETURNING id`,
     [id]
   );
   if (!rows.length) throw new ApiError(404, 'Expense category not found');

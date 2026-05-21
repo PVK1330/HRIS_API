@@ -77,4 +77,5 @@ async function bootstrap() {
 bootstrap().catch((err) => {
   try { require('./utils/logger').error('Fatal startup error', err); } catch (_) { console.error('Fatal startup error', err); }
   process.exit(1);
-});
+}); // Trigger auto-reload for migration 049
+

@@ -94,6 +94,16 @@ const remove = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, null, "Employee deleted successfully");
 });
 
+/** POST /employees/:id/complete-onboarding — activate portal + email credentials */
+const completeOnboarding = asyncHandler(async (req, res) => {
+  const result = await service.completeOnboardingActivation(
+    req.user,
+    req.params.id,
+    req.auth,
+  );
+  return ApiResponse.ok(res, result, result.message);
+});
+
 module.exports = {
   list,
   dropdownList,
@@ -105,4 +115,5 @@ module.exports = {
   create,
   update,
   remove,
+  completeOnboarding,
 };

@@ -48,6 +48,10 @@ router.get('/:id', requirePermission(P.EMPLOYEE_VIEW), [
   param('id').isInt({ min: 1 }).withMessage('id must be a positive integer'),
 ], validate, ctrl.getOne);
 
+router.post('/:id/complete-onboarding', requirePermission(P.EMPLOYEE_EDIT), [
+  param('id').isInt({ min: 1 }).withMessage('id must be a positive integer'),
+], validate, ctrl.completeOnboarding);
+
 // ─── Write ───────────────────────────────────────────────────────────────────
 router.post('/', requirePermission(P.EMPLOYEE_CREATE), [
   body('empId').optional({ nullable: true }).isString().trim().isLength({ max: 20 }),
@@ -61,7 +65,7 @@ router.post('/', requirePermission(P.EMPLOYEE_CREATE), [
   body('dateOfBirth').optional({ nullable: true }).isDate(),
   body('gender').optional().isIn(['Male', 'Female', 'Other']),
   body('salary').optional({ nullable: true }).isFloat({ min: 0 }),
-  body('employmentStatus').optional().isIn(['Active', 'Probation', 'Notice Period', 'On Leave', 'Terminated']),
+  body('employmentStatus').optional().isIn(['Active', 'Probation', 'Notice Period', 'On Leave', 'Terminated', 'Onboarding']),
   body('probationEndDate').optional({ nullable: true }).isDate(),
   body('passportExpiry').optional({ nullable: true }).isDate(),
   body('emiratesIdExpiry').optional({ nullable: true }).isDate(),
@@ -105,7 +109,7 @@ router.patch('/:id', requirePermission(P.EMPLOYEE_EDIT), [
   body('dateOfBirth').optional({ nullable: true }).isDate(),
   body('gender').optional().isIn(['Male', 'Female', 'Other']),
   body('salary').optional({ nullable: true }).isFloat({ min: 0 }),
-  body('employmentStatus').optional().isIn(['Active', 'Probation', 'Notice Period', 'On Leave', 'Terminated']),
+  body('employmentStatus').optional().isIn(['Active', 'Probation', 'Notice Period', 'On Leave', 'Terminated', 'Onboarding']),
   body('probationEndDate').optional({ nullable: true }).isDate(),
   body('passportExpiry').optional({ nullable: true }).isDate(),
   body('emiratesIdExpiry').optional({ nullable: true }).isDate(),
@@ -148,7 +152,7 @@ router.put('/:id', requirePermission(P.EMPLOYEE_EDIT), [
   body('dateOfBirth').optional({ nullable: true }).isDate(),
   body('gender').optional().isIn(['Male', 'Female', 'Other']),
   body('salary').optional({ nullable: true }).isFloat({ min: 0 }),
-  body('employmentStatus').optional().isIn(['Active', 'Probation', 'Notice Period', 'On Leave', 'Terminated']),
+  body('employmentStatus').optional().isIn(['Active', 'Probation', 'Notice Period', 'On Leave', 'Terminated', 'Onboarding']),
   body('probationEndDate').optional({ nullable: true }).isDate(),
   body('passportExpiry').optional({ nullable: true }).isDate(),
   body('emiratesIdExpiry').optional({ nullable: true }).isDate(),

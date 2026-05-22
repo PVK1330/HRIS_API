@@ -50,9 +50,17 @@ function buildEmployeeListWhere({
   workLocation = "",
   joinDateFrom = "",
   joinDateTo = "",
+  excludeOnboarding = false,
+  onboardingOnly = false,
 } = {}) {
   const conditions = ["e.deleted_at IS NULL"];
   const params = [];
+
+  if (onboardingOnly) {
+    conditions.push(`e.employment_status = 'Onboarding'`);
+  } else if (excludeOnboarding && !status) {
+    conditions.push(`e.employment_status <> 'Onboarding'`);
+  }
 
   if (search) {
     params.push(`%${search}%`);
@@ -121,6 +129,8 @@ async function findAll(
     workLocation = "",
     joinDateFrom = "",
     joinDateTo = "",
+    excludeOnboarding = false,
+    onboardingOnly = false,
     sortBy = "created_at",
     sortOrder = "desc",
     limit = 20,
@@ -137,6 +147,8 @@ async function findAll(
     workLocation,
     joinDateFrom,
     joinDateTo,
+    excludeOnboarding,
+    onboardingOnly,
   });
   if (auth) {
     ({ where, params: baseParams } = applyEmployeeListScope(auth, {
@@ -177,7 +189,7 @@ const DROPDOWN_MAX = 10000;
 
 /** Minimal columns for selects / modals — full list, no pagination (capped). */
 async function findAllForDropdown(pool, { search = "", auth = null } = {}) {
-  const conditions = ["e.deleted_at IS NULL"];
+  const conditions = ["e.deleted_at IS NULL", `e.employment_status <> 'Onboarding'`];
   let params = [];
   const q = String(search || "").trim();
   if (q) {
@@ -213,6 +225,8 @@ async function countAll(
     workLocation = "",
     joinDateFrom = "",
     joinDateTo = "",
+    excludeOnboarding = false,
+    onboardingOnly = false,
     auth = null,
   } = {},
 ) {
@@ -225,6 +239,8 @@ async function countAll(
     workLocation,
     joinDateFrom,
     joinDateTo,
+    excludeOnboarding,
+    onboardingOnly,
   });
   if (auth) {
     ({ where, params } = applyEmployeeListScope(auth, { where, params }));
@@ -247,6 +263,8 @@ async function findAllForExport(
     workLocation = "",
     joinDateFrom = "",
     joinDateTo = "",
+    excludeOnboarding = false,
+    onboardingOnly = false,
     sortBy = "created_at",
     sortOrder = "desc",
     auth = null,
@@ -261,6 +279,8 @@ async function findAllForExport(
     workLocation,
     joinDateFrom,
     joinDateTo,
+    excludeOnboarding,
+    onboardingOnly,
   });
   if (auth) {
     ({ where, params: baseParams } = applyEmployeeListScope(auth, {
@@ -706,6 +726,26 @@ async function update(pool, id, data) {
   return rows[0] || null;
 }
 
+async function completeOnboardingActivation(pool, id, { passwordHash, username }) {
+  const { rows } = await pool.query(
+    `UPDATE employees SET
+       employment_status = 'Active',
+       portal_enabled = true,
+       password_hash = $2,
+       username = COALESCE(NULLIF(TRIM(username), ''), $3),
+       onboarding_completed_at = NOW(),
+       portal_invite_sent_at = NOW(),
+       updated_at = NOW()
+     WHERE id = $1 AND deleted_at IS NULL
+     RETURNING id, emp_id, full_name, first_name, work_email, username, job_title, department,
+               employment_status, portal_enabled,
+               TO_CHAR(join_date, 'YYYY-MM-DD') AS join_date,
+               TO_CHAR(onboarding_completed_at, 'YYYY-MM-DD HH24:MI') AS onboarding_completed_at`,
+    [id, passwordHash, username],
+  );
+  return rows[0] || null;
+}
+
 async function softDelete(pool, id) {
   const { rowCount } = await pool.query(
     `UPDATE employees SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL`,
@@ -1026,6 +1066,7 @@ module.exports = {
   findByWorkEmail,
   insert,
   update,
+  completeOnboardingActivation,
   softDelete,
   getFilterOptions,
   getStats,

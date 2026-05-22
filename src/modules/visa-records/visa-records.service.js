@@ -44,6 +44,16 @@ function buildListFilters(query, auth = null) {
   let params = [];
   let i = 1;
 
+  const empFilter = query.employeeId ?? query.employee_id;
+  if (empFilter != null && `${empFilter}`.trim() !== '') {
+    const empId = parseInt(String(empFilter), 10);
+    if (Number.isInteger(empId) && empId > 0) {
+      params.push(empId);
+      cond.push(`evr.employee_id = $${i}`);
+      i += 1;
+    }
+  }
+
   const search = (query.search || '').trim();
   if (search) {
     params.push(`%${search}%`);

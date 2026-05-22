@@ -9,6 +9,8 @@ const idParam = Joi.object({
 const listingQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(10),
+  employeeId: Joi.number().integer().positive().optional(),
+  employee_id: Joi.number().integer().positive().optional(),
   search: Joi.string().allow('').max(200).default(''),
   department: Joi.string().allow('').max(255).default(''),
   location: Joi.string().allow('').max(255).default(''),

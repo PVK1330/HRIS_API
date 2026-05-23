@@ -523,6 +523,14 @@ async function completeOnboardingWorkflow(user, employeeId, auth = null) {
     );
   }
 
+  const docRepo = require('../documents/documents.repository');
+  await docRepo.syncAllApprovedFromChecklist(pool, employeeId);
+  await docRepo.markDocumentsApproved(
+    pool,
+    [emp.offer_letter_document_id, emp.signed_offer_document_id],
+    employeeId,
+  );
+
   await workflowRepo.setWorkflowFields(pool, employeeId, {
     onboarding_workflow_status: WORKFLOW_STATUS.ONBOARDING_COMPLETE,
     onboarding_step: 3,

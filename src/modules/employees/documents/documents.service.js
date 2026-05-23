@@ -34,6 +34,22 @@ async function getDocuments(user, employeeId, auth = null) {
   const emp = await empRepo.findById(p, employeeId);
   if (!emp) throw ApiError.notFound('Employee not found');
   if (auth) assertEmployeeRecordAccess(auth, emp);
+
+  // Onboarding HR approval lives on onboarding_checklist; keep documents.status in sync for profile UI.
+  try {
+    await repo.syncAllApprovedFromChecklist(p, employeeId);
+    const wf = String(emp.onboarding_workflow_status || '').toLowerCase();
+    if (wf === 'onboarding_complete') {
+      await repo.markDocumentsApproved(
+        p,
+        [emp.offer_letter_document_id, emp.signed_offer_document_id],
+        employeeId,
+      );
+    }
+  } catch {
+    /* onboarding tables may not exist on very old tenants */
+  }
+
   const documents = await repo.findByEmployee(p, employeeId);
   return { documents };
 }

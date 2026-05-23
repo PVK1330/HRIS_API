@@ -8,30 +8,12 @@ const { slugifyTenantName } = require('./tenantSlug');
  * @param {number|{ tenant_id?: number }} tenantIdOrUser
  * @param {{ withLoginPath?: boolean }} opts
  */
-async function resolvePortalOrigin(tenantIdOrUser, { withLoginPath = false } = {}) {
-  const tenantId =
-    typeof tenantIdOrUser === 'object'
-      ? tenantIdOrUser?.tenant_id
-      : tenantIdOrUser;
-
+function buildOriginFromSlug(slug, { withLoginPath = false } = {}) {
   const base = (
     process.env.PORTAL_URL ||
     process.env.FRONTEND_URL ||
     'http://localhost:5173'
   ).replace(/\/$/, '');
-
-  let slug = null;
-  if (tenantId) {
-    try {
-      const { rows } = await superAdminPool.query(
-        'SELECT name FROM public.tenants WHERE id = $1 LIMIT 1',
-        [tenantId],
-      );
-      if (rows[0]?.name) slug = slugifyTenantName(rows[0].name);
-    } catch {
-      /* use base URL */
-    }
-  }
 
   let origin = base;
   if (slug) {
@@ -57,9 +39,42 @@ async function resolvePortalOrigin(tenantIdOrUser, { withLoginPath = false } = {
   return withLoginPath ? `${origin.replace(/\/$/, '')}/login` : origin;
 }
 
+async function resolvePortalOrigin(tenantIdOrUser, { withLoginPath = false } = {}) {
+  const tenantId =
+    typeof tenantIdOrUser === 'object'
+      ? tenantIdOrUser?.tenant_id
+      : tenantIdOrUser;
+
+  let slug = null;
+  if (tenantId) {
+    try {
+      const { rows } = await superAdminPool.query(
+        'SELECT name FROM public.tenants WHERE id = $1 LIMIT 1',
+        [tenantId],
+      );
+      if (rows[0]?.name) slug = slugifyTenantName(rows[0].name);
+    } catch {
+      /* use base URL */
+    }
+  }
+
+  return buildOriginFromSlug(slug, { withLoginPath });
+}
+
+/** Login URL from organization name (e.g. after tenant create, before extra DB reads). */
+function resolvePortalLoginUrlFromTenantName(tenantName) {
+  const slug = slugifyTenantName(tenantName);
+  return buildOriginFromSlug(slug, { withLoginPath: true });
+}
+
 /** Login URL for welcome / activation emails (tenant subdomain when known). */
 async function resolvePortalLoginUrl(user) {
   return resolvePortalOrigin(user, { withLoginPath: true });
 }
 
-module.exports = { resolvePortalLoginUrl, resolvePortalOrigin };
+module.exports = {
+  resolvePortalLoginUrl,
+  resolvePortalOrigin,
+  resolvePortalLoginUrlFromTenantName,
+  buildOriginFromSlug,
+};

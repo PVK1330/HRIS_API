@@ -78,4 +78,61 @@ async function insertAudit(pool, { document_id, actor_id, actor_name, detail }) 
   );
 }
 
-module.exports = { findByEmployee, listActiveDocumentTypes, insertDocument, insertAudit };
+/** Mirror HR onboarding checklist decisions into documents.status for the profile tab. */
+async function syncStatusFromChecklistReview(pool, checklistItemId, hrReviewStatus, hrReviewComment) {
+  const docStatus =
+    hrReviewStatus === 'Approved'
+      ? 'Approved'
+      : hrReviewStatus === 'Rejected'
+        ? 'Rejected'
+        : 'Pending';
+
+  await pool.query(
+    `UPDATE documents d
+     SET status = $2,
+         approved_at = CASE WHEN $2 = 'Approved' THEN COALESCE(d.approved_at, NOW()) ELSE NULL END,
+         rejection_reason = CASE WHEN $2 = 'Rejected' THEN $3 ELSE NULL END,
+         updated_at = NOW()
+     FROM onboarding_checklist c
+     WHERE c.id = $1 AND d.id = c.document_id`,
+    [checklistItemId, docStatus, hrReviewComment || null],
+  );
+}
+
+async function syncAllApprovedFromChecklist(pool, employeeId) {
+  await pool.query(
+    `UPDATE documents d
+     SET status = 'Approved',
+         approved_at = COALESCE(d.approved_at, NOW()),
+         updated_at = NOW()
+     FROM onboarding_checklist c
+     WHERE c.employee_id = $1
+       AND c.document_id = d.id
+       AND c.hr_review_status = 'Approved'
+       AND d.status IS DISTINCT FROM 'Approved'`,
+    [employeeId],
+  );
+}
+
+async function markDocumentsApproved(pool, documentIds, employeeId) {
+  const ids = (documentIds || []).filter((id) => id != null);
+  if (!ids.length) return;
+  await pool.query(
+    `UPDATE documents
+     SET status = 'Approved',
+         approved_at = COALESCE(approved_at, NOW()),
+         updated_at = NOW()
+     WHERE employee_id = $1 AND id = ANY($2::int[])`,
+    [employeeId, ids],
+  );
+}
+
+module.exports = {
+  findByEmployee,
+  listActiveDocumentTypes,
+  insertDocument,
+  insertAudit,
+  syncStatusFromChecklistReview,
+  syncAllApprovedFromChecklist,
+  markDocumentsApproved,
+};

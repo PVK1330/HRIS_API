@@ -130,6 +130,14 @@ async function reviewChecklistItem(pool, itemId, { hrReviewStatus, hrReviewComme
      WHERE id = $1`,
     [itemId, hrReviewStatus, hrReviewComment || null],
   );
+
+  const docRepo = require('../documents/documents.repository');
+  await docRepo.syncStatusFromChecklistReview(
+    pool,
+    itemId,
+    hrReviewStatus,
+    hrReviewComment,
+  );
 }
 
 async function allMandatoryChecklistApproved(pool, employeeId) {

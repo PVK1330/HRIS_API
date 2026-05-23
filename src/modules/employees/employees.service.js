@@ -181,6 +181,22 @@ async function createEmployee(user, data) {
 
   const sanitized = sanitizeEmployeePayload({ ...data });
 
+  const fn = String(sanitized.firstName || data.firstName || "").trim();
+  const ln = String(sanitized.lastName || data.lastName || "").trim();
+  if (!String(sanitized.fullName || "").trim() && (fn || ln)) {
+    sanitized.fullName = [fn, ln].filter(Boolean).join(" ");
+    sanitized.firstName = fn || null;
+    sanitized.lastName = ln || null;
+  }
+
+  const isOnboarding = sanitized.employmentStatus === "Onboarding";
+  if (!isOnboarding && !String(sanitized.workEmail || "").trim()) {
+    throw ApiError.badRequest("workEmail is required");
+  }
+  if (!String(sanitized.workEmail || "").trim()) {
+    sanitized.workEmail = null;
+  }
+
   let empId = String(sanitized.empId || "").trim();
   if (!empId) {
     empId = await repo.getNextEmpId(pool);
@@ -388,6 +404,13 @@ async function getFilterOptions(user) {
   return repo.getFilterOptions(pool);
 }
 
+async function getDesignationsForDepartment(user, departmentName) {
+  const pool = resolvePool(user);
+  await ensureMigrated(user.db_name);
+  const designations = await repo.getDesignationsForDepartment(pool, departmentName);
+  return { designations };
+}
+
 async function getStats(user) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
@@ -414,13 +437,47 @@ async function completeOnboardingActivation(user, id, auth = null) {
   if (!existing) throw ApiError.notFound("Employee not found");
   if (auth) assertEmployeeRecordAccess(auth, existing);
 
-  const workEmail = String(existing.work_email || "").trim();
+  let workEmail = String(existing.work_email || "").trim();
+  const personalEmail = String(existing.personal_email || "").trim();
+  if (!workEmail && personalEmail) {
+    workEmail = personalEmail;
+    await pool.query(
+      `UPDATE employees SET work_email = $1, updated_at = NOW()
+       WHERE id = $2 AND deleted_at IS NULL`,
+      [workEmail, id],
+    );
+  }
   if (!workEmail) {
-    throw ApiError.badRequest("Work email is required before activation");
+    throw ApiError.badRequest(
+      "Work email or personal email is required before activation",
+    );
   }
 
   if (existing.onboarding_completed_at) {
     throw ApiError.conflict("Employee onboarding is already completed");
+  }
+
+  const workflowStatus = String(
+    existing.onboarding_workflow_status || "",
+  ).toLowerCase();
+  if (
+    existing.employment_status === "Onboarding" &&
+    workflowStatus &&
+    workflowStatus !== "onboarding_complete"
+  ) {
+    throw ApiError.badRequest(
+      "Complete the 3-step onboarding workflow before activating the employee (all documents must be approved).",
+    );
+  }
+
+  if (
+    existing.employment_status === "Onboarding" &&
+    existing.onboarding_approval_status &&
+    existing.onboarding_approval_status !== "Accepted"
+  ) {
+    throw ApiError.badRequest(
+      "Candidate must accept the offer before the employee can appear in the directory",
+    );
   }
 
   if (
@@ -483,6 +540,7 @@ module.exports = {
   updateEmployee,
   deleteEmployee,
   getFilterOptions,
+  getDesignationsForDepartment,
   getStats,
   completeOnboardingActivation,
 };

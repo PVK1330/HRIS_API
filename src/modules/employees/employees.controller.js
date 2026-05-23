@@ -56,6 +56,14 @@ const filterOptions = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, "Filter options retrieved successfully");
 });
 
+/** GET /employees/designations-for-department?department=Sales */
+const designationsForDepartment = asyncHandler(async (req, res) => {
+  const department =
+    req.query.department || req.query.departmentName || req.query.name || "";
+  const data = await service.getDesignationsForDepartment(req.user, department);
+  return ApiResponse.ok(res, data, "Designations retrieved successfully");
+});
+
 const nextEmpId = asyncHandler(async (req, res) => {
   const nextId = await service.getNextEmployeeId(req.user);
   return ApiResponse.ok(res, { nextEmpId: nextId }, "Next employee ID");
@@ -110,6 +118,7 @@ module.exports = {
   exportList,
   stats,
   filterOptions,
+  designationsForDepartment,
   nextEmpId,
   getOne,
   create,

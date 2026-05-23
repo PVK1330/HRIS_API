@@ -169,6 +169,10 @@ app.use('/api/v1/admin/settings', tenantSettingsRoutes);
 app.use('/api/v1/admin/documents', adminDocumentsRoutes);
 app.use('/api/v1/admin/payroll', require('./modules/payroll/payroll.routes'));
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
+app.use(
+  '/api/v1/public/candidate-onboarding',
+  require('./routes/public/candidateOnboardingRoutes'),
+);
 
 /* -------------------- 404 + Errors -------------------- */
 

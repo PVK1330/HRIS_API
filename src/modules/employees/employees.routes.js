@@ -19,6 +19,23 @@ const { employeeRouter: leaveEmpRoutes,      adminRouter: leaveAdminRoutes }    
 const documentsRoutes   = require('./documents/documents.routes');
 const performanceRoutes = require('./performance/performance.routes');
 const assetsRoutes      = require('./assets/assets.routes');
+const onboardingRoutes  = require('./onboarding/onboarding.routes');
+const { isValidWorkEmail } = require('../../utils/validateWorkEmail');
+
+function workEmailRules({ requiredUnlessOnboarding = false } = {}) {
+  return body('workEmail')
+    .optional({ nullable: true, checkFalsy: true })
+    .custom((val, { req }) => {
+      const onboarding = req.body.employmentStatus === 'Onboarding';
+      if ((requiredUnlessOnboarding || !onboarding) && !val) {
+        throw new Error('workEmail is required');
+      }
+      if (val && !isValidWorkEmail(val)) {
+        throw new Error('Invalid work email');
+      }
+      return true;
+    });
+}
 
 const router = Router();
 router.use(authenticate, loadAuthContext);
@@ -35,6 +52,14 @@ router.get('/export', requirePermission(P.EMPLOYEE_VIEW), validateWithJoi(empV.e
 router.get('/', requirePermission(P.EMPLOYEE_VIEW), validateWithJoi(empV.listingQuery, 'query'), ctrl.list);
 
 router.get('/dropdown', requirePermission(P.EMPLOYEE_VIEW), validateWithJoi(empV.dropdownQuery, 'query'), ctrl.dropdownList);
+
+router.get(
+  '/designations-for-department',
+  requirePermission(P.EMPLOYEE_VIEW),
+  ctrl.designationsForDepartment,
+);
+
+router.use(onboardingRoutes);
 
 // Sub-resources must be registered before `/:id` so paths like `/123/documents` are not
 // captured by the single-segment employee profile route.
@@ -61,7 +86,9 @@ router.post('/', requirePermission(P.EMPLOYEE_CREATE), [
   body('departmentId').optional({ nullable: true }).isInt({ min: 1 }),
   body('employmentType').exists({ checkFalsy: true }).withMessage('employmentType is required').isIn(['Full-time', 'Part-time', 'Contract', 'Intern']),
   body('joinDate').exists({ checkFalsy: true }).withMessage('joinDate is required').isDate(),
-  body('workEmail').exists({ checkFalsy: true }).withMessage('workEmail is required').isEmail().normalizeEmail(),
+  body('firstName').optional({ nullable: true }).isString().trim().isLength({ max: 120 }),
+  body('lastName').optional({ nullable: true }).isString().trim().isLength({ max: 120 }),
+  workEmailRules({ requiredUnlessOnboarding: true }),
   body('dateOfBirth').optional({ nullable: true }).isDate(),
   body('gender').optional().isIn(['Male', 'Female', 'Other']),
   body('salary').optional({ nullable: true }).isFloat({ min: 0 }),
@@ -105,7 +132,7 @@ router.patch('/:id', requirePermission(P.EMPLOYEE_EDIT), [
   body('departmentId').optional({ nullable: true }).isInt({ min: 1 }),
   body('employmentType').optional().isIn(['Full-time', 'Part-time', 'Contract', 'Intern']),
   body('joinDate').optional().isDate(),
-  body('workEmail').optional().isEmail().normalizeEmail(),
+  workEmailRules(),
   body('dateOfBirth').optional({ nullable: true }).isDate(),
   body('gender').optional().isIn(['Male', 'Female', 'Other']),
   body('salary').optional({ nullable: true }).isFloat({ min: 0 }),
@@ -148,7 +175,7 @@ router.put('/:id', requirePermission(P.EMPLOYEE_EDIT), [
   body('department').optional().isString().trim(),
   body('employmentType').optional().isIn(['Full-time', 'Part-time', 'Contract', 'Intern']),
   body('joinDate').optional().isDate(),
-  body('workEmail').optional().isEmail().normalizeEmail(),
+  workEmailRules(),
   body('dateOfBirth').optional({ nullable: true }).isDate(),
   body('gender').optional().isIn(['Male', 'Female', 'Other']),
   body('salary').optional({ nullable: true }).isFloat({ min: 0 }),

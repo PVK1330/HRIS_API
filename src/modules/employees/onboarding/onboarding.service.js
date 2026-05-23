@@ -438,13 +438,28 @@ async function getOnboardingChecklist(user, employeeId, auth = null) {
   if (!emp) throw ApiError.notFound('Employee not found');
   if (auth) assertEmployeeRecordAccess(auth, emp);
   const items = await workflowRepo.listChecklist(pool, employeeId);
+  const mandatory = items.filter((i) => i.is_mandatory);
+  const uploadedCount = items.filter((i) => i.upload_status === 'Uploaded').length;
+  const approvedCount = mandatory.filter((i) => i.hr_review_status === 'Approved').length;
+  const mandatoryCount = mandatory.length;
+
   return {
     employeeId,
     workflowStatus: emp.onboarding_workflow_status,
     workflowStatusLabel:
       WORKFLOW_STATUS_LABELS[emp.onboarding_workflow_status] ||
       emp.onboarding_workflow_status,
+    signedOfferOnFile: Boolean(emp.signed_offer_document_id),
     checklist: items,
+    progress: {
+      uploadedCount,
+      approvedCount,
+      mandatoryCount,
+      allMandatoryApproved: mandatoryCount > 0 && approvedCount === mandatoryCount,
+      allMandatoryUploaded:
+        mandatoryCount > 0 &&
+        mandatory.every((i) => i.upload_status === 'Uploaded'),
+    },
   };
 }
 

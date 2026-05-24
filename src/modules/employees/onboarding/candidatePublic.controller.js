@@ -48,11 +48,14 @@ const uploadDoc = asyncHandler(async (req, res) => {
 });
 
 const downloadOffer = asyncHandler(async (req, res) => {
-  const { filePath, fileName } = await service.downloadOfferPdf(
+  const result = await service.downloadOfferPdf(
     req.tenant,
     req.params.token,
   );
-  return res.download(filePath, fileName);
+  if (result.url) {
+    return res.redirect(result.url);
+  }
+  return res.download(result.filePath, result.fileName);
 });
 
 module.exports = { getState, accept, reject, sign, checklist, uploadDoc, downloadOffer };

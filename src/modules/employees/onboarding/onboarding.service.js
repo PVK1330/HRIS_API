@@ -443,13 +443,14 @@ async function getOnboardingChecklist(user, employeeId, auth = null) {
   const approvedCount = mandatory.filter((i) => i.hr_review_status === 'Approved').length;
   const mandatoryCount = mandatory.length;
 
-  return {
+  const response = {
     employeeId,
     workflowStatus: emp.onboarding_workflow_status,
     workflowStatusLabel:
       WORKFLOW_STATUS_LABELS[emp.onboarding_workflow_status] ||
       emp.onboarding_workflow_status,
     signedOfferOnFile: Boolean(emp.signed_offer_document_id),
+    signedOfferFileUrl: null,
     checklist: items,
     progress: {
       uploadedCount,
@@ -461,6 +462,16 @@ async function getOnboardingChecklist(user, employeeId, auth = null) {
         mandatory.every((i) => i.upload_status === 'Uploaded'),
     },
   };
+
+  if (emp.signed_offer_document_id) {
+    try {
+      const { rows } = await pool.query('SELECT file_url FROM documents WHERE id = $1', [emp.signed_offer_document_id]);
+      if (rows.length > 0) {
+        response.signedOfferFileUrl = rows[0].file_url;
+      }
+    } catch(err) {}
+  }
+  return response;
 }
 
 async function reviewChecklistItem(

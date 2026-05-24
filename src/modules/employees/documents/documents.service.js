@@ -71,15 +71,22 @@ function toDateOrNull(v) {
   return s;
 }
 
+const aws = require('../../../config/aws');
+
 async function persistEmployeeDocFile(employeeId, file) {
   if (!file || !file.buffer) return null;
-  const base = path.resolve(env.UPLOAD.dir);
-  const dir = path.join(base, 'employee-docs', String(employeeId));
-  await fs.mkdir(dir, { recursive: true });
   const ext = path.extname(file.originalname || '').toLowerCase();
   const allowed = ['.pdf', '.jpg', '.jpeg', '.png'];
   const extFinal = allowed.includes(ext) ? ext : '.pdf';
   const fname = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}${extFinal}`;
+
+  if (aws.isS3Configured) {
+    return await aws.uploadBuffer(`employee-docs/${employeeId}/${fname}`, file.buffer, file.mimetype);
+  }
+
+  const base = path.resolve(env.UPLOAD.dir);
+  const dir = path.join(base, 'employee-docs', String(employeeId));
+  await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, fname), file.buffer);
   return `/uploads/employee-docs/${employeeId}/${fname}`;
 }

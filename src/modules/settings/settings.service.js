@@ -209,7 +209,7 @@ function safeUnlink(absPath) {
 async function saveLogo(type, file) {
   const key = LOGO_KEY_BY_TYPE[type];
   if (!key) throw new ApiError(400, `Unknown logo type: ${type}`);
-  if (!file || !file.filename) throw new ApiError(400, 'No file uploaded');
+  if (!file || (!file.filename && !file.location)) throw new ApiError(400, 'No file uploaded');
 
   // Delete previous file (best-effort) before overwriting the setting.
   const previous = await repo.findSettingByKey(key);
@@ -218,7 +218,7 @@ async function saveLogo(type, file) {
     safeUnlink(oldAbs);
   }
 
-  const relative = publicLogoPath(file.filename);
+  const relative = file.location || publicLogoPath(file.filename);
   await repo.upsertSetting({ key, value: relative, group: 'logo' });
   return { type, path: relative };
 }

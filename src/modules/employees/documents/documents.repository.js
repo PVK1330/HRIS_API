@@ -89,9 +89,9 @@ async function syncStatusFromChecklistReview(pool, checklistItemId, hrReviewStat
 
   await pool.query(
     `UPDATE documents d
-     SET status = $2,
-         approved_at = CASE WHEN $2 = 'Approved' THEN COALESCE(d.approved_at, NOW()) ELSE NULL END,
-         rejection_reason = CASE WHEN $2 = 'Rejected' THEN $3 ELSE NULL END,
+     SET status = CAST($2 AS VARCHAR),
+         approved_at = CASE WHEN CAST($2 AS VARCHAR) = 'Approved' THEN COALESCE(d.approved_at, NOW()) ELSE NULL END,
+         rejection_reason = CASE WHEN CAST($2 AS VARCHAR) = 'Rejected' THEN CAST($3 AS TEXT) ELSE NULL END,
          updated_at = NOW()
      FROM onboarding_checklist c
      WHERE c.id = $1 AND d.id = c.document_id`,

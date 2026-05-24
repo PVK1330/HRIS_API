@@ -258,7 +258,7 @@ async function uploadLogo(dbName, file, baseUrl) {
     }
   }
 
-  const relativePath = `/uploads/tenant-logos/${file.filename}`;
+  const relativePath = file.location || `/uploads/tenant-logos/${file.filename}`;
   const updated = await repository.updateLogoUrl(pool, relativePath);
   if (!updated) {
     throw ApiError.notFound('Tenant admin settings not found');

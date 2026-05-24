@@ -232,7 +232,7 @@ async function uploadChecklistDocument(tenant, token, documentKey, file) {
     null,
   );
 
-  await workflowRepo.attachChecklistDocument(pool, emp.id, documentKey, created.id);
+  await workflowRepo.attachChecklistDocument(pool, emp.id, documentKey, created.document.id);
   await pool.query(
     `UPDATE onboarding_checklist
      SET hr_review_status = 'Pending', updated_at = NOW()
@@ -251,6 +251,9 @@ async function downloadOfferPdf(tenant, token) {
   const docs = await docRepo.findByEmployee(pool, emp.id);
   const offerDoc = docs.find((d) => d.id === emp.offer_letter_document_id);
   if (!offerDoc?.file_url) throw ApiError.notFound('Offer letter file not found');
+  if (String(offerDoc.file_url).startsWith('http')) {
+    return { url: offerDoc.file_url, fileName: offerDoc.file_name || 'offer-letter.pdf' };
+  }
   const rel = String(offerDoc.file_url).replace(/^\/uploads\//, '');
   const filePath = path.resolve(env.UPLOAD.dir, rel);
   try {

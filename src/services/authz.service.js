@@ -42,6 +42,15 @@ async function loadEmployeeContext(pool, employeeId) {
   return rows[0] || { department: null };
 }
 
+async function loadManagedDepartmentId(pool, employeeId) {
+  if (!employeeId) return null;
+  const { rows } = await pool.query(
+    `SELECT id FROM departments WHERE manager_id = $1 AND is_active = true LIMIT 1`,
+    [employeeId],
+  );
+  return rows[0] ? rows[0].id : null;
+}
+
 /**
  * Build authorization context for the current request user.
  * @param {object} user - req.user from JWT
@@ -55,6 +64,7 @@ async function loadAuthContext(user) {
       isTenantAdmin: false,
       employeeId: null,
       department: null,
+      managedDepartmentId: null,
     };
   }
 
@@ -69,6 +79,7 @@ async function loadAuthContext(user) {
       rbacRoleId: user.rbacRoleId || null,
       employeeId: user.employeeId || null,
       department: user.department || null,
+      managedDepartmentId: null,
       permissions: expandPermissionKeys(keys),
       scope: 'ALL',
       isTenantAdmin: true,
@@ -78,13 +89,15 @@ async function loadAuthContext(user) {
   const rbacRoleId = user.rbacRoleId || null;
   let employeeId = user.employeeId || null;
   let department = user.department || null;
+  let managedDepartmentId = null;
 
-  if (user.role === 'employee' && employeeId) {
+  if (employeeId) {
     const emp = await loadEmployeeContext(pool, employeeId);
     department = emp.department || department;
     if (!rbacRoleId && emp.rbac_role_id) {
       user.rbacRoleId = emp.rbac_role_id;
     }
+    managedDepartmentId = await loadManagedDepartmentId(pool, employeeId);
   }
 
   const roleId = user.rbacRoleId || rbacRoleId;
@@ -100,6 +113,7 @@ async function loadAuthContext(user) {
     rbacRoleId: roleId,
     employeeId,
     department,
+    managedDepartmentId,
     permissions,
     scope,
     isTenantAdmin: false,

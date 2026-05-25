@@ -97,7 +97,9 @@ class EmployeePerformance {
   constructor(data = {}) {
     this.id = data.id;
     this.employeeId = data.employee_id;
+    this.departmentId = data.department_id;
     this.performanceCycleId = data.performance_cycle_id;
+    this.managerId = data.manager_id;
     this.competencyRatings = data.competency_ratings || [];
     this.overallRating = data.overall_rating ? Number(data.overall_rating) : 0;
     this.keyContributions = data.key_contributions || '';
@@ -107,6 +109,12 @@ class EmployeePerformance {
     this.remarks = data.remarks || '';
     this.assessmentDate = data.assessment_date;
     this.status = data.status || 'Pending';
+    this.goalTitle = data.goal_title || '';
+    this.kpiTarget = data.kpi_target || '';
+    this.weightage = data.weightage || null;
+    this.dueDate = data.due_date || null;
+    this.priority = data.priority || '';
+    this.managerStatus = data.manager_status || '';
     this.createdAt = data.created_at;
     this.updatedAt = data.updated_at;
     this.deletedAt = data.deleted_at;
@@ -138,6 +146,30 @@ class EmployeePerformance {
       );
       empRes.rows.forEach(e => {
         employeesMap[e.id] = { id: e.id, empId: e.emp_id, fullName: e.full_name };
+      });
+    }
+
+    const deptIds = [...new Set(rows.map(r => r.department_id).filter(Boolean))];
+    let deptsMap = {};
+    if (deptIds.length > 0) {
+      const deptRes = await pool.query(
+        `SELECT id, name FROM departments WHERE id = ANY($1)`,
+        [deptIds]
+      );
+      deptRes.rows.forEach(d => {
+        deptsMap[d.id] = { id: d.id, name: d.name };
+      });
+    }
+
+    const mgrIds = [...new Set(rows.map(r => r.manager_id).filter(Boolean))];
+    let mgrsMap = {};
+    if (mgrIds.length > 0) {
+      const mgrRes = await pool.query(
+        `SELECT id, emp_id, full_name FROM employees WHERE id = ANY($1)`,
+        [mgrIds]
+      );
+      mgrRes.rows.forEach(m => {
+        mgrsMap[m.id] = { id: m.id, empId: m.emp_id, fullName: m.full_name };
       });
     }
 
@@ -176,8 +208,19 @@ class EmployeePerformance {
 
       return {
         id: r.id,
+        assessmentId: r.id,
+        employeeId: r.employee_id,
+        departmentId: r.department_id,
+        performanceCycleId: r.performance_cycle_id,
+        managerId: r.manager_id,
         employee: employeesMap[r.employee_id] || { id: r.employee_id, empId: '', fullName: 'Unknown Employee' },
+        department: deptsMap[r.department_id] || { id: r.department_id, name: 'Unknown Department' },
         performanceCycle: cyclesMap[r.performance_cycle_id] || { id: r.performance_cycle_id, cycleName: 'Unknown Cycle' },
+        manager: mgrsMap[r.manager_id] || { id: r.manager_id, fullName: 'Unknown Manager' },
+        employeeName: employeesMap[r.employee_id] ? employeesMap[r.employee_id].fullName : 'Unknown Employee',
+        departmentName: deptsMap[r.department_id] ? deptsMap[r.department_id].name : 'Unknown Department',
+        managerName: mgrsMap[r.manager_id] ? mgrsMap[r.manager_id].fullName : (r.performance_lead || 'Unknown Manager'),
+        performanceCycleName: cyclesMap[r.performance_cycle_id] ? cyclesMap[r.performance_cycle_id].cycleName : 'Unknown Cycle',
         competencyRatings: competencyRatingsPopulated,
         overallRating: r.overall_rating ? Number(r.overall_rating) : 0,
         keyContributions: r.key_contributions || '',
@@ -186,6 +229,12 @@ class EmployeePerformance {
         performanceLead: r.performance_lead || '',
         remarks: r.remarks || '',
         assessmentDate: r.assessment_date,
+        goalTitle: r.goal_title || '',
+        kpiTarget: r.kpi_target || '',
+        weightage: r.weightage || null,
+        dueDate: r.due_date || null,
+        priority: r.priority || '',
+        managerStatus: r.manager_status || '',
         status: r.status || 'Pending',
         createdAt: r.created_at,
         updatedAt: r.updated_at
@@ -198,6 +247,10 @@ class EmployeePerformance {
    */
   static async create(pool, assessmentData, userId) {
     const {
+      employeeId,
+      departmentId,
+      performanceCycleId,
+      managerId,
       employee,
       performanceCycle,
       competencyRatings = [],
@@ -206,7 +259,13 @@ class EmployeePerformance {
       performanceLead = '',
       remarks = '',
       assessmentDate = null,
-      status = 'Completed' // default to Completed for submitted assessments, or let user set it
+      status = 'Completed',
+      goalTitle = '',
+      kpiTarget = '',
+      weightage = null,
+      dueDate = null,
+      priority = '',
+      managerStatus = ''
     } = assessmentData;
 
     const overallRating = calculateOverallRating(competencyRatings);
@@ -215,7 +274,9 @@ class EmployeePerformance {
     const query = `
       INSERT INTO employee_performance (
         employee_id,
+        department_id,
         performance_cycle_id,
+        manager_id,
         competency_ratings,
         overall_rating,
         key_contributions,
@@ -225,18 +286,29 @@ class EmployeePerformance {
         remarks,
         assessment_date,
         status,
+        goal_title,
+        kpi_target,
+        weightage,
+        due_date,
+        priority,
+        manager_status,
         created_by,
         updated_by,
         created_at,
         updated_at
       )
-      VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, NOW(), NOW())
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $20, NOW(), NOW())
       RETURNING *;
     `;
 
+    const empIdToUse = employeeId || employee;
+    const cycleIdToUse = performanceCycleId || performanceCycle;
+
     const values = [
-      employee,
-      performanceCycle,
+      empIdToUse,
+      departmentId || null,
+      cycleIdToUse,
+      managerId || null,
       JSON.stringify(competencyRatings),
       overallRating,
       keyContributions.trim(),
@@ -246,6 +318,12 @@ class EmployeePerformance {
       remarks.trim(),
       assessmentDate,
       status,
+      goalTitle.trim(),
+      kpiTarget.trim(),
+      weightage || null,
+      dueDate || null,
+      priority.trim(),
+      managerStatus.trim(),
       userId
     ];
 
@@ -331,6 +409,80 @@ class EmployeePerformance {
   }
 
   /**
+   * Find assessments assigned to a manager
+   */
+  static async findByManagerId(pool, managerId, options = {}) {
+    const {
+      search = '',
+      limit = 100,
+      offset = 0,
+      sortBy = 'created_at',
+      sortOrder = 'DESC'
+    } = options;
+
+    let query = `
+      SELECT ep.*
+      FROM employee_performance ep
+      LEFT JOIN employees e ON ep.employee_id = e.id
+      WHERE ep.deleted_at IS NULL
+        AND ep.manager_id = $1
+    `;
+    const values = [managerId];
+    let paramCount = 2;
+
+    if (search.trim()) {
+      query += ` AND (
+        LOWER(e.full_name) LIKE LOWER($${paramCount}) OR
+        LOWER(e.emp_id) LIKE LOWER($${paramCount}) OR
+        LOWER(ep.performance_lead) LIKE LOWER($${paramCount})
+      )`;
+      values.push(`%${search.trim()}%`);
+      paramCount++;
+    }
+
+    const validSortFields = {
+      'created_at': 'ep.created_at',
+      'updated_at': 'ep.updated_at',
+      'overall_rating': 'ep.overall_rating',
+      'employee_name': 'e.full_name',
+      'performance_lead': 'ep.performance_lead'
+    };
+    const sortField = validSortFields[sortBy] || 'ep.created_at';
+    const order = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+
+    query += ` ORDER BY ${sortField} ${order} LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+    values.push(limit, offset);
+
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM employee_performance ep
+      LEFT JOIN employees e ON ep.employee_id = e.id
+      WHERE ep.deleted_at IS NULL
+        AND ep.manager_id = $1
+    `;
+    const countValues = [managerId];
+    if (search.trim()) {
+      countQuery += ` AND (
+        LOWER(e.full_name) LIKE LOWER($2) OR
+        LOWER(e.emp_id) LIKE LOWER($2) OR
+        LOWER(ep.performance_lead) LIKE LOWER($2)
+      )`;
+      countValues.push(`%${search.trim()}%`);
+    }
+
+    const [listRes, countRes] = await Promise.all([
+      pool.query(query, values),
+      pool.query(countQuery, countValues)
+    ]);
+
+    const populatedList = await this.populate(pool, listRes.rows);
+    return {
+      assessments: populatedList,
+      total: parseInt(countRes.rows[0].total, 10)
+    };
+  }
+
+  /**
    * Find single assessment by ID
    */
   static async findById(pool, id) {
@@ -353,6 +505,8 @@ class EmployeePerformance {
     if (!existing) return null;
 
     const {
+      departmentId,
+      managerId,
       competencyRatings,
       keyContributions,
       growthObjectives,
@@ -365,6 +519,18 @@ class EmployeePerformance {
     const setClause = [];
     const values = [];
     let paramCount = 1;
+
+    if (departmentId !== undefined) {
+      setClause.push(`department_id = $${paramCount}`);
+      values.push(departmentId);
+      paramCount++;
+    }
+
+    if (managerId !== undefined) {
+      setClause.push(`manager_id = $${paramCount}`);
+      values.push(managerId);
+      paramCount++;
+    }
 
     // Recalculate overall rating and band if competency ratings are updated
     let calculatedRating = null;
@@ -480,8 +646,8 @@ class EmployeePerformance {
     const data = rows[0] || {};
     return {
       totalAssessments: parseInt(data.total_assessments || 0, 10),
-      pendingReviews: parseInt(data.pending_reviews || 0, 10),
-      completedReviews: parseInt(data.completed_reviews || 0, 10)
+      pendingReview: parseInt(data.pending_reviews || 0, 10),
+      completed: parseInt(data.completed_reviews || 0, 10)
     };
   }
 
@@ -538,6 +704,254 @@ class EmployeePerformance {
       performanceRatio,
       currentCycleRating,
       latestPerformanceStatus: latestStatus
+    };
+  }
+
+  /**
+   * Update only manager goal fields by manager
+   * Ensures only the assigned manager can update their own goal details
+   */
+  static async updateManagerGoals(pool, id, managerId, goalData, userId) {
+    const {
+      goalTitle,
+      kpiTarget,
+      weightage,
+      dueDate,
+      priority,
+      managerStatus
+    } = goalData;
+
+    // First verify the assessment exists and manager is assigned
+    const query = `
+      SELECT id, manager_id FROM employee_performance
+      WHERE id = $1 AND deleted_at IS NULL;
+    `;
+    const { rows } = await pool.query(query, [id]);
+    
+    if (rows.length === 0) return null;
+    
+    // Verify the logged-in manager is the assigned manager
+    if (Number(rows[0].manager_id) !== Number(managerId)) {
+      return null; // Manager mismatch - unauthorized
+    }
+
+    // Update only manager goal fields
+    const setClause = [];
+    const values = [];
+    let paramCount = 1;
+
+    if (goalTitle !== undefined) {
+      setClause.push(`goal_title = $${paramCount}`);
+      values.push(goalTitle || null);
+      paramCount++;
+    }
+
+    if (kpiTarget !== undefined) {
+      setClause.push(`kpi_target = $${paramCount}`);
+      values.push(kpiTarget || null);
+      paramCount++;
+    }
+
+    if (weightage !== undefined) {
+      setClause.push(`weightage = $${paramCount}`);
+      values.push(weightage !== null && weightage !== undefined ? parseInt(weightage, 10) : null);
+      paramCount++;
+    }
+
+    if (dueDate !== undefined) {
+      setClause.push(`due_date = $${paramCount}`);
+      values.push(dueDate || null);
+      paramCount++;
+    }
+
+    if (priority !== undefined) {
+      setClause.push(`priority = $${paramCount}`);
+      values.push(priority || null);
+      paramCount++;
+    }
+
+    if (managerStatus !== undefined) {
+      setClause.push(`manager_status = $${paramCount}`);
+      values.push(managerStatus || null);
+      paramCount++;
+    }
+
+    // Audit fields
+    setClause.push(`updated_by = $${paramCount}`);
+    values.push(userId);
+    paramCount++;
+
+    setClause.push(`updated_at = NOW()`);
+
+    if (setClause.length === 2) { // only updated_by and updated_at
+      const existing = await this.findById(pool, id);
+      return existing;
+    }
+
+    values.push(id);
+    values.push(managerId);
+
+    const updateQuery = `
+      UPDATE employee_performance
+      SET ${setClause.join(', ')}
+      WHERE id = $${paramCount} AND manager_id = $${paramCount + 1} AND deleted_at IS NULL
+      RETURNING *;
+    `;
+
+    const updateResult = await pool.query(updateQuery, values);
+    if (updateResult.rows.length === 0) return null;
+
+    const populated = await this.populate(pool, [updateResult.rows[0]]);
+    return populated[0];
+  }
+
+  /**
+   * Find assessments with manager goal details (for admin view)
+   */
+  static async findAllWithManagerGoals(pool, options = {}) {
+    const {
+      search = '',
+      limit = 100,
+      offset = 0,
+      sortBy = 'created_at',
+      sortOrder = 'DESC'
+    } = options;
+
+    let query = `
+      SELECT ep.*
+      FROM employee_performance ep
+      LEFT JOIN employees e ON ep.employee_id = e.id
+      WHERE ep.deleted_at IS NULL
+    `;
+
+    const values = [];
+    let paramCount = 1;
+
+    if (search.trim()) {
+      query += ` AND (
+        LOWER(e.full_name) LIKE LOWER($${paramCount}) OR
+        LOWER(e.emp_id) LIKE LOWER($${paramCount}) OR
+        LOWER(ep.performance_lead) LIKE LOWER($${paramCount})
+      )`;
+      values.push(`%${search.trim()}%`);
+      paramCount++;
+    }
+
+    const validSortFields = {
+      'created_at': 'ep.created_at',
+      'updated_at': 'ep.updated_at',
+      'overall_rating': 'ep.overall_rating',
+      'employee_name': 'e.full_name',
+      'performance_lead': 'ep.performance_lead'
+    };
+    const sortField = validSortFields[sortBy] || 'ep.created_at';
+    const order = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+
+    query += ` ORDER BY ${sortField} ${order} LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+    values.push(limit, offset);
+
+    // Get total count
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM employee_performance ep
+      LEFT JOIN employees e ON ep.employee_id = e.id
+      WHERE ep.deleted_at IS NULL
+    `;
+    const countValues = [];
+    if (search.trim()) {
+      countQuery += ` AND (
+        LOWER(e.full_name) LIKE LOWER($1) OR
+        LOWER(e.emp_id) LIKE LOWER($1) OR
+        LOWER(ep.performance_lead) LIKE LOWER($1)
+      )`;
+      countValues.push(`%${search.trim()}%`);
+    }
+
+    const [listRes, countRes] = await Promise.all([
+      pool.query(query, values),
+      pool.query(countQuery, countValues)
+    ]);
+
+    const populatedList = await this.populate(pool, listRes.rows);
+    return {
+      assessments: populatedList,
+      total: parseInt(countRes.rows[0].total, 10)
+    };
+  }
+
+  /**
+   * Find assessments with manager goal details only (for Manager Goals table)
+   */
+  static async findAssessmentsWithManagerGoals(pool, options = {}) {
+    const {
+      search = '',
+      limit = 100,
+      offset = 0,
+      sortBy = 'created_at',
+      sortOrder = 'DESC'
+    } = options;
+
+    let query = `
+      SELECT ep.*
+      FROM employee_performance ep
+      LEFT JOIN employees e ON ep.employee_id = e.id
+      WHERE ep.deleted_at IS NULL
+        AND (ep.goal_title IS NOT NULL OR ep.kpi_target IS NOT NULL)
+    `;
+
+    const values = [];
+    let paramCount = 1;
+
+    if (search.trim()) {
+      query += ` AND (
+        LOWER(e.full_name) LIKE LOWER($${paramCount}) OR
+        LOWER(e.emp_id) LIKE LOWER($${paramCount}) OR
+        LOWER(ep.goal_title) LIKE LOWER($${paramCount})
+      )`;
+      values.push(`%${search.trim()}%`);
+      paramCount++;
+    }
+
+    const validSortFields = {
+      'created_at': 'ep.created_at',
+      'updated_at': 'ep.updated_at',
+      'goal_title': 'ep.goal_title',
+      'weightage': 'ep.weightage',
+      'priority': 'ep.priority'
+    };
+    const sortField = validSortFields[sortBy] || 'ep.created_at';
+    const order = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+
+    query += ` ORDER BY ${sortField} ${order} LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+    values.push(limit, offset);
+
+    // Get total count
+    let countQuery = `
+      SELECT COUNT(*) as total
+      FROM employee_performance ep
+      LEFT JOIN employees e ON ep.employee_id = e.id
+      WHERE ep.deleted_at IS NULL
+        AND (ep.goal_title IS NOT NULL OR ep.kpi_target IS NOT NULL)
+    `;
+    const countValues = [];
+    if (search.trim()) {
+      countQuery += ` AND (
+        LOWER(e.full_name) LIKE LOWER($1) OR
+        LOWER(e.emp_id) LIKE LOWER($1) OR
+        LOWER(ep.goal_title) LIKE LOWER($1)
+      )`;
+      countValues.push(`%${search.trim()}%`);
+    }
+
+    const [listRes, countRes] = await Promise.all([
+      pool.query(query, values),
+      pool.query(countQuery, countValues)
+    ]);
+
+    const populatedList = await this.populate(pool, listRes.rows);
+    return {
+      assessments: populatedList,
+      total: parseInt(countRes.rows[0].total, 10)
     };
   }
 }

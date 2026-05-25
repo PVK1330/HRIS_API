@@ -19,6 +19,12 @@ router.get('/competencies/dropdown', ctrl.getCompetenciesDropdown);
 // Summary count metrics
 router.get('/summary', ctrl.getSummaryMetrics);
 
+// Manager Portal - Manager assigned assessments
+router.get('/manager', ctrl.getManagerAssignedAssessments);
+
+// Manager update goal details
+router.patch('/:id/manager-goals', ctrl.updateManagerGoals);
+
 // Employee Portal Specific
 router.get('/employee/:employeeId', ctrl.getAssessmentsByEmployeeId);
 router.get('/performance-summary/:employeeId', ctrl.getEmployeePerformanceSummary);

@@ -151,7 +151,7 @@ async function findAll(
     `SELECT
        e.id, e.emp_id, e.full_name, e.first_name, e.last_name,
        e.work_email, e.personal_email, e.phone_number,
-       e.job_title, e.department, e.employment_type, e.employment_status,
+       e.job_title, e.department, e.department_id, e.employment_type, e.employment_status,
        e.work_location, e.work_mode, e.join_date, e.profile_image_url,
        e.nationality, e.gender,
        e.rbac_role_id,
@@ -159,11 +159,13 @@ async function findAll(
        e.salary,
        e.grade,
        rr.name AS rbac_role_name,
+       d.name AS department_name,
        m.full_name AS manager_name, m.emp_id AS manager_emp_id,
        TO_CHAR(e.created_at, 'DD/MM/YYYY') AS "createdAt",
        TO_CHAR(e.updated_at, 'DD/MM/YYYY') AS "updatedAt"
      FROM employees e
      LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
+     LEFT JOIN departments d ON d.id = e.department_id
      LEFT JOIN employees m ON m.id = e.reporting_manager_id AND m.deleted_at IS NULL
      ${where}
      ORDER BY ${orderSql}
@@ -192,8 +194,9 @@ async function findAllForDropdown(pool, { search = "", auth = null } = {}) {
   params.push(DROPDOWN_MAX);
   const limIdx = params.length;
   const { rows } = await pool.query(
-    `SELECT e.id, e.emp_id, e.full_name
+    `SELECT e.id, e.emp_id, e.full_name, e.department, e.department_id, e.reporting_manager_id as manager_id, rr.name as role
      FROM employees e
+     LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
      ${where}
      ORDER BY e.full_name ASC NULLS LAST, e.id ASC
      LIMIT $${limIdx}`,
@@ -274,9 +277,10 @@ async function findAllForExport(
     `SELECT
        e.id, e.emp_id, e.full_name, e.first_name, e.last_name,
        e.work_email, e.personal_email, e.phone_number,
-       e.job_title, e.department, e.employment_type, e.employment_status,
+       e.job_title, e.department, e.department_id, e.employment_type, e.employment_status,
        e.work_location, e.work_mode,
        e.portal_enabled, e.salary, e.grade,
+       d.name AS department_name,
        m.full_name AS manager_name, m.emp_id AS manager_emp_id,
        TO_CHAR(e.date_of_birth, 'YYYY-MM-DD') AS date_of_birth,
        TO_CHAR(e.join_date, 'YYYY-MM-DD') AS join_date,
@@ -287,6 +291,7 @@ async function findAllForExport(
        e.visa_type, TO_CHAR(e.visa_expiry_date, 'YYYY-MM-DD') AS visa_expiry_date,
        e.created_at
      FROM employees e
+     LEFT JOIN departments d ON d.id = e.department_id
      LEFT JOIN employees m ON m.id = e.reporting_manager_id AND m.deleted_at IS NULL
      ${where}
      ORDER BY ${orderSql}

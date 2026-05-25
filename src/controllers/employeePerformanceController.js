@@ -22,6 +22,10 @@ function getTenantDbPool(user) {
  */
 const createAssessment = asyncHandler(async (req, res) => {
   const {
+    employeeId,
+    departmentId,
+    performanceCycleId,
+    managerId,
     employee,
     performanceCycle,
     competencyRatings,
@@ -33,9 +37,12 @@ const createAssessment = asyncHandler(async (req, res) => {
     status
   } = req.body;
 
+  const empIdToUse = employeeId || employee;
+  const cycleIdToUse = performanceCycleId || performanceCycle;
+
   // Validation
-  if (!employee) throw ApiError.badRequest('Employee ID is required');
-  if (!performanceCycle) throw ApiError.badRequest('Performance Cycle ID is required');
+  if (!empIdToUse) throw ApiError.badRequest('Employee ID is required');
+  if (!cycleIdToUse) throw ApiError.badRequest('Performance Cycle ID is required');
   if (!Array.isArray(competencyRatings) || competencyRatings.length === 0) {
     throw ApiError.badRequest('Competency ratings are required');
   }
@@ -57,13 +64,17 @@ const createAssessment = asyncHandler(async (req, res) => {
   const dupCheck = await pool.query(
     `SELECT id FROM employee_performance 
      WHERE employee_id = $1 AND performance_cycle_id = $2 AND deleted_at IS NULL`,
-    [employee, performanceCycle]
+    [empIdToUse, cycleIdToUse]
   );
   if (dupCheck.rows.length > 0) {
     throw ApiError.conflict('An assessment already exists for this employee in the specified performance cycle');
   }
 
   const assessment = await EmployeePerformance.create(pool, {
+    employeeId,
+    departmentId,
+    performanceCycleId,
+    managerId,
     employee,
     performanceCycle,
     competencyRatings,
@@ -74,8 +85,9 @@ const createAssessment = asyncHandler(async (req, res) => {
     assessmentDate: assessmentDate || null,
     status: status || 'Completed' // standard submitted assessments are 'Completed' or 'Pending'
   }, req.user.id);
-
+  console.log('Created assessment:', assessment);
   return ApiResponse.created(res, assessment, 'Employee performance assessment created successfully');
+
 });
 
 /**
@@ -92,7 +104,7 @@ const getAllAssessments = asyncHandler(async (req, res) => {
   } = req.query;
 
   const pool = getTenantDbPool(req.user);
-  
+
   const parsedLimit = parseInt(limit, 10) || 100;
   const parsedPage = parseInt(page, 10) || 1;
   const offset = (parsedPage - 1) * parsedLimit;
@@ -112,6 +124,68 @@ const getAllAssessments = asyncHandler(async (req, res) => {
     limit: parsedLimit,
     totalPages: Math.ceil(result.total / parsedLimit)
   }, 'Employee performance assessments retrieved successfully');
+});
+
+/**
+ * GET /api/v1/manager/performance/reviews
+ * Retrieve assessments assigned to the logged-in manager
+ */
+
+const getManagerReviewList = asyncHandler(async (req, res) => {
+  const {
+    search = '',
+    limit = 100,
+    page = 1,
+    sortBy = 'created_at',
+    sortOrder = 'DESC'
+  } = req.query;
+
+  const pool = getTenantDbPool(req.user);
+  const parsedLimit = parseInt(limit, 10) || 100;
+  const parsedPage = parseInt(page, 10) || 1;
+  const offset = (parsedPage - 1) * parsedLimit;
+
+  const managerEmployeeId = req.user.employeeId || req.user.employee_id || req.user.id;
+
+  console.log('Manager logged user:', req.user);
+  console.log('Manager filter id:', managerEmployeeId);
+
+  const result = await EmployeePerformance.findByManagerId(pool, managerEmployeeId, {
+    search,
+    limit: parsedLimit,
+    offset,
+    sortBy,
+    sortOrder
+  });
+
+  return ApiResponse.ok(res, {
+    assessments: result.assessments,
+    total: result.total,
+    page: parsedPage,
+    limit: parsedLimit,
+    totalPages: Math.ceil(result.total / parsedLimit)
+  }, 'Manager performance reviews retrieved successfully');
+});
+
+/**
+ * GET /api/v1/manager/performance/reviews/:id
+ * Retrieve a specific review assigned to the logged-in manager
+ */
+const getManagerReviewById = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const managerId = req.user.id;
+  const pool = getTenantDbPool(req.user);
+
+  const assessmentId = parseInt(id, 10);
+  if (isNaN(assessmentId)) throw ApiError.badRequest('Invalid assessment ID');
+
+  const assessment = await EmployeePerformance.findById(pool, assessmentId);
+  if (!assessment) throw ApiError.notFound('Assessment not found');
+  if (Number(assessment.managerId) !== Number(managerId)) {
+    throw ApiError.forbidden('You do not have access to this assessment');
+  }
+
+  return ApiResponse.ok(res, assessment, 'Manager performance review retrieved successfully');
 });
 
 /**
@@ -148,6 +222,8 @@ const getAssessmentById = asyncHandler(async (req, res) => {
 const updateAssessment = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const {
+    departmentId,
+    managerId,
     competencyRatings,
     keyContributions,
     growthObjectives,
@@ -183,6 +259,8 @@ const updateAssessment = asyncHandler(async (req, res) => {
   }
 
   const updated = await EmployeePerformance.update(pool, assessmentId, {
+    departmentId,
+    managerId,
     competencyRatings,
     keyContributions,
     growthObjectives,
@@ -223,7 +301,7 @@ const getCyclesDropdown = asyncHandler(async (req, res) => {
      WHERE deleted_at IS NULL 
      ORDER BY cycle_name ASC`
   );
-  
+
   const formatted = result.rows.map(row => ({
     _id: row.id,
     id: row.id,
@@ -284,6 +362,148 @@ const getEmployeePerformanceSummary = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, summary, 'Employee performance summary retrieved successfully');
 });
 
+/**
+ * PATCH /api/v1/performance-assessments/:id/manager-goals
+ * Manager updates their own goal details for an assigned assessment
+ */
+const updateManagerGoals = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const {
+    goalTitle,
+    kpiTarget,
+    weightage,
+    dueDate,
+    priority,
+    managerStatus
+  } = req.body;
+
+  // Validation
+  if (!goalTitle || !goalTitle.trim()) {
+    throw ApiError.badRequest('Goal Title is required');
+  }
+  if (!kpiTarget || !kpiTarget.trim()) {
+    throw ApiError.badRequest('KPI / Target is required');
+  }
+  if (!weightage || isNaN(parseInt(weightage, 10)) || parseInt(weightage, 10) < 1 || parseInt(weightage, 10) > 100) {
+    throw ApiError.badRequest('Weightage is required and must be between 1 and 100');
+  }
+  if (!dueDate || !dueDate.trim()) {
+    throw ApiError.badRequest('Due Date is required');
+  }
+  if (!priority || !priority.trim()) {
+    throw ApiError.badRequest('Priority is required');
+  }
+  if (!managerStatus || !managerStatus.trim()) {
+    throw ApiError.badRequest('Manager Status is required');
+  }
+
+  const pool = getTenantDbPool(req.user);
+  const assessmentId = parseInt(id, 10);
+  if (isNaN(assessmentId)) throw ApiError.badRequest('Invalid assessment ID');
+
+  // Get manager employee ID
+  const managerEmployeeId = req.user.employeeId || req.user.employee_id || req.user.id;
+
+  // Update manager goals
+  const updated = await EmployeePerformance.updateManagerGoals(pool, assessmentId, managerEmployeeId, {
+    goalTitle: goalTitle.trim(),
+    kpiTarget: kpiTarget.trim(),
+    weightage: parseInt(weightage, 10),
+    dueDate,
+    priority: priority.trim(),
+    managerStatus: managerStatus.trim()
+  }, req.user.id);
+
+  if (!updated) {
+    throw ApiError.notFound('Assessment not found or you do not have access to it');
+  }
+
+  return ApiResponse.ok(res, updated, 'Manager goal details updated successfully');
+});
+
+/**
+ * GET /api/v1/performance-assessments/manager
+ * Retrieve assessments assigned to the logged-in manager (Manager Portal)
+ */
+const getManagerAssignedAssessments = asyncHandler(async (req, res) => {
+  const {
+    search = '',
+    limit = 100,
+    page = 1,
+    sortBy = 'created_at',
+    sortOrder = 'DESC'
+  } = req.query;
+
+  const pool = getTenantDbPool(req.user);
+  const parsedLimit = parseInt(limit, 10) || 100;
+  const parsedPage = parseInt(page, 10) || 1;
+  const offset = (parsedPage - 1) * parsedLimit;
+
+  const managerEmployeeId = req.user.employeeId || req.user.employee_id || req.user.id;
+
+  console.log('Manager assigned assessments - Manager Employee ID:', managerEmployeeId);
+
+  const result = await EmployeePerformance.findByManagerId(pool, managerEmployeeId, {
+    search,
+    limit: parsedLimit,
+    offset,
+    sortBy,
+    sortOrder
+  });
+
+  return ApiResponse.ok(res, {
+    assessments: result.assessments,
+    total: result.total,
+    page: parsedPage,
+    limit: parsedLimit,
+    totalPages: Math.ceil(result.total / parsedLimit)
+  }, 'Manager assigned assessments retrieved successfully');
+});
+
+/**
+ * GET /api/v1/manager/department
+ * Retrieve the department assigned to the logged-in manager
+ */
+const getManagerDepartment = asyncHandler(async (req, res) => {
+  const pool = getTenantDbPool(req.user);
+  const managerId = req.user.employeeId || req.user.employee_id;
+
+  if (!managerId) {
+    throw ApiError.badRequest('Employee ID not found in user context');
+  }
+
+  const { rows } = await pool.query(
+    `SELECT 
+       d.id,
+       d.name,
+       d.code,
+       d.description,
+       d.manager_id,
+       COUNT(e.id) as employee_count
+     FROM departments d
+     LEFT JOIN employees e ON e.department_id = d.id AND e.deleted_at IS NULL
+     WHERE d.manager_id = $1 AND d.deleted_at IS NULL
+     GROUP BY d.id, d.name, d.code, d.description, d.manager_id
+     LIMIT 1`,
+    [managerId]
+  );
+
+  if (!rows[0]) {
+    return ApiResponse.ok(res, { department: null }, 'No department assigned to this manager');
+  }
+
+  const department = {
+    id: rows[0].id,
+    name: rows[0].name,
+    code: rows[0].code,
+    description: rows[0].description,
+    managerId: rows[0].manager_id,
+    employeeCount: parseInt(rows[0].employee_count, 10)
+  };
+
+  return ApiResponse.ok(res, { department }, 'Manager department retrieved successfully');
+});
+
 module.exports = {
   createAssessment,
   getAllAssessments,
@@ -294,5 +514,10 @@ module.exports = {
   getCyclesDropdown,
   getCompetenciesDropdown,
   getAssessmentsByEmployeeId,
-  getEmployeePerformanceSummary
+  getEmployeePerformanceSummary,
+  getManagerReviewList,
+  getManagerReviewById,
+  updateManagerGoals,
+  getManagerAssignedAssessments,
+  getManagerDepartment
 };

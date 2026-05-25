@@ -30,12 +30,33 @@ function buildEmployeeScopeConditions(auth, alias = 'e') {
         params.push(auth.employeeId);
         parts.push(`${a}.reporting_manager_id = $${params.length}`);
       }
+      // Also check if user is a department manager - if so, include all employees in their managed department
+      if (auth.managedDepartmentId && Number.isInteger(auth.managedDepartmentId)) {
+        params.push(auth.managedDepartmentId);
+        parts.push(`${a}.department_id = $${params.length}`);
+        // Modify the condition to be OR instead of just the reporting_manager_id
+        parts.pop(); // Remove the reporting_manager_id part
+        params.pop(); // Remove the param
+        const reportParam = auth.employeeId;
+        const deptParam = auth.managedDepartmentId;
+        params.push(reportParam, deptParam);
+        parts.push(`(${a}.reporting_manager_id = $${params.length - 1} OR ${a}.department_id = $${params.length})`);
+      }
       break;
     case 'DEPARTMENT':
       if (!auth.department) parts.push('1 = 0');
       else {
         params.push(auth.department);
         parts.push(`${a}.department = $${params.length}`);
+      }
+      break;
+    case 'DEPT_MANAGER':
+      // New scope: user is a department manager - see all employees in their managed department
+      if (!auth.managedDepartmentId || !Number.isInteger(auth.managedDepartmentId)) {
+        parts.push('1 = 0');
+      } else {
+        params.push(auth.managedDepartmentId);
+        parts.push(`${a}.department_id = $${params.length}`);
       }
       break;
     default:
@@ -99,17 +120,28 @@ function assertEmployeeRecordAccess(auth, employeeRow) {
         throw ApiError.forbidden('You can only access your own employee record');
       }
       return;
-    case 'TEAM':
-      if (Number(employeeRow.reporting_manager_id) !== Number(auth.employeeId)) {
-        throw ApiError.forbidden('You can only access your team members');
+    case 'TEAM': {
+      const isDirectReport = Number(employeeRow.reporting_manager_id) === Number(auth.employeeId);
+      const isDeptEmployee = 
+        auth.managedDepartmentId && 
+        Number(employeeRow.department_id) === Number(auth.managedDepartmentId);
+      
+      if (!isDirectReport && !isDeptEmployee) {
+        throw ApiError.forbidden('You can only access your team members or department employees');
       }
       return;
+    }
     case 'DEPARTMENT':
       if (
         auth.department &&
         String(employeeRow.department || '').trim() !== String(auth.department).trim()
       ) {
         throw ApiError.forbidden('You can only access employees in your department');
+      }
+      return;
+    case 'DEPT_MANAGER':
+      if (!auth.managedDepartmentId || Number(employeeRow.department_id) !== Number(auth.managedDepartmentId)) {
+        throw ApiError.forbidden('You can only access employees in your managed department');
       }
       return;
     default:

@@ -79,10 +79,10 @@ const uploadFile = asyncHandler(async (req, res) => {
   }
 
   // Construct URL based on env.API_URL and /uploads path
-  const url = `${process.env.API_URL || 'http://localhost:5000'}/uploads/logos/${req.file.filename}`;
+  const url = req.file.location || `${process.env.API_URL || 'http://localhost:5000'}/uploads/logos/${req.file.filename}`;
   
   return ApiResponse.ok(res, { 
-    filename: req.file.filename,
+    filename: req.file.key || req.file.filename,
     originalName: req.file.originalname,
     url: url 
   }, 'File uploaded successfully');

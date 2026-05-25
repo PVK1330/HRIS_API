@@ -56,6 +56,14 @@ const filterOptions = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, "Filter options retrieved successfully");
 });
 
+/** GET /employees/designations-for-department?department=Sales */
+const designationsForDepartment = asyncHandler(async (req, res) => {
+  const department =
+    req.query.department || req.query.departmentName || req.query.name || "";
+  const data = await service.getDesignationsForDepartment(req.user, department);
+  return ApiResponse.ok(res, data, "Designations retrieved successfully");
+});
+
 const nextEmpId = asyncHandler(async (req, res) => {
   const nextId = await service.getNextEmployeeId(req.user);
   return ApiResponse.ok(res, { nextEmpId: nextId }, "Next employee ID");
@@ -94,15 +102,27 @@ const remove = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, null, "Employee deleted successfully");
 });
 
+/** POST /employees/:id/complete-onboarding — activate portal + email credentials */
+const completeOnboarding = asyncHandler(async (req, res) => {
+  const result = await service.completeOnboardingActivation(
+    req.user,
+    req.params.id,
+    req.auth,
+  );
+  return ApiResponse.ok(res, result, result.message);
+});
+
 module.exports = {
   list,
   dropdownList,
   exportList,
   stats,
   filterOptions,
+  designationsForDepartment,
   nextEmpId,
   getOne,
   create,
   update,
   remove,
+  completeOnboarding,
 };

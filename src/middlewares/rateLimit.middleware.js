@@ -26,7 +26,7 @@ const authLimiter = rateLimit({
   skipSuccessfulRequests: true,
 });
 
-// Very strict for public registration
+// Very strict for public tenant self-registration only
 const registrationLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 5,
@@ -35,4 +35,25 @@ const registrationLimiter = rateLimit({
   message: { success: false, message: 'Too many registration attempts. Try again in 1 hour.' },
 });
 
-module.exports = { generalLimiter, authLimiter, registrationLimiter };
+/** Candidate offer/sign/documents portal — per token + IP, not registration limits. */
+const candidateOnboardingLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: isDevelopment ? 500 : 150,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many requests. Please wait a moment and try again.',
+  },
+  keyGenerator: (req) => {
+    const token = req.params?.token ? String(req.params.token).slice(0, 64) : '';
+    return token ? `onboarding:${token}:${req.ip}` : `onboarding:${req.ip}`;
+  },
+});
+
+module.exports = {
+  generalLimiter,
+  authLimiter,
+  registrationLimiter,
+  candidateOnboardingLimiter,
+};

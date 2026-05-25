@@ -68,10 +68,23 @@ function buildWelcomeHtml(p) {
 </html>`;
 }
 
-async function sendEmployeeWelcomeEmail({ to, firstName, empId, department, jobTitle, joinDate, username, plainPassword }) {
+async function sendEmployeeWelcomeEmail({
+  to,
+  firstName,
+  empId,
+  department,
+  jobTitle,
+  joinDate,
+  username,
+  plainPassword,
+  portalUrl: portalUrlIn,
+  subject: subjectIn,
+}) {
   const company = process.env.COMPANY_NAME || 'Your Company';
-  const portalUrl = process.env.PORTAL_URL || 'https://portal.company.com';
-  const subject = `Welcome to ${company} — Your Account Details`;
+  const portalUrl =
+    portalUrlIn || process.env.PORTAL_URL || 'https://portal.company.com';
+  const subject =
+    subjectIn || `Welcome to ${company} — Your Account Details`;
   const html = buildWelcomeHtml({
     firstName: firstName || 'there',
     empId: empId || '',
@@ -91,4 +104,17 @@ async function sendEmployeeWelcomeEmail({ to, firstName, empId, department, jobT
   });
 }
 
-module.exports = { sendEmployeeWelcomeEmail, buildWelcomeHtml };
+/** Portal login credentials after onboarding activation. */
+async function sendEmployeeActivationEmail(opts) {
+  const company = process.env.COMPANY_NAME || 'Your Company';
+  return sendEmployeeWelcomeEmail({
+    ...opts,
+    subject: `${company} — Your employee portal login`,
+  });
+}
+
+module.exports = {
+  sendEmployeeWelcomeEmail,
+  sendEmployeeActivationEmail,
+  buildWelcomeHtml,
+};

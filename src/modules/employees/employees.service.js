@@ -9,7 +9,9 @@ const logger = require("../../utils/logger");
 const { sanitizeEmployeePayload } = require("../../utils/sanitize");
 const { runTenantMigrations } = require("../tenant/tenant.service");
 const repo = require("./employees.repository");
-const { sendEmployeeWelcomeEmail } = require("./employees.mailer");
+const { sendEmployeeWelcomeEmail, sendEmployeeActivationEmail } = require("./employees.mailer");
+const { generatePortalPassword } = require("../../utils/generatePortalPassword");
+const { resolvePortalLoginUrl } = require("../../utils/portalUrl");
 const { assertEmployeeRecordAccess } = require("../../utils/applyDataScope");
 const { formatEmpId, parseEmpIdSequence } = require("../../utils/empIdFormat");
 
@@ -53,15 +55,25 @@ async function listEmployees(user, query = {}, auth = null) {
   const limit = Math.min(5000, parseInt(query.limit, 10) || 10);
   const offset = (page - 1) * limit;
 
+  const onboardingOnly =
+    query.onboardingOnly === true ||
+    query.onboardingOnly === "true" ||
+    query.onboardingOnly === "1";
+  const status = query.status || "";
+  const excludeOnboarding =
+    !onboardingOnly && status !== "Onboarding";
+
   const filters = {
     search: query.search || "",
     department: query.department || "",
-    status: query.status || "",
+    status,
     workMode: query.workMode || "",
     jobTitle: query.jobTitle || "",
     workLocation: query.workLocation || "",
     joinDateFrom: fmtDateFilter(query.joinDateFrom),
     joinDateTo: fmtDateFilter(query.joinDateTo),
+    excludeOnboarding,
+    onboardingOnly,
     sortBy: query.sortBy || "created_at",
     sortOrder: query.sortOrder || "desc",
     limit,
@@ -119,16 +131,25 @@ async function listEmployeesDropdown(user, query = {}, auth = null) {
 async function listEmployeesForExport(user, query = {}, auth = null) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
+  const onboardingOnly =
+    query.onboardingOnly === true ||
+    query.onboardingOnly === "true" ||
+    query.onboardingOnly === "1";
+  const status = query.status || "";
+  const excludeOnboarding =
+    !onboardingOnly && status !== "Onboarding";
   return repo.findAllForExport(pool, {
     search: query.search || "",
     auth,
     department: query.department || "",
-    status: query.status || "",
+    status,
     workMode: query.workMode || "",
     jobTitle: query.jobTitle || "",
     workLocation: query.workLocation || "",
     joinDateFrom: fmtDateFilter(query.joinDateFrom),
     joinDateTo: fmtDateFilter(query.joinDateTo),
+    excludeOnboarding,
+    onboardingOnly,
     sortBy: query.sortBy || "created_at",
     sortOrder: query.sortOrder || "desc",
   });
@@ -159,6 +180,22 @@ async function createEmployee(user, data) {
       : "";
 
   const sanitized = sanitizeEmployeePayload({ ...data });
+
+  const fn = String(sanitized.firstName || data.firstName || "").trim();
+  const ln = String(sanitized.lastName || data.lastName || "").trim();
+  if (!String(sanitized.fullName || "").trim() && (fn || ln)) {
+    sanitized.fullName = [fn, ln].filter(Boolean).join(" ");
+    sanitized.firstName = fn || null;
+    sanitized.lastName = ln || null;
+  }
+
+  const isOnboarding = sanitized.employmentStatus === "Onboarding";
+  if (!isOnboarding && !String(sanitized.workEmail || "").trim()) {
+    throw ApiError.badRequest("workEmail is required");
+  }
+  if (!String(sanitized.workEmail || "").trim()) {
+    sanitized.workEmail = null;
+  }
 
   let empId = String(sanitized.empId || "").trim();
   if (!empId) {
@@ -367,6 +404,13 @@ async function getFilterOptions(user) {
   return repo.getFilterOptions(pool);
 }
 
+async function getDesignationsForDepartment(user, departmentName) {
+  const pool = resolvePool(user);
+  await ensureMigrated(user.db_name);
+  const designations = await repo.getDesignationsForDepartment(pool, departmentName);
+  return { designations };
+}
+
 async function getStats(user) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
@@ -382,6 +426,110 @@ async function getStats(user) {
   };
 }
 
+/**
+ * Activate employee portal: set Active, enable portal, random password, email credentials.
+ */
+async function completeOnboardingActivation(user, id, auth = null) {
+  const pool = resolvePool(user);
+  await ensureMigrated(user.db_name);
+
+  const existing = await repo.findById(pool, id);
+  if (!existing) throw ApiError.notFound("Employee not found");
+  if (auth) assertEmployeeRecordAccess(auth, existing);
+
+  let workEmail = String(existing.work_email || "").trim();
+  const personalEmail = String(existing.personal_email || "").trim();
+  if (!workEmail && personalEmail) {
+    workEmail = personalEmail;
+    await pool.query(
+      `UPDATE employees SET work_email = $1, updated_at = NOW()
+       WHERE id = $2 AND deleted_at IS NULL`,
+      [workEmail, id],
+    );
+  }
+  if (!workEmail) {
+    throw ApiError.badRequest(
+      "Work email or personal email is required before activation",
+    );
+  }
+
+  if (existing.onboarding_completed_at) {
+    throw ApiError.conflict("Employee onboarding is already completed");
+  }
+
+  const workflowStatus = String(
+    existing.onboarding_workflow_status || "",
+  ).toLowerCase();
+  if (
+    existing.employment_status === "Onboarding" &&
+    workflowStatus &&
+    workflowStatus !== "onboarding_complete"
+  ) {
+    throw ApiError.badRequest(
+      "Complete the 3-step onboarding workflow before activating the employee (all documents must be approved).",
+    );
+  }
+
+  if (
+    existing.employment_status === "Onboarding" &&
+    existing.onboarding_approval_status &&
+    existing.onboarding_approval_status !== "Accepted"
+  ) {
+    throw ApiError.badRequest(
+      "Candidate must accept the offer before the employee can appear in the directory",
+    );
+  }
+
+  if (
+    existing.portal_enabled &&
+    existing.password_hash &&
+    existing.employment_status !== "Onboarding"
+  ) {
+    throw ApiError.conflict("Employee portal is already active");
+  }
+
+  const plainPassword = generatePortalPassword(12);
+  const passwordHash = await hashPassword(plainPassword);
+  const username =
+    String(existing.username || "").trim() ||
+    workEmail.split("@")[0] ||
+    workEmail;
+
+  const activated = await repo.completeOnboardingActivation(pool, id, {
+    passwordHash,
+    username,
+  });
+  if (!activated) throw ApiError.notFound("Employee not found");
+
+  const portalUrl = await resolvePortalLoginUrl(user);
+  let emailSent = false;
+  try {
+    await sendEmployeeActivationEmail({
+      to: workEmail,
+      firstName: activated.first_name || activated.full_name || "",
+      empId: activated.emp_id || "",
+      department: activated.department || "",
+      jobTitle: activated.job_title || "",
+      joinDate: activated.join_date || "",
+      username: activated.username || workEmail,
+      plainPassword,
+      portalUrl,
+    });
+    emailSent = true;
+  } catch (mailErr) {
+    logger.warn(`Activation email skipped: ${mailErr.message}`);
+  }
+
+  const full = await repo.findById(pool, id);
+  return {
+    employee: omitPassword(full || activated),
+    emailSent,
+    message: emailSent
+      ? `Login credentials sent to ${workEmail}`
+      : `Employee activated; email could not be sent to ${workEmail}`,
+  };
+}
+
 module.exports = {
   getNextEmployeeId,
   listEmployees,
@@ -392,5 +540,7 @@ module.exports = {
   updateEmployee,
   deleteEmployee,
   getFilterOptions,
+  getDesignationsForDepartment,
   getStats,
+  completeOnboardingActivation,
 };

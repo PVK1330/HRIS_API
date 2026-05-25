@@ -50,9 +50,17 @@ function buildEmployeeListWhere({
   workLocation = "",
   joinDateFrom = "",
   joinDateTo = "",
+  excludeOnboarding = false,
+  onboardingOnly = false,
 } = {}) {
   const conditions = ["e.deleted_at IS NULL"];
   const params = [];
+
+  if (onboardingOnly) {
+    conditions.push(`e.employment_status = 'Onboarding'`);
+  } else if (excludeOnboarding && !status) {
+    conditions.push(`e.employment_status <> 'Onboarding'`);
+  }
 
   if (search) {
     params.push(`%${search}%`);
@@ -121,6 +129,8 @@ async function findAll(
     workLocation = "",
     joinDateFrom = "",
     joinDateTo = "",
+    excludeOnboarding = false,
+    onboardingOnly = false,
     sortBy = "created_at",
     sortOrder = "desc",
     limit = 20,
@@ -137,6 +147,8 @@ async function findAll(
     workLocation,
     joinDateFrom,
     joinDateTo,
+    excludeOnboarding,
+    onboardingOnly,
   });
   if (auth) {
     ({ where, params: baseParams } = applyEmployeeListScope(auth, {
@@ -154,6 +166,7 @@ async function findAll(
        e.job_title, e.department, e.department_id, e.employment_type, e.employment_status,
        e.work_location, e.work_mode, e.join_date, e.profile_image_url,
        e.nationality, e.gender,
+       e.onboarding_step, e.onboarding_approval_status, e.onboarding_workflow_status,
        e.rbac_role_id,
        e.portal_enabled,
        e.salary,
@@ -179,7 +192,7 @@ const DROPDOWN_MAX = 10000;
 
 /** Minimal columns for selects / modals — full list, no pagination (capped). */
 async function findAllForDropdown(pool, { search = "", auth = null } = {}) {
-  const conditions = ["e.deleted_at IS NULL"];
+  const conditions = ["e.deleted_at IS NULL", `e.employment_status <> 'Onboarding'`];
   let params = [];
   const q = String(search || "").trim();
   if (q) {
@@ -216,6 +229,8 @@ async function countAll(
     workLocation = "",
     joinDateFrom = "",
     joinDateTo = "",
+    excludeOnboarding = false,
+    onboardingOnly = false,
     auth = null,
   } = {},
 ) {
@@ -228,6 +243,8 @@ async function countAll(
     workLocation,
     joinDateFrom,
     joinDateTo,
+    excludeOnboarding,
+    onboardingOnly,
   });
   if (auth) {
     ({ where, params } = applyEmployeeListScope(auth, { where, params }));
@@ -250,6 +267,8 @@ async function findAllForExport(
     workLocation = "",
     joinDateFrom = "",
     joinDateTo = "",
+    excludeOnboarding = false,
+    onboardingOnly = false,
     sortBy = "created_at",
     sortOrder = "desc",
     auth = null,
@@ -264,6 +283,8 @@ async function findAllForExport(
     workLocation,
     joinDateFrom,
     joinDateTo,
+    excludeOnboarding,
+    onboardingOnly,
   });
   if (auth) {
     ({ where, params: baseParams } = applyEmployeeListScope(auth, {
@@ -711,6 +732,26 @@ async function update(pool, id, data) {
   return rows[0] || null;
 }
 
+async function completeOnboardingActivation(pool, id, { passwordHash, username }) {
+  const { rows } = await pool.query(
+    `UPDATE employees SET
+       employment_status = 'Active',
+       portal_enabled = true,
+       password_hash = $2,
+       username = COALESCE(NULLIF(TRIM(username), ''), $3),
+       onboarding_completed_at = NOW(),
+       portal_invite_sent_at = NOW(),
+       updated_at = NOW()
+     WHERE id = $1 AND deleted_at IS NULL
+     RETURNING id, emp_id, full_name, first_name, work_email, username, job_title, department,
+               employment_status, portal_enabled,
+               TO_CHAR(join_date, 'YYYY-MM-DD') AS join_date,
+               TO_CHAR(onboarding_completed_at, 'YYYY-MM-DD HH24:MI') AS onboarding_completed_at`,
+    [id, passwordHash, username],
+  );
+  return rows[0] || null;
+}
+
 async function softDelete(pool, id) {
   const { rowCount } = await pool.query(
     `UPDATE employees SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL`,
@@ -749,6 +790,21 @@ async function getFilterOptions(pool) {
   for (const r of empDept.rows) if (r.department) deptNames.add(r.department);
   const departments = [...deptNames].sort((a, b) => a.localeCompare(b));
 
+  const [deptRecordsRes, designationRowsRes] = await Promise.all([
+    pool.query(
+      `SELECT id, name FROM departments WHERE is_active = true ORDER BY name ASC`,
+    ),
+    pool.query(
+      `SELECT ds.id, ds.name, ds.department_id,
+              COALESCE(d.name, ds.department_name) AS department_name
+       FROM designations ds
+       LEFT JOIN departments d ON d.id = ds.department_id
+       WHERE COALESCE(ds.is_active, true) = true
+         AND LOWER(COALESCE(ds.status, 'active')) = 'active'
+       ORDER BY d.name NULLS LAST, ds.name ASC`,
+    ),
+  ]);
+
   const jobSet = new Set();
   for (const r of jobsDesig.rows) if (r.job_title) jobSet.add(r.job_title);
   for (const r of jobsEmp.rows) if (r.job_title) jobSet.add(r.job_title);
@@ -756,11 +812,34 @@ async function getFilterOptions(pool) {
 
   return {
     departments,
+    departmentRecords: deptRecordsRes.rows,
+    designations: designationRowsRes.rows,
     jobTitles,
     workLocations: locs.rows.map((r) => r.work_location),
     workModes: modes.rows.map((r) => r.work_mode),
     statuses: statuses.rows.map((r) => r.employment_status),
   };
+}
+
+async function getDesignationsForDepartment(pool, departmentName) {
+  const dept = String(departmentName || "").trim();
+  if (!dept) return [];
+
+  const { rows } = await pool.query(
+    `SELECT ds.id, ds.name, ds.department_id,
+            COALESCE(d.name, ds.department_name) AS department_name
+     FROM designations ds
+     LEFT JOIN departments d ON d.id = ds.department_id
+     WHERE COALESCE(ds.is_active, true) = true
+       AND LOWER(COALESCE(ds.status, 'active')) = 'active'
+       AND (
+         LOWER(TRIM(COALESCE(d.name, ''))) = LOWER(TRIM($1))
+         OR LOWER(TRIM(COALESCE(ds.department_name, ''))) = LOWER(TRIM($1))
+       )
+     ORDER BY ds.name ASC`,
+    [dept],
+  );
+  return rows;
 }
 
 async function getStats(pool) {
@@ -1031,8 +1110,10 @@ module.exports = {
   findByWorkEmail,
   insert,
   update,
+  completeOnboardingActivation,
   softDelete,
   getFilterOptions,
+  getDesignationsForDepartment,
   getStats,
   getEmployeeSections,
   syncEmployeeSections,

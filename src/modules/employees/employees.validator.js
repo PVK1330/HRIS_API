@@ -17,6 +17,7 @@ const listingQuery = Joi.object({
     .valid('created_at', 'join_date', 'full_name', 'employment_status', 'job_title', 'work_email', 'emp_id')
     .default('created_at'),
   sortOrder: Joi.string().valid('asc', 'desc', 'ASC', 'DESC').default('desc'),
+  onboardingOnly: Joi.boolean().truthy('true', '1').falsy('false', '0').default(false),
 });
 
 const exportQuery = listingQuery.keys({

@@ -3,6 +3,9 @@
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
+const aws = require('../config/aws');
+const multerS3 = require('multer-s3');
+
 
 const env = require('../config/env');
 const ApiError = require('../utils/ApiError');
@@ -47,21 +50,31 @@ function ensureTenantLogoDir() {
 const TENANT_LOGO_EXT = new Set(['.png', '.jpg', '.jpeg', '.svg']);
 const TENANT_LOGO_MIME = new Set(['image/png', 'image/jpeg', 'image/svg+xml']);
 
-const tenantLogoStorage = multer.diskStorage({
-  destination(_req, _file, cb) {
-    try {
-      ensureTenantLogoDir();
-      cb(null, TENANT_LOGO_DIR);
-    } catch (err) {
-      cb(err);
-    }
-  },
-  filename(req, file, cb) {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const tenantId = req.tenant?.id != null ? String(req.tenant.id) : 'unknown';
-    cb(null, `${tenantId}-${Date.now()}${ext}`);
-  },
-});
+const tenantLogoStorage = aws.isS3Configured
+  ? multerS3({
+      s3: aws.s3Client,
+      bucket: aws.bucketName,
+      key: function (req, file, cb) {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const tenantId = req.tenant?.id != null ? String(req.tenant.id) : 'unknown';
+        cb(null, `tenant-logos/${tenantId}-${Date.now()}${ext}`);
+      }
+    })
+  : multer.diskStorage({
+      destination(_req, _file, cb) {
+        try {
+          ensureTenantLogoDir();
+          cb(null, TENANT_LOGO_DIR);
+        } catch (err) {
+          cb(err);
+        }
+      },
+      filename(req, file, cb) {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const tenantId = req.tenant?.id != null ? String(req.tenant.id) : 'unknown';
+        cb(null, `${tenantId}-${Date.now()}${ext}`);
+      },
+    });
 
 function tenantLogoFileFilter(_req, file, cb) {
   const ext = path.extname(file.originalname).toLowerCase();
@@ -107,22 +120,33 @@ const uploadTenantLogo = {
  * already encodes it). We default to `logo` so a plain field name still
  * works in case a route forgets to set req.params.type.
  */
-const storage = multer.diskStorage({
-  destination(_req, _file, cb) {
-    try {
-      ensureLogoDir();
-      cb(null, LOGO_DIR);
-    } catch (err) {
-      cb(err);
-    }
-  },
-  filename(req, file, cb) {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const type = (req.params && req.params.type) || req.logoType || 'logo';
-    const safeType = String(type).replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'logo';
-    cb(null, `${safeType}-${Date.now()}${ext}`);
-  },
-});
+const storage = aws.isS3Configured
+  ? multerS3({
+      s3: aws.s3Client,
+      bucket: aws.bucketName,
+      key: function (req, file, cb) {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const type = (req.params && req.params.type) || req.logoType || 'logo';
+        const safeType = String(type).replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'logo';
+        cb(null, `logos/${safeType}-${Date.now()}${ext}`);
+      }
+    })
+  : multer.diskStorage({
+      destination(_req, _file, cb) {
+        try {
+          ensureLogoDir();
+          cb(null, LOGO_DIR);
+        } catch (err) {
+          cb(err);
+        }
+      },
+      filename(req, file, cb) {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const type = (req.params && req.params.type) || req.logoType || 'logo';
+        const safeType = String(type).replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'logo';
+        cb(null, `${safeType}-${Date.now()}${ext}`);
+      },
+    });
 
 function fileFilter(_req, file, cb) {
   const ext = path.extname(file.originalname).toLowerCase();
@@ -149,22 +173,33 @@ function ensureSuperadminLogoDir() {
   }
 }
 
-const superadminLogoStorage = multer.diskStorage({
-  destination(_req, _file, cb) {
-    try {
-      ensureSuperadminLogoDir();
-      cb(null, SUPERADMIN_LOGO_DIR);
-    } catch (err) {
-      cb(err);
-    }
-  },
-  filename(req, file, cb) {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const type = (req.params && req.params.type) || req.logoType || 'logo';
-    const safeType = String(type).replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'logo';
-    cb(null, `superadmin-${safeType}-${Date.now()}${ext}`);
-  },
-});
+const superadminLogoStorage = aws.isS3Configured
+  ? multerS3({
+      s3: aws.s3Client,
+      bucket: aws.bucketName,
+      key: function (req, file, cb) {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const type = (req.params && req.params.type) || req.logoType || 'logo';
+        const safeType = String(type).replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'logo';
+        cb(null, `superadmin-logos/${safeType}-${Date.now()}${ext}`);
+      }
+    })
+  : multer.diskStorage({
+      destination(_req, _file, cb) {
+        try {
+          ensureSuperadminLogoDir();
+          cb(null, SUPERADMIN_LOGO_DIR);
+        } catch (err) {
+          cb(err);
+        }
+      },
+      filename(req, file, cb) {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const type = (req.params && req.params.type) || req.logoType || 'logo';
+        const safeType = String(type).replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'logo';
+        cb(null, `superadmin-${safeType}-${Date.now()}${ext}`);
+      },
+    });
 
 const superadminLogoUploader = multer({
   storage: superadminLogoStorage,

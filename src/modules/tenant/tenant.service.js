@@ -13,6 +13,7 @@ const db = require("../../config/db");
 const env = require("../../config/env");
 const { sendMail } = require("../../utils/mail");
 const { renderEmail } = require("../../utils/emailTemplate");
+const { resolvePortalLoginUrlFromTenantName } = require("../../utils/portalUrl");
 const ApiError = require("../../utils/ApiError");
 const logger = require("../../utils/logger");
 const repo = require("./tenant.repository");
@@ -376,16 +377,18 @@ async function createTenant({
 
     // 9. Send Credentials Email
     try {
+      const loginUrl = resolvePortalLoginUrlFromTenantName(name);
       const html = await renderEmail("tenant-welcome", {
         name: name,
         email: adminEmail,
         password: adminPassword,
+        loginUrl,
       });
 
       await sendMail({
         to: adminEmail,
         subject: "Welcome to HRIS - Your Account Credentials",
-        text: `Your organization "${name}" has been created.\nEmail: ${adminEmail}\nPassword: ${adminPassword}`,
+        text: `Your organization "${name}" has been created.\nLogin URL: ${loginUrl}\nEmail: ${adminEmail}\nPassword: ${adminPassword}`,
         html,
       });
     } catch (mailErr) {
@@ -567,16 +570,18 @@ async function resetTenantPassword(id, manualPassword = null) {
 
   // 3. Send Email
   try {
+    const loginUrl = resolvePortalLoginUrlFromTenantName(tenant.name);
     const html = await renderEmail("tenant-password-reset", {
       name: tenant.name,
       email: tenant.admin_email,
       password: passwordToUse,
+      loginUrl,
     });
 
     await sendMail({
       to: tenant.admin_email,
       subject: "HRIS - Password Reset Notification",
-      text: `Your password for organization "${tenant.name}" has been reset.\nNew Password: ${passwordToUse}`,
+      text: `Your password for organization "${tenant.name}" has been reset.\nLogin URL: ${loginUrl}\nNew Password: ${passwordToUse}`,
       html,
     });
   } catch (mailErr) {

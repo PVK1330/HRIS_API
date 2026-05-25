@@ -34,7 +34,13 @@ const createAssessment = asyncHandler(async (req, res) => {
     performanceLead,
     remarks,
     assessmentDate,
-    status
+    status,
+    goalTitle,
+    kpiTarget,
+    weightage,
+    dueDate,
+    priority,
+    managerStatus
   } = req.body;
 
   const empIdToUse = employeeId || employee;
@@ -83,7 +89,13 @@ const createAssessment = asyncHandler(async (req, res) => {
     performanceLead: performanceLead || '',
     remarks: remarks || '',
     assessmentDate: assessmentDate || null,
-    status: status || 'Completed' // standard submitted assessments are 'Completed' or 'Pending'
+    status: status || 'Completed', // standard submitted assessments are 'Completed' or 'Pending'
+    goalTitle,
+    kpiTarget,
+    weightage,
+    dueDate,
+    priority,
+    managerStatus
   }, req.user.id);
   console.log('Created assessment:', assessment);
   return ApiResponse.created(res, assessment, 'Employee performance assessment created successfully');
@@ -230,7 +242,13 @@ const updateAssessment = asyncHandler(async (req, res) => {
     performanceLead,
     remarks,
     assessmentDate,
-    status
+    status,
+    goalTitle,
+    kpiTarget,
+    weightage,
+    dueDate,
+    priority,
+    managerStatus
   } = req.body;
 
   const pool = getTenantDbPool(req.user);
@@ -267,7 +285,13 @@ const updateAssessment = asyncHandler(async (req, res) => {
     performanceLead,
     remarks,
     assessmentDate,
-    status
+    status,
+    goalTitle,
+    kpiTarget,
+    weightage,
+    dueDate,
+    priority,
+    managerStatus
   }, req.user.id);
 
   return ApiResponse.ok(res, updated, 'Employee performance assessment updated successfully');
@@ -504,6 +528,72 @@ const getManagerDepartment = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, { department }, 'Manager department retrieved successfully');
 });
 
+/**
+ * PUT /api/employee-performance/employee/:id/progress
+ * Employee updates their own progress on an assessment
+ */
+const updateEmployeeProgress = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const {
+    employeeStatus,
+    employeeProgress,
+    employeeComments,
+    completionNotes
+  } = req.body;
+
+  // Validation
+  if (employeeProgress !== undefined) {
+    if (typeof employeeProgress !== 'string' && typeof employeeProgress !== 'number') {
+      throw ApiError.badRequest('Progress percentage must be a string or number');
+    }
+  }
+
+  const pool = getTenantDbPool(req.user);
+  const assessmentId = parseInt(id, 10);
+  if (isNaN(assessmentId)) throw ApiError.badRequest('Invalid assessment ID');
+
+  // Get employee ID
+  const employeeId = req.user.employeeId || req.user.employee_id || req.user.id;
+
+  const updated = await EmployeePerformance.updateEmployeeProgress(pool, assessmentId, employeeId, {
+    employeeStatus,
+    employeeProgress,
+    employeeComments,
+    completionNotes
+  }, req.user.id);
+
+  if (!updated) {
+    throw ApiError.notFound('Assessment not found or you do not have permission to update it');
+  }
+
+  console.log('updated employee progress', updated)
+  console.log('employee progress updated successfully', updated)
+  return ApiResponse.ok(res, updated, 'Employee progress updated successfully');
+});
+
+/**
+ * PATCH /api/employee-performance/:id/approve
+ * Admin approves an assessment
+ * Updates employee_status to 'Approved'
+ */
+const approveAssessment = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const pool = getTenantDbPool(req.user);
+
+  const assessmentId = parseInt(id, 10);
+  if (isNaN(assessmentId)) throw ApiError.badRequest('Invalid assessment ID');
+
+  // Verify assessment exists
+  const existing = await EmployeePerformance.findById(pool, assessmentId);
+  if (!existing) throw ApiError.notFound('Assessment not found');
+
+  // Approve the assessment
+  const approved = await EmployeePerformance.approve(pool, assessmentId, req.user.id);
+  if (!approved) throw ApiError.internalServerError('Failed to approve assessment');
+
+  return ApiResponse.ok(res, approved, 'Assessment approved successfully');
+});
+
 module.exports = {
   createAssessment,
   getAllAssessments,
@@ -511,6 +601,7 @@ module.exports = {
   getAssessmentById,
   updateAssessment,
   deleteAssessment,
+  approveAssessment,
   getCyclesDropdown,
   getCompetenciesDropdown,
   getAssessmentsByEmployeeId,
@@ -519,5 +610,6 @@ module.exports = {
   getManagerReviewById,
   updateManagerGoals,
   getManagerAssignedAssessments,
-  getManagerDepartment
+  getManagerDepartment,
+  updateEmployeeProgress
 };

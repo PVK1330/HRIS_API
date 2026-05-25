@@ -115,6 +115,13 @@ class EmployeePerformance {
     this.dueDate = data.due_date || null;
     this.priority = data.priority || '';
     this.managerStatus = data.manager_status || '';
+    this.employeeStatus = data.employee_status || 'Not Started';
+    this.employeeProgress = data.employee_progress || '0';
+    this.employeeComments = data.employee_comments || '';
+    this.completionNotes = data.completion_notes || '';
+    this.employeeUpdatedAt = data.employee_updated_at;
+    this.approvedBy = data.approved_by;
+    this.approvedAt = data.approved_at;
     this.createdAt = data.created_at;
     this.updatedAt = data.updated_at;
     this.deletedAt = data.deleted_at;
@@ -235,6 +242,11 @@ class EmployeePerformance {
         dueDate: r.due_date || null,
         priority: r.priority || '',
         managerStatus: r.manager_status || '',
+        employeeStatus: r.employee_status || 'Not Started',
+        employeeProgress: r.employee_progress || '0',
+        employeeComments: r.employee_comments || '',
+        completionNotes: r.completion_notes || '',
+        employeeUpdatedAt: r.employee_updated_at,
         status: r.status || 'Pending',
         createdAt: r.created_at,
         updatedAt: r.updated_at
@@ -513,7 +525,13 @@ class EmployeePerformance {
       performanceLead,
       remarks,
       assessmentDate,
-      status
+      status,
+      goalTitle,
+      kpiTarget,
+      weightage,
+      dueDate,
+      priority,
+      managerStatus
     } = updateData;
 
     const setClause = [];
@@ -586,6 +604,42 @@ class EmployeePerformance {
     if (status !== undefined) {
       setClause.push(`status = $${paramCount}`);
       values.push(status);
+      paramCount++;
+    }
+
+    if (goalTitle !== undefined) {
+      setClause.push(`goal_title = $${paramCount}`);
+      values.push(goalTitle ? goalTitle.trim() : '');
+      paramCount++;
+    }
+
+    if (kpiTarget !== undefined) {
+      setClause.push(`kpi_target = $${paramCount}`);
+      values.push(kpiTarget ? kpiTarget.trim() : '');
+      paramCount++;
+    }
+
+    if (weightage !== undefined) {
+      setClause.push(`weightage = $${paramCount}`);
+      values.push(weightage !== null && weightage !== '' ? Number(weightage) : null);
+      paramCount++;
+    }
+
+    if (dueDate !== undefined) {
+      setClause.push(`due_date = $${paramCount}`);
+      values.push(dueDate || null);
+      paramCount++;
+    }
+
+    if (priority !== undefined) {
+      setClause.push(`priority = $${paramCount}`);
+      values.push(priority ? priority.trim() : '');
+      paramCount++;
+    }
+
+    if (managerStatus !== undefined) {
+      setClause.push(`manager_status = $${paramCount}`);
+      values.push(managerStatus ? managerStatus.trim() : '');
       paramCount++;
     }
 
@@ -953,6 +1007,115 @@ class EmployeePerformance {
       assessments: populatedList,
       total: parseInt(countRes.rows[0].total, 10)
     };
+  }
+
+  /**
+   * Update employee progress fields only (by Employee)
+   */
+  static async updateEmployeeProgress(pool, id, employeeId, progressData, userId) {
+    const {
+      employeeStatus,
+      employeeProgress,
+      employeeComments,
+      completionNotes
+    } = progressData;
+
+    // Verify assessment exists and belongs to the employee
+    const query = `
+      SELECT id, employee_id FROM employee_performance
+      WHERE id = $1 AND deleted_at IS NULL;
+    `;
+    const { rows } = await pool.query(query, [id]);
+    
+    if (rows.length === 0) return null;
+    
+    if (Number(rows[0].employee_id) !== Number(employeeId)) {
+      return null; // Employee mismatch - unauthorized
+    }
+
+    const setClause = [];
+    const values = [];
+    let paramCount = 1;
+
+    if (employeeStatus !== undefined) {
+      setClause.push(`employee_status = $${paramCount}`);
+      values.push(employeeStatus);
+      paramCount++;
+    }
+
+    if (employeeProgress !== undefined) {
+      setClause.push(`employee_progress = $${paramCount}`);
+      values.push(String(employeeProgress));
+      paramCount++;
+    }
+
+    if (employeeComments !== undefined) {
+      setClause.push(`employee_comments = $${paramCount}`);
+      values.push(employeeComments.trim());
+      paramCount++;
+    }
+
+    if (completionNotes !== undefined) {
+      setClause.push(`completion_notes = $${paramCount}`);
+      values.push(completionNotes.trim());
+      paramCount++;
+    }
+
+    setClause.push(`employee_updated_at = NOW()`);
+    
+    // Also audit updated_by and updated_at
+    setClause.push(`updated_by = $${paramCount}`);
+    values.push(userId);
+    paramCount++;
+    setClause.push(`updated_at = NOW()`);
+
+    if (setClause.length === 3) { // no actual progress fields updated
+      const existing = await this.findById(pool, id);
+      return existing;
+    }
+
+    values.push(id);
+    values.push(employeeId);
+
+    const updateQuery = `
+      UPDATE employee_performance
+      SET ${setClause.join(', ')}
+      WHERE id = $${paramCount} AND employee_id = $${paramCount + 1} AND deleted_at IS NULL
+      RETURNING *;
+    `;
+
+    const updateResult = await pool.query(updateQuery, values);
+    if (updateResult.rows.length === 0) return null;
+
+    const populated = await this.populate(pool, [updateResult.rows[0]]);
+    return populated[0];
+  }
+
+  /**
+   * Approve an assessment (admin only)
+   * Updates employee_status to 'Approved' and records approval details
+   */
+  static async approve(pool, id, userId) {
+    const existing = await this.findById(pool, id);
+    if (!existing) return null;
+
+    const updateQuery = `
+      UPDATE employee_performance
+      SET 
+        employee_status = 'Approved',
+        approved_by = $1,
+        approved_at = NOW(),
+        updated_by = $1,
+        updated_at = NOW()
+      WHERE id = $2 AND deleted_at IS NULL
+      RETURNING *;
+    `;
+
+    const result = await pool.query(updateQuery, [userId, id]);
+    if (result.rows.length === 0) return null;
+
+    const populated = await this.populate(pool, [result.rows[0]]);
+    return populated[0];
   }
 }
 

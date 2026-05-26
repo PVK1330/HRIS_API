@@ -34,6 +34,8 @@ async function ensureMigrated(dbName) {
   return p;
 }
 
+let ioInstance = null;
+
 function initSocket(httpServer) {
   const io = new Server(httpServer, {
     cors: {
@@ -42,6 +44,7 @@ function initSocket(httpServer) {
     },
     path: '/socket.io',
   });
+  ioInstance = io;
 
   // ── Auth middleware ──────────────────────────────────────────────────────────
   io.use((socket, next) => {
@@ -74,8 +77,20 @@ function initSocket(httpServer) {
     // Join personal room so we can target this user
     socket.join(`user:${user.id}`);
 
+    // Join tenant-specific room
+    socket.join(`tenant:${user.db_name}`);
+
     // Notify contacts that this user is online
     io.emit('user:online', { userId: user.id });
+
+    // ── join_exit / join_conversation ──────────────────────────────────────────
+    socket.on('join_exit', (exitId) => {
+      socket.join(`exit:${exitId}`);
+    });
+
+    socket.on('leave_exit', (exitId) => {
+      socket.leave(`exit:${exitId}`);
+    });
 
     // ── join_conversation ──────────────────────────────────────────────────────
     socket.on('join_conversation', (conversationId) => {
@@ -160,4 +175,8 @@ function initSocket(httpServer) {
   return io;
 }
 
-module.exports = { initSocket, onlineUsers, isOnline };
+function getIo() {
+  return ioInstance;
+}
+
+module.exports = { initSocket, onlineUsers, isOnline, getIo };

@@ -47,6 +47,14 @@ async function bootstrap() {
     } else {
       logger.debug('Visa expiry alert cron disabled (DISABLE_VISA_EXPIRY_CRON=true).');
     }
+
+    try {
+      const { startExitSlaEscalationCron } = require('./jobs/exitSlaEscalation.job');
+      startExitSlaEscalationCron();
+    } catch (e) {
+      logger.error('Failed to start exit SLA escalation cron', e);
+    }
+
     logger.info(`Socket.io attached on /socket.io`);
   });
 

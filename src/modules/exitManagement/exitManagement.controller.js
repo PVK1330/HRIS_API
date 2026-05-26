@@ -127,6 +127,49 @@ const getAuditLog = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, logs, 'Audit logs retrieved');
 });
 
+const withdrawResignation = asyncHandler(async (req, res) => {
+  const record = await service.requestResignationWithdrawal(
+    req.tenant, req.params.id, req.body, req.user?.id
+  );
+  return ApiResponse.ok(res, record, 'Resignation withdrawal requested successfully');
+});
+
+const approveWithdrawal = asyncHandler(async (req, res) => {
+  const record = await service.approveResignationWithdrawal(
+    req.tenant, req.params.id, req.user?.id
+  );
+  return ApiResponse.ok(res, record, 'Resignation withdrawal approved successfully');
+});
+
+const rejectWithdrawal = asyncHandler(async (req, res) => {
+  const record = await service.rejectResignationWithdrawal(
+    req.tenant, req.params.id, req.body.rejection_reason, req.user?.id
+  );
+  return ApiResponse.ok(res, record, 'Resignation withdrawal rejected successfully');
+});
+
+const uploadClearanceProof = asyncHandler(async (req, res) => {
+  const ApiError = require('../../utils/ApiError');
+  if (!req.file) throw ApiError.badRequest('No document file uploaded');
+  
+  const tenantDb = req.tenant?.dbName || 'default';
+  const fileUrl = `/uploads/clearance-documents/${tenantDb}/${req.file.filename}`;
+  
+  const task = await service.updateClearanceTask(
+    req.tenant,
+    req.params.id,
+    req.params.taskId,
+    {
+      document_url: fileUrl,
+      document_name: req.file.originalname,
+      uploaded_at: new Date()
+    },
+    req.user?.id
+  );
+  
+  return ApiResponse.ok(res, task, 'Clearance proof document uploaded successfully');
+});
+
 module.exports = {
   list,
   stats,
@@ -151,4 +194,8 @@ module.exports = {
   submitSettlement,
   getSettlement,
   getAuditLog,
+  withdrawResignation,
+  approveWithdrawal,
+  rejectWithdrawal,
+  uploadClearanceProof
 };

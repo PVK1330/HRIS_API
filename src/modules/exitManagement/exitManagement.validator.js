@@ -93,6 +93,8 @@ const createClearanceTaskBody = Joi.object({
   assigned_to: Joi.number().integer().positive().allow(null).optional(),
   notes: Joi.string().trim().max(2000).allow('', null).optional(),
   sort_order: Joi.number().integer().min(0).optional().default(0),
+  due_date: Joi.date().iso().allow(null).optional(),
+  sla_hours: Joi.number().integer().min(0).optional().default(0),
 });
 
 const updateClearanceTaskBody = Joi.object({
@@ -102,6 +104,11 @@ const updateClearanceTaskBody = Joi.object({
   is_completed: Joi.boolean().optional(),
   notes: Joi.string().trim().max(2000).allow('', null).optional(),
   sort_order: Joi.number().integer().min(0).optional(),
+  due_date: Joi.date().iso().allow(null).optional(),
+  sla_hours: Joi.number().integer().min(0).optional(),
+  document_url: Joi.string().trim().max(500).allow(null, '').optional(),
+  document_name: Joi.string().trim().max(255).allow(null, '').optional(),
+  uploaded_at: Joi.date().iso().allow(null).optional(),
 });
 
 const createAssetReturnBody = Joi.object({
@@ -151,6 +158,14 @@ const processSettlementBody = Joi.object({
   notes: Joi.string().trim().max(2000).allow('', null).optional(),
 });
 
+const submitWithdrawalBody = Joi.object({
+  withdrawal_reason: Joi.string().trim().min(10).max(2000).required(),
+});
+
+const rejectWithdrawalBody = Joi.object({
+  rejection_reason: Joi.string().trim().min(5).max(2000).required(),
+});
+
 module.exports = {
   idParam,
   taskIdParam,
@@ -168,4 +183,6 @@ module.exports = {
   generateDocumentBody,
   submitInterviewBody,
   processSettlementBody,
+  submitWithdrawalBody,
+  rejectWithdrawalBody
 };

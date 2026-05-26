@@ -2,6 +2,12 @@
 
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
+const { pushNotification } = require('../notifications/notifications.service');
+const PDFDocument = require('pdfkit');
+const fs = require('fs');
+const path = require('path');
+const env = require('../../config/env');
+const { getIo } = require('../socket');
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -91,7 +97,7 @@ async function seedClearanceTasks(pool, exitRecordId) {
   let tasks = DEFAULT_CLEARANCE_TASKS;
   try {
     const { rows: templates } = await pool.query(
-      `SELECT department, task_name, sort_order
+      `SELECT department, task_name, sort_order, sla_hours
        FROM clearance_task_templates
        WHERE is_active = true
        ORDER BY sort_order ASC, id ASC`,
@@ -102,10 +108,12 @@ async function seedClearanceTasks(pool, exitRecordId) {
   }
 
   for (const task of tasks) {
+    const sla = task.sla_hours || 0;
+    const dueDate = sla > 0 ? new Date(Date.now() + sla * 60 * 60 * 1000) : null;
     await pool.query(
-      `INSERT INTO clearance_tasks (exit_record_id, department, task_name, sort_order)
-       VALUES ($1, $2, $3, $4)`,
-      [exitRecordId, task.department, task.task_name, task.sort_order],
+      `INSERT INTO clearance_tasks (exit_record_id, department, task_name, sort_order, sla_hours, due_date)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [exitRecordId, task.department, task.task_name, task.sort_order, sla, dueDate],
     );
   }
 }
@@ -311,7 +319,7 @@ async function getExitRecord(tenant, id) {
 
 async function createResignation(tenant, data, userId) {
   const pool = await getTenantPool(tenant.dbName);
-  await assertEmployeeExists(pool, data.employee_id);
+  const emp = await assertEmployeeExists(pool, data.employee_id);
 
   const { rows: existing } = await pool.query(
     `SELECT id FROM exit_records
@@ -344,11 +352,26 @@ async function createResignation(tenant, data, userId) {
     ],
   );
 
-  await logAudit(pool, rows[0].id, userId, 'resignation_submitted', null, {
+  const exitId = rows[0].id;
+
+  await logAudit(pool, exitId, userId, 'resignation_submitted', null, {
     status: 'Pending Approval', exit_type: 'Resignation', employee_id: data.employee_id,
   });
 
-  return getExitRecord(tenant, rows[0].id);
+  try {
+    const employeeNameStr = empName(emp);
+    const lwdStr = data.last_working_day ? new Date(data.last_working_day).toLocaleDateString('en-GB') : '—';
+    await pushNotification(tenant, {
+      forAdmin: true,
+      title: 'New Resignation Submitted',
+      message: `Resignation submitted by ${employeeNameStr} (LWD: ${lwdStr}).`,
+      type: 'exit_management',
+    });
+  } catch (err) {
+    console.error('Failed to push resignation submission notification:', err);
+  }
+
+  return getExitRecord(tenant, exitId);
 }
 
 async function createTermination(tenant, data, userId) {
@@ -407,6 +430,19 @@ async function createTermination(tenant, data, userId) {
   await logAudit(pool, exitId, userId, 'termination_initiated', null, {
     status: 'In Progress', exit_type: 'Termination', employee_id: data.employee_id,
   });
+
+  try {
+    const lwdStr = data.last_working_day ? new Date(data.last_working_day).toLocaleDateString('en-GB') : '—';
+    await pushNotification(tenant, {
+      employeeId: data.employee_id,
+      forAdmin: false,
+      title: 'Termination Process Initiated',
+      message: `An offboarding process has been initiated for you. Last working day: ${lwdStr}.`,
+      type: 'exit_management',
+    });
+  } catch (err) {
+    console.error('Failed to push termination notification:', err);
+  }
 
   return getExitRecord(tenant, exitId);
 }
@@ -490,6 +526,19 @@ async function approveResignation(tenant, id, userId) {
 
   await logAudit(pool, id, userId, 'resignation_approved', { status: 'Pending Approval' }, { status: 'Approved' });
 
+  try {
+    const lwdStr = record.last_working_day ? new Date(record.last_working_day).toLocaleDateString('en-GB') : '—';
+    await pushNotification(tenant, {
+      employeeId: record.emp_id,
+      forAdmin: false,
+      title: 'Resignation Approved',
+      message: `Your resignation has been approved. Your last working day is: ${lwdStr}.`,
+      type: 'exit_management',
+    });
+  } catch (err) {
+    console.error('Failed to push resignation approval notification:', err);
+  }
+
   return getExitRecord(tenant, id);
 }
 
@@ -517,6 +566,18 @@ async function rejectResignation(tenant, id, rejectionReason, userId) {
 
   await logAudit(pool, id, userId, 'resignation_rejected', { status: 'Pending Approval' }, { status: 'Rejected', rejection_reason: rejectionReason });
 
+  try {
+    await pushNotification(tenant, {
+      employeeId: record.employee_id,
+      forAdmin: false,
+      title: 'Resignation Rejected',
+      message: `Your resignation request has been rejected. Reason: ${rejectionReason}`,
+      type: 'exit_management',
+    });
+  } catch (err) {
+    console.error('Failed to push resignation rejection notification:', err);
+  }
+
   return getExitRecord(tenant, id);
 }
 
@@ -535,7 +596,7 @@ async function updateExitStatus(tenant, id, newStatus, userId) {
 
   const VALID_TRANSITIONS = {
     'Approved': ['In Progress', 'clearance'],
-    'In Progress': ['clearance', 'Completed'],
+    'In Progress': ['clearance', 'interview', 'Completed'],
     'clearance': ['interview', 'Completed'],
     'interview': ['settlement', 'Completed'],
     'settlement': ['Completed'],
@@ -584,6 +645,32 @@ async function updateExitStatus(tenant, id, newStatus, userId) {
 
   await logAudit(pool, id, userId, 'status_changed', { status: oldStatus }, { status: newStatus });
 
+  try {
+    const statusTitles = {
+      'clearance': 'Clearance Checklist Activated',
+      'In Progress': 'Offboarding In Progress',
+      'interview': 'Exit Interview Scheduled',
+      'settlement': 'Full & Final Settlement Processing',
+      'Completed': 'Offboarding Process Completed',
+    };
+    const statusMsgs = {
+      'clearance': 'Your offboarding clearance checklist has been activated. Please review it on your portal.',
+      'In Progress': 'Your offboarding process is now in progress.',
+      'interview': 'Your clearance tasks are complete. Please complete the exit interview questionnaire.',
+      'settlement': 'Your final settlement sheet is now being prepared by the HR/Finance team.',
+      'Completed': 'Your offboarding is complete. Your Relieving and Experience letters have been successfully generated.',
+    };
+    await pushNotification(tenant, {
+      employeeId: record.emp_id,
+      forAdmin: false,
+      title: statusTitles[newStatus] || 'Offboarding Progress Update',
+      message: statusMsgs[newStatus] || `Your offboarding status has transitioned to "${newStatus}".`,
+      type: 'exit_management',
+    });
+  } catch (err) {
+    console.error('Failed to push exit status notification:', err);
+  }
+
   return getExitRecord(tenant, id);
 }
 
@@ -619,9 +706,12 @@ async function addClearanceTask(tenant, exitRecordId, data) {
   );
   if (!erCheck.length) throw ApiError.notFound('Exit record not found');
 
+  const sla = data.sla_hours || 0;
+  const dueDate = data.due_date ? new Date(data.due_date) : (sla > 0 ? new Date(Date.now() + sla * 60 * 60 * 1000) : null);
+
   const { rows } = await pool.query(
-    `INSERT INTO clearance_tasks (exit_record_id, department, task_name, assigned_to, notes, sort_order)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO clearance_tasks (exit_record_id, department, task_name, assigned_to, notes, sort_order, sla_hours, due_date)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
     [
       exitRecordId,
@@ -630,9 +720,33 @@ async function addClearanceTask(tenant, exitRecordId, data) {
       data.assigned_to || null,
       data.notes || null,
       data.sort_order || 0,
+      sla,
+      dueDate
     ],
   );
-  return rows[0];
+
+  const taskRow = rows[0];
+
+  if (taskRow.assigned_to) {
+    try {
+      const { rows: exRec } = await pool.query(
+        `SELECT er.*, e.first_name, e.last_name, e.full_name FROM exit_records er LEFT JOIN employees e ON e.id = er.employee_id WHERE er.id = $1`,
+        [exitRecordId]
+      );
+      const targetEmpName = exRec[0] ? empName(exRec[0]) : 'Employee';
+      await pushNotification(tenant, {
+        employeeId: taskRow.assigned_to,
+        forAdmin: false,
+        title: 'Offboarding Clearance Task Assigned',
+        message: `You have been assigned a clearance task: "${taskRow.task_name}" for ${targetEmpName}.`,
+        type: 'exit_management',
+      });
+    } catch (err) {
+      console.error('Failed to send task creation assignment notification:', err);
+    }
+  }
+
+  return taskRow;
 }
 
 async function updateClearanceTask(tenant, exitRecordId, taskId, data, userId) {
@@ -648,7 +762,7 @@ async function updateClearanceTask(tenant, exitRecordId, taskId, data, userId) {
   const params = [];
   let n = 1;
 
-  const simpleFields = ['task_name', 'department', 'assigned_to', 'notes', 'sort_order'];
+  const simpleFields = ['task_name', 'department', 'assigned_to', 'notes', 'sort_order', 'sla_hours', 'due_date', 'document_url', 'document_name', 'uploaded_at'];
   for (const field of simpleFields) {
     if (data[field] !== undefined) {
       params.push(data[field]);
@@ -680,6 +794,61 @@ async function updateClearanceTask(tenant, exitRecordId, taskId, data, userId) {
     params,
   );
 
+  const updatedTask = rows[0];
+
+  // Notify newly assigned employee if assignment changed
+  if (data.assigned_to !== undefined && data.assigned_to !== existing[0].assigned_to && data.assigned_to !== null) {
+    try {
+      const { rows: exRec } = await pool.query(
+        `SELECT er.*, e.first_name, e.last_name, e.full_name FROM exit_records er LEFT JOIN employees e ON e.id = er.employee_id WHERE er.id = $1`,
+        [exitRecordId]
+      );
+      const targetEmpName = exRec[0] ? empName(exRec[0]) : 'Employee';
+      await pushNotification(tenant, {
+        employeeId: data.assigned_to,
+        forAdmin: false,
+        title: 'Offboarding Clearance Task Assigned',
+        message: `You have been assigned a clearance task: "${updatedTask.task_name}" for ${targetEmpName}.`,
+        type: 'exit_management',
+      });
+    } catch (err) {
+      console.error('Failed to send task assignment notification:', err);
+    }
+  }
+
+  // Notify completion if marked completed
+  if (data.is_completed && !existing[0].is_completed) {
+    try {
+      const { rows: exRec } = await pool.query(
+        `SELECT er.*, e.id AS emp_id, e.first_name, e.last_name, e.full_name FROM exit_records er LEFT JOIN employees e ON e.id = er.employee_id WHERE er.id = $1`,
+        [exitRecordId]
+      );
+      if (exRec[0]) {
+        const targetEmpName = empName(exRec[0]);
+        const completedByName = await getUserName(pool, userId);
+        
+        // Notify HR Admins
+        await pushNotification(tenant, {
+          forAdmin: true,
+          title: 'Clearance Task Completed',
+          message: `Task "${updatedTask.task_name}" for ${targetEmpName} has been completed by ${completedByName}.`,
+          type: 'exit_management',
+        });
+
+        // Notify exiting employee
+        await pushNotification(tenant, {
+          employeeId: exRec[0].emp_id,
+          forAdmin: false,
+          title: 'Clearance Task Completed',
+          message: `The clearance task "${updatedTask.task_name}" in department "${updatedTask.department}" has been marked as completed.`,
+          type: 'exit_management',
+        });
+      }
+    } catch (err) {
+      console.error('Failed to send task completion notification:', err);
+    }
+  }
+
   const ready = await checkAutoReadyForClosure(pool, exitRecordId);
   if (ready) {
     await pool.query(
@@ -689,7 +858,7 @@ async function updateClearanceTask(tenant, exitRecordId, taskId, data, userId) {
     );
   }
 
-  return rows[0];
+  return updatedTask;
 }
 
 /* ------------------------------------------------------------------ */
@@ -950,15 +1119,24 @@ async function processSettlement(tenant, data, userId) {
     net_payable: netPayable, payment_status: 'processed',
   });
 
-  return row;
+  const result = row;
+  try {
+    const fileUrl = await generateSettlementSlipPdf(tenant, data.exit_request_id, row, userId);
+    result.file_url = fileUrl;
+  } catch (err) {
+    console.error('Failed to generate Full & Final Settlement PDF slip:', err);
+  }
+
+  return result;
 }
 
 async function getSettlement(tenant, exitRequestId) {
   const pool = await getTenantPool(tenant.dbName);
   const { rows } = await pool.query(
-    `SELECT fs.*, pb.full_name AS processed_by_name
+    `SELECT fs.*, pb.full_name AS processed_by_name, ed.file_url
      FROM final_settlements fs
      LEFT JOIN employees pb ON pb.id = fs.processed_by
+     LEFT JOIN exit_documents ed ON ed.exit_record_id = fs.exit_request_id AND ed.document_type = 'Full & Final Statement'
      WHERE fs.exit_request_id = $1
      ORDER BY fs.created_at DESC LIMIT 1`,
     [exitRequestId],
@@ -1024,6 +1202,369 @@ async function getActiveTerminationTypes(tenant) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  PDF Settlement Slip Generator                                      */
+/* ------------------------------------------------------------------ */
+
+async function generateSettlementSlipPdf(tenant, exitRecordId, settlementData, userId) {
+  const pool = await getTenantPool(tenant.dbName);
+  
+  // Fetch exit record with employee details
+  const { rows } = await pool.query(`
+    SELECT er.*, e.full_name, e.first_name, e.last_name, e.emp_id, e.department, e.job_title, e.join_date
+    FROM exit_records er
+    INNER JOIN employees e ON e.id = er.employee_id
+    WHERE er.id = $1
+  `, [exitRecordId]);
+  
+  const record = rows[0];
+  if (!record) return null;
+  
+  const empNameStr = record.full_name || [record.first_name, record.last_name].filter(Boolean).join(' ') || 'Employee';
+  const tenantDb = tenant.dbName || 'default';
+  
+  // Ensure settlements folder exists for this tenant
+  const targetDir = path.resolve(env.UPLOAD.dir, 'settlements', tenantDb);
+  if (!fs.existsSync(targetDir)) {
+    fs.mkdirSync(targetDir, { recursive: true });
+  }
+  
+  const filename = `${exitRecordId}_settlement.pdf`;
+  const filePath = path.join(targetDir, filename);
+  const relativeUrl = `/uploads/settlements/${tenantDb}/${filename}`;
+  
+  const doc = new PDFDocument({ margin: 50, size: 'A4' });
+  const writeStream = fs.createWriteStream(filePath);
+  doc.pipe(writeStream);
+  
+  // Draw Professional Header
+  doc.fillColor('#0F766E').fontSize(20).text('Full & Final Settlement Statement', { align: 'center' });
+  doc.moveDown(1.5);
+  
+  // Employee details section
+  doc.fillColor('#1e293b').fontSize(12).text(`Employee ID: ${record.emp_id || '—'}`);
+  doc.text(`Employee Name: ${empNameStr}`);
+  doc.text(`Department: ${record.department || '—'}`);
+  doc.text(`Designation: ${record.job_title || '—'}`);
+  doc.text(`Last Working Day: ${record.last_working_day ? new Date(record.last_working_day).toLocaleDateString('en-GB') : '—'}`);
+  doc.moveDown(2);
+  
+  // Grid Table Headers
+  const tableTop = 200;
+  doc.fillColor('#0F766E').fontSize(12);
+  doc.text('Description', 50, tableTop);
+  doc.text('Amount', 400, tableTop, { align: 'right', width: 150 });
+  doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).strokeColor('#e2e8f0').stroke();
+  
+  // Grid Table Rows
+  let y = tableTop + 25;
+  doc.fillColor('#334155').fontSize(10);
+  
+  const rowsData = [
+    { desc: 'Unpaid Salary', amount: parseFloat(settlementData.unpaid_salary) || 0 },
+    { desc: 'Leave Encashment', amount: parseFloat(settlementData.leave_encashment) || 0 },
+    { desc: 'Gratuity Pay', amount: parseFloat(settlementData.gratuity) || 0 },
+    { desc: 'Less: Deductions', amount: -(parseFloat(settlementData.deductions) || 0), isDeduction: true }
+  ];
+  
+  for (const item of rowsData) {
+    doc.text(item.desc, 50, y);
+    doc.text(`${item.amount.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}`, 400, y, { align: 'right', width: 150 });
+    y += 20;
+  }
+  
+  doc.moveTo(50, y).lineTo(550, y).strokeColor('#0F766E').stroke();
+  y += 10;
+  
+  // Net Payable
+  const netPayable = parseFloat(settlementData.net_payable) || 0;
+  doc.fillColor('#0F766E').fontSize(12).font('Helvetica-Bold');
+  doc.text('Net Payable Amount', 50, y);
+  doc.text(`${netPayable.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}`, 400, y, { align: 'right', width: 150 });
+  
+  y += 40;
+  doc.font('Helvetica').fillColor('#64748b').fontSize(9);
+  doc.text(`Notes: ${settlementData.notes || 'No additional remarks.'}`, 50, y, { width: 500 });
+  
+  // Signatures
+  y += 80;
+  doc.moveTo(50, y).lineTo(200, y).strokeColor('#cbd5e1').stroke();
+  doc.moveTo(400, y).lineTo(550, y).strokeColor('#cbd5e1').stroke();
+  
+  y += 5;
+  doc.fillColor('#334155').fontSize(10);
+  doc.text('HR Manager Signature', 50, y);
+  doc.text('Employee Signature', 400, y);
+  
+  doc.end();
+  
+  // Wait for stream to write completely before committing database record
+  await new Promise((resolve, reject) => {
+    writeStream.on('finish', resolve);
+    writeStream.on('error', reject);
+  });
+  
+  // Insert or Update the F&F Slip metadata inside exit_documents
+  const docTitle = `Full & Final Settlement - ${empNameStr}`;
+  const { rows: existingDoc } = await pool.query(
+    `SELECT id FROM exit_documents WHERE exit_record_id = $1 AND document_type = 'Full & Final Statement'`,
+    [exitRecordId]
+  );
+  
+  if (existingDoc.length) {
+    await pool.query(
+      `UPDATE exit_documents
+       SET file_url = $1, file_name = $2, generated_at = NOW(), generated_by = $3
+       WHERE id = $4`,
+      [relativeUrl, filename, userId || null, existingDoc[0].id]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO exit_documents (exit_record_id, document_type, document_title, file_url, file_name, generated_at, generated_by)
+       VALUES ($1, 'Full & Final Statement', $2, $3, $4, NOW(), $5)`,
+      [exitRecordId, docTitle, relativeUrl, filename, userId || null]
+    );
+  }
+  
+  return relativeUrl;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Resignation Withdrawal Workflow                                    */
+/* ------------------------------------------------------------------ */
+
+async function requestResignationWithdrawal(tenant, id, data, userId) {
+  const pool = await getTenantPool(tenant.dbName);
+  
+  const { rows } = await pool.query(
+    `SELECT er.*, e.id AS emp_id, e.first_name, e.last_name, e.full_name
+     FROM exit_records er
+     INNER JOIN employees e ON e.id = er.employee_id
+     WHERE er.id = $1`,
+    [id]
+  );
+  
+  const record = rows[0];
+  if (!record) throw ApiError.notFound('Exit record not found');
+  
+  // Guardrails: Prevents withdrawal once settlement begins or complete
+  if (['settlement', 'Completed', 'Rejected'].includes(record.status)) {
+    throw ApiError.badRequest('Resignation withdrawal is not allowed at this stage');
+  }
+
+  // Set withdrawal status as pending
+  await pool.query(
+    `UPDATE exit_records
+     SET is_withdrawal_requested = true,
+         withdrawal_reason = $1,
+         withdrawal_status = 'pending',
+         withdrawal_requested_at = NOW(),
+         updated_at = NOW()
+     WHERE id = $2`,
+    [data.withdrawal_reason.trim(), id]
+  );
+
+  await logAudit(pool, id, userId, 'withdrawal_requested', null, {
+    withdrawal_reason: data.withdrawal_reason.trim()
+  });
+
+  const empNameStr = empName(record);
+
+  // Notify HR/Admin in-app
+  try {
+    await pushNotification(tenant, {
+      forAdmin: true,
+      title: 'Resignation Withdrawal Request',
+      message: `${empNameStr} has submitted a request to withdraw their resignation.`,
+      type: 'exit_management'
+    });
+  } catch (err) {
+    console.error('Failed to push withdrawal notification:', err);
+  }
+
+  // Real-time WebSocket event
+  const io = getIo();
+  if (io) {
+    io.to(`tenant:${tenant.dbName}`).emit('exit:workflow_updated', {
+      exitRecordId: id,
+      status: record.status,
+      is_withdrawal_requested: true,
+      withdrawal_status: 'pending'
+    });
+    io.to(`exit:${id}`).emit('exit:task_updated', {
+      is_withdrawal_requested: true,
+      withdrawal_status: 'pending'
+    });
+  }
+
+  return getExitRecord(tenant, id);
+}
+
+async function approveResignationWithdrawal(tenant, id, userId) {
+  const pool = await getTenantPool(tenant.dbName);
+  
+  const { rows } = await pool.query(
+    `SELECT er.*, e.id AS emp_id, e.first_name, e.last_name, e.full_name
+     FROM exit_records er
+     INNER JOIN employees e ON e.id = er.employee_id
+     WHERE er.id = $1`,
+    [id]
+  );
+  
+  const record = rows[0];
+  if (!record) throw ApiError.notFound('Exit record not found');
+  if (record.withdrawal_status !== 'pending') {
+    throw ApiError.badRequest('No pending withdrawal request found');
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Approve withdrawal and transition exit record status to Canceled/Rejected
+    await client.query(
+      `UPDATE exit_records
+       SET status = 'Rejected',
+           withdrawal_status = 'approved',
+           is_withdrawal_requested = false,
+           withdrawal_approved_by = $1,
+           withdrawal_approved_at = NOW(),
+           updated_at = NOW()
+       WHERE id = $2`,
+      [userId, id]
+    );
+
+    // 2. Reset Employee employment_status to Active
+    await client.query(
+      `UPDATE employees
+       SET employment_status = 'Active', updated_at = NOW()
+       WHERE id = $1`,
+      [record.emp_id]
+    );
+
+    // 3. Clear clearance tasks
+    await client.query(
+      `DELETE FROM clearance_tasks WHERE exit_record_id = $1`,
+      [id]
+    );
+
+    // 4. Log Audit
+    const performedByName = await getUserName(pool, userId);
+    await client.query(
+      `INSERT INTO exit_audit_logs (exit_request_id, performed_by, performed_by_name, action, before_value, after_value)
+       VALUES ($1, $2, $3, 'withdrawal_approved', $4, $5)`,
+      [
+        id, userId, performedByName,
+        JSON.stringify({ withdrawal_status: 'pending', is_withdrawal_requested: true }),
+        JSON.stringify({ withdrawal_status: 'approved', is_withdrawal_requested: false, status: 'Rejected' })
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    // Notify employee in-app
+    try {
+      await pushNotification(tenant, {
+        employeeId: record.emp_id,
+        forAdmin: false,
+        title: 'Resignation Withdrawal Approved',
+        message: 'Your resignation withdrawal request has been approved. Your employment status is now active.',
+        type: 'exit_management'
+      });
+    } catch (err) {
+      console.error('Failed to push withdrawal approval notification:', err);
+    }
+
+    // Real-time WebSocket event
+    const io = getIo();
+    if (io) {
+      io.to(`tenant:${tenant.dbName}`).emit('exit:workflow_updated', {
+        exitRecordId: id,
+        status: 'Rejected',
+        is_withdrawal_requested: false,
+        withdrawal_status: 'approved'
+      });
+      io.to(`exit:${id}`).emit('exit:task_updated', {
+        status: 'Rejected',
+        is_withdrawal_requested: false,
+        withdrawal_status: 'approved'
+      });
+    }
+
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  return getExitRecord(tenant, id);
+}
+
+async function rejectResignationWithdrawal(tenant, id, rejectionReason, userId) {
+  const pool = await getTenantPool(tenant.dbName);
+  
+  const { rows } = await pool.query(
+    `SELECT er.*, e.id AS emp_id, e.first_name, e.last_name, e.full_name
+     FROM exit_records er
+     INNER JOIN employees e ON e.id = er.employee_id
+     WHERE er.id = $1`,
+    [id]
+  );
+  
+  const record = rows[0];
+  if (!record) throw ApiError.notFound('Exit record not found');
+  if (record.withdrawal_status !== 'pending') {
+    throw ApiError.badRequest('No pending withdrawal request found');
+  }
+
+  await pool.query(
+    `UPDATE exit_records
+     SET withdrawal_status = 'rejected',
+         is_withdrawal_requested = false,
+         remarks = COALESCE(remarks, '') || '\nWithdrawal Rejected: ' || $1,
+         updated_at = NOW()
+     WHERE id = $2`,
+    [rejectionReason.trim(), id]
+  );
+
+  await logAudit(pool, id, userId, 'withdrawal_rejected', {
+    withdrawal_status: 'pending', is_withdrawal_requested: true
+  }, {
+    withdrawal_status: 'rejected', is_withdrawal_requested: false, rejection_reason: rejectionReason
+  });
+
+  // Notify employee in-app
+  try {
+    await pushNotification(tenant, {
+      employeeId: record.emp_id,
+      forAdmin: false,
+      title: 'Resignation Withdrawal Rejected',
+      message: `Your resignation withdrawal request has been rejected. Reason: ${rejectionReason}`,
+      type: 'exit_management'
+    });
+  } catch (err) {
+    console.error('Failed to push withdrawal rejection notification:', err);
+  }
+
+  // Real-time WebSocket event
+  const io = getIo();
+  if (io) {
+    io.to(`tenant:${tenant.dbName}`).emit('exit:workflow_updated', {
+      exitRecordId: id,
+      status: record.status,
+      is_withdrawal_requested: false,
+      withdrawal_status: 'rejected'
+    });
+    io.to(`exit:${id}`).emit('exit:task_updated', {
+      is_withdrawal_requested: false,
+      withdrawal_status: 'rejected'
+    });
+  }
+
+  return getExitRecord(tenant, id);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Exports                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -1051,4 +1592,8 @@ module.exports = {
   processSettlement,
   getSettlement,
   getAuditLog,
+  generateSettlementSlipPdf,
+  requestResignationWithdrawal,
+  approveResignationWithdrawal,
+  rejectResignationWithdrawal
 };

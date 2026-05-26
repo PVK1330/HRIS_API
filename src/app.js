@@ -45,6 +45,7 @@ const performanceCyclesRoutes = require('./modules/performanceCycles/performance
 const competencyRoutes = require('./routes/competencyRoutes');
 const employeePerformanceRoutes = require('./routes/employeePerformanceRoutes');
 const managerPerformanceRoutes = require('./routes/managerPerformanceRoutes');
+const performanceExportRoutes = require('./routes/performance.routes');
 const { getCyclesDropdown, getCompetenciesDropdown } = require('./controllers/employeePerformanceController');
 const { authenticate, loadAuthContext } = require('./middlewares/auth.middleware');
 
@@ -147,6 +148,10 @@ app.use('/api/competencies', competencyRoutes);
 // Employee Performance Assessment endpoints
 app.use('/api/v1/employee-performance', employeePerformanceRoutes);
 app.use('/api/employee-performance', employeePerformanceRoutes);
+
+// Performance Export endpoints
+app.use('/api/v1/performance', performanceExportRoutes);
+app.use('/api/performance', performanceExportRoutes);
 
 // Manager Performance Review endpoints
 app.use('/api/v1/manager/performance', managerPerformanceRoutes);

@@ -1093,7 +1093,7 @@ class EmployeePerformance {
 
   /**
    * Approve an assessment (admin only)
-   * Updates employee_status to 'Approved' and records approval details
+   * Records approval details and updates employee status to 'Approved'
    */
   static async approve(pool, id, userId) {
     const existing = await this.findById(pool, id);

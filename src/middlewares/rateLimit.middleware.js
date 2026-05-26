@@ -2,6 +2,7 @@
 
 const rateLimit = require('express-rate-limit');
 const env = require('../config/env');
+const {ipKeyGenerator} = require("express-rate-limit");
 
 const windowMs = parseInt(env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000;
 const isDevelopment = env.NODE_ENV !== 'production';
@@ -47,10 +48,13 @@ const candidateOnboardingLimiter = rateLimit({
   },
   keyGenerator: (req) => {
     const token = req.params?.token ? String(req.params.token).slice(0, 64) : '';
-    return token ? `onboarding:${token}:${req.ip}` : `onboarding:${req.ip}`;
+    const ipKey = ipKeyGenerator(req.ip);
+
+    return token
+      ? `onboarding:${token}:${ipKey}`
+      : `onboarding:${ipKey}`;
   },
 });
-
 module.exports = {
   generalLimiter,
   authLimiter,

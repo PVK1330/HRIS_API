@@ -25,6 +25,8 @@ const P = {
   VISA_MANAGE: 'visa.manage',
   MESSAGES_VIEW: 'messages.view',
   ASSETS_VIEW: 'assets.view',
+  EXIT_VIEW: 'exit.view',
+  EXIT_MANAGE: 'exit.manage',
 };
 
 /** Legacy rbac_permissions.key → action slug(s) that satisfy the check */
@@ -47,6 +49,7 @@ const LEGACY_KEY_TO_ACTIONS = {
   announcements: ['announcements.view'],
   'letter-templates': ['letter-templates'],
   'system-settings': ['system-settings'],
+  'exit-management': [P.EXIT_VIEW, P.EXIT_MANAGE],
 };
 
 /** Action slug → legacy keys (for login allowedModules / sidebar) */
@@ -70,6 +73,8 @@ const ACTION_TO_LEGACY_KEYS = {
   [P.VISA_MANAGE]: ['visa-nationality'],
   [P.MESSAGES_VIEW]: ['messages'],
   [P.ASSETS_VIEW]: ['assets'],
+  [P.EXIT_VIEW]: ['exit-management'],
+  [P.EXIT_MANAGE]: ['exit-management'],
 };
 
 const DATA_SCOPES = Object.freeze(['SELF', 'TEAM', 'DEPARTMENT', 'ALL']);

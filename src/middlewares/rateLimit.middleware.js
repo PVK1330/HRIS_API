@@ -1,6 +1,7 @@
 'use strict';
 
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
 const env = require('../config/env');
 const {ipKeyGenerator} = require("express-rate-limit");
 
@@ -53,6 +54,8 @@ const candidateOnboardingLimiter = rateLimit({
     return token
       ? `onboarding:${token}:${ipKey}`
       : `onboarding:${ipKey}`;
+    const ip = ipKeyGenerator(req.ip);
+    return token ? `onboarding:${token}:${ip}` : `onboarding:${ip}`;
   },
 });
 module.exports = {

@@ -169,10 +169,133 @@ async function deleteTerminationType(tenant, id) {
   return true;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Clearance Task Templates                                           */
+/* ------------------------------------------------------------------ */
+
+async function listClearanceTemplates(tenant, query = {}) {
+  const pool = await getTenantPool(tenant.dbName);
+  const page = Math.max(1, parseInt(query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 50));
+  const offset = (page - 1) * limit;
+
+  const conditions = ['1=1'];
+  const params = [];
+  let i = 1;
+
+  const search = (query.search || '').trim();
+  if (search) {
+    params.push(`%${search}%`);
+    conditions.push(`(ct.task_name ILIKE $${i} OR ct.department ILIKE $${i})`);
+    i += 1;
+  }
+
+  const status = normalizeListStatus(query.status);
+  if (status === 'active') conditions.push('ct.is_active = true');
+  else if (status === 'inactive') conditions.push('ct.is_active = false');
+
+  const where = conditions.join(' AND ');
+
+  const { rows: countRows } = await pool.query(
+    `SELECT COUNT(*)::int AS total FROM clearance_task_templates ct WHERE ${where}`,
+    [...params],
+  );
+  const total = countRows[0]?.total ?? 0;
+
+  const dataParams = [...params, limit, offset];
+  const lim = dataParams.length - 1;
+  const off = dataParams.length;
+  const { rows } = await pool.query(
+    `SELECT ct.id, ct.department, ct.task_name, ct.sort_order, ct.is_active,
+            ct.created_at, ct.updated_at
+     FROM clearance_task_templates ct
+     WHERE ${where}
+     ORDER BY ct.sort_order ASC, ct.id ASC
+     LIMIT $${lim} OFFSET $${off}`,
+    dataParams,
+  );
+
+  return {
+    records: rows.map((r) => ({ ...r, status: r.is_active ? 'Active' : 'Inactive' })),
+    pagination: { total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) },
+  };
+}
+
+async function getClearanceTemplate(tenant, id) {
+  const pool = await getTenantPool(tenant.dbName);
+  const { rows } = await pool.query(
+    `SELECT * FROM clearance_task_templates WHERE id = $1`, [id],
+  );
+  if (!rows[0]) throw ApiError.notFound('Clearance task template not found');
+  return { ...rows[0], status: rows[0].is_active ? 'Active' : 'Inactive' };
+}
+
+async function createClearanceTemplate(tenant, data) {
+  const pool = await getTenantPool(tenant.dbName);
+  const isActive = data.is_active !== undefined ? data.is_active : data.isActive !== undefined ? data.isActive : true;
+  const { rows } = await pool.query(
+    `INSERT INTO clearance_task_templates (department, task_name, sort_order, is_active)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id`,
+    [data.department.trim(), data.task_name.trim(), data.sort_order || 0, isActive],
+  );
+  return getClearanceTemplate(tenant, rows[0].id);
+}
+
+async function updateClearanceTemplate(tenant, id, data) {
+  const pool = await getTenantPool(tenant.dbName);
+  const fields = [];
+  const params = [];
+  let n = 1;
+
+  if (data.department !== undefined) { params.push(data.department.trim()); fields.push(`department = $${n++}`); }
+  if (data.task_name !== undefined) { params.push(data.task_name.trim()); fields.push(`task_name = $${n++}`); }
+  if (data.sort_order !== undefined) { params.push(data.sort_order); fields.push(`sort_order = $${n++}`); }
+  const activeVal = data.is_active !== undefined ? data.is_active : data.isActive;
+  if (activeVal !== undefined) { params.push(activeVal); fields.push(`is_active = $${n++}`); }
+
+  if (!fields.length) return getClearanceTemplate(tenant, id);
+
+  fields.push('updated_at = NOW()');
+  params.push(id);
+  const { rows } = await pool.query(
+    `UPDATE clearance_task_templates SET ${fields.join(', ')} WHERE id = $${n} RETURNING id`,
+    params,
+  );
+  if (!rows.length) throw ApiError.notFound('Clearance task template not found');
+  return getClearanceTemplate(tenant, id);
+}
+
+async function deleteClearanceTemplate(tenant, id) {
+  const pool = await getTenantPool(tenant.dbName);
+  const { rowCount } = await pool.query(
+    `DELETE FROM clearance_task_templates WHERE id = $1`, [id],
+  );
+  if (!rowCount) throw ApiError.notFound('Clearance task template not found');
+  return true;
+}
+
+async function getActiveClearanceTemplates(tenant) {
+  const pool = await getTenantPool(tenant.dbName);
+  const { rows } = await pool.query(
+    `SELECT department, task_name, sort_order
+     FROM clearance_task_templates
+     WHERE is_active = true
+     ORDER BY sort_order ASC, id ASC`,
+  );
+  return rows;
+}
+
 module.exports = {
   listTerminationTypes,
   getTerminationType,
   createTerminationType,
   updateTerminationType,
   deleteTerminationType,
+  listClearanceTemplates,
+  getClearanceTemplate,
+  createClearanceTemplate,
+  updateClearanceTemplate,
+  deleteClearanceTemplate,
+  getActiveClearanceTemplates,
 };

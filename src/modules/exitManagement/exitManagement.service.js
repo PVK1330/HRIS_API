@@ -88,7 +88,20 @@ async function seedClearanceTasks(pool, exitRecordId) {
   );
   if (existing[0].cnt > 0) return;
 
-  for (const task of DEFAULT_CLEARANCE_TASKS) {
+  let tasks = DEFAULT_CLEARANCE_TASKS;
+  try {
+    const { rows: templates } = await pool.query(
+      `SELECT department, task_name, sort_order
+       FROM clearance_task_templates
+       WHERE is_active = true
+       ORDER BY sort_order ASC, id ASC`,
+    );
+    if (templates.length > 0) tasks = templates;
+  } catch {
+    // table may not exist yet on older tenants; fall back to hardcoded defaults
+  }
+
+  for (const task of tasks) {
     await pool.query(
       `INSERT INTO clearance_tasks (exit_record_id, department, task_name, sort_order)
        VALUES ($1, $2, $3, $4)`,

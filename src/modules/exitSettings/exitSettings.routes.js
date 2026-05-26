@@ -16,17 +16,22 @@ const router = Router();
 
 router.use(authenticate, tenantResolver, loadAuthContext);
 
+/* Clearance Task Templates (must come before /:id to avoid param capture) */
+router.get('/clearance-templates/list', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.listingQuery, 'query'), ctrl.listClearance);
+router.get('/clearance-templates/:id', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.getClearance);
+router.post('/clearance-templates', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.createClearanceBody, 'body'), ctrl.createClearance);
+router.put('/clearance-templates/:id', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), validateWithJoi(v.updateClearanceBody, 'body'), ctrl.updateClearance);
+router.delete('/clearance-templates/:id', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.removeClearance);
+
+/* Termination Types */
 router.get('/', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.listingQuery, 'query'), ctrl.list);
-
 router.get('/:id', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.getOne);
-
 router.post(
   '/',
   requirePermission(P.EXIT_MANAGE),
   validateWithJoi(v.createBody, 'body'),
   ctrl.create,
 );
-
 router.put(
   '/:id',
   requirePermission(P.EXIT_MANAGE),
@@ -34,7 +39,6 @@ router.put(
   validateWithJoi(v.updateBody, 'body'),
   ctrl.update,
 );
-
 router.delete('/:id', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.remove);
 
 module.exports = router;

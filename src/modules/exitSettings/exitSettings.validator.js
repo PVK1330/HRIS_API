@@ -33,9 +33,27 @@ const updateBody = Joi.object({
   sort_order: Joi.number().integer().min(0).optional(),
 });
 
+const createClearanceBody = Joi.object({
+  department: Joi.string().trim().min(1).max(100).required(),
+  task_name: Joi.string().trim().min(2).max(255).required(),
+  sort_order: Joi.number().integer().min(0).optional().default(0),
+  is_active: Joi.boolean().optional().default(true),
+  isActive: Joi.boolean().optional(),
+});
+
+const updateClearanceBody = Joi.object({
+  department: Joi.string().trim().min(1).max(100).optional(),
+  task_name: Joi.string().trim().min(2).max(255).optional(),
+  sort_order: Joi.number().integer().min(0).optional(),
+  is_active: Joi.boolean().optional(),
+  isActive: Joi.boolean().optional(),
+});
+
 module.exports = {
   idParam,
   listingQuery,
   createBody,
   updateBody,
+  createClearanceBody,
+  updateClearanceBody,
 };

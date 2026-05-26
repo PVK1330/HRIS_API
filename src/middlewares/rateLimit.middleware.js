@@ -1,6 +1,7 @@
 'use strict';
 
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
 const env = require('../config/env');
 
 const windowMs = parseInt(env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000;
@@ -47,7 +48,8 @@ const candidateOnboardingLimiter = rateLimit({
   },
   keyGenerator: (req) => {
     const token = req.params?.token ? String(req.params.token).slice(0, 64) : '';
-    return token ? `onboarding:${token}:${req.ip}` : `onboarding:${req.ip}`;
+    const ip = ipKeyGenerator(req.ip);
+    return token ? `onboarding:${token}:${ip}` : `onboarding:${ip}`;
   },
 });
 

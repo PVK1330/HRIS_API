@@ -174,12 +174,19 @@ async function findAll(
        rr.name AS rbac_role_name,
        d.name AS department_name,
        m.full_name AS manager_name, m.emp_id AS manager_emp_id,
+       e.full_name AS "employeeName",
+       e.emp_id AS "employeeCode",
+       e.department_id AS "departmentId",
+       d.name AS "departmentName",
+       d.manager_id AS "managerId",
+       mgr.full_name AS "managerName",
        TO_CHAR(e.created_at, 'DD/MM/YYYY') AS "createdAt",
        TO_CHAR(e.updated_at, 'DD/MM/YYYY') AS "updatedAt"
      FROM employees e
      LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
      LEFT JOIN departments d ON d.id = e.department_id
      LEFT JOIN employees m ON m.id = e.reporting_manager_id AND m.deleted_at IS NULL
+     LEFT JOIN employees mgr ON d.manager_id = mgr.id AND mgr.deleted_at IS NULL
      ${where}
      ORDER BY ${orderSql}
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -207,9 +214,17 @@ async function findAllForDropdown(pool, { search = "", auth = null } = {}) {
   params.push(DROPDOWN_MAX);
   const limIdx = params.length;
   const { rows } = await pool.query(
-    `SELECT e.id, e.emp_id, e.full_name, e.department, e.department_id, e.reporting_manager_id as manager_id, rr.name as role
+    `SELECT e.id, e.emp_id, e.full_name, e.department, e.department_id, e.reporting_manager_id as manager_id, rr.name as role,
+            e.full_name AS "employeeName",
+            e.emp_id AS "employeeCode",
+            e.department_id AS "departmentId",
+            d.name AS "departmentName",
+            d.manager_id AS "managerId",
+            m.full_name AS "managerName"
      FROM employees e
      LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
+     LEFT JOIN departments d ON e.department_id = d.id
+     LEFT JOIN employees m ON d.manager_id = m.id AND m.deleted_at IS NULL
      ${where}
      ORDER BY e.full_name ASC NULLS LAST, e.id ASC
      LIMIT $${limIdx}`,
@@ -328,6 +343,15 @@ async function findById(pool, id) {
        e.*,
        rr.name AS rbac_role_name,
        m.full_name AS manager_name, m.emp_id AS manager_emp_id,
+       d.name AS "departmentName",
+       d.name AS department_name,
+       mgr.id AS "managerId",
+       mgr.full_name AS "managerName",
+       e.full_name AS "employeeName",
+       e.emp_id AS "employeeCode",
+       e.work_email AS "email",
+       e.phone_number AS "phone",
+       e.department_id AS "departmentId",
        TO_CHAR(e.date_of_birth,      'YYYY-MM-DD') AS date_of_birth,
        TO_CHAR(e.join_date,          'YYYY-MM-DD') AS join_date,
        TO_CHAR(e.probation_end_date, 'YYYY-MM-DD') AS probation_end_date,
@@ -339,6 +363,8 @@ async function findById(pool, id) {
      FROM employees e
      LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
      LEFT JOIN employees m ON m.id = e.reporting_manager_id AND m.deleted_at IS NULL
+     LEFT JOIN departments d ON e.department_id = d.id
+     LEFT JOIN employees mgr ON d.manager_id = mgr.id AND mgr.deleted_at IS NULL
      WHERE e.id = $1 AND e.deleted_at IS NULL`,
     [id],
   );

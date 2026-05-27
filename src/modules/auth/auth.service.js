@@ -549,6 +549,36 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
 
 async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatures, planDetails, planFeatures) {
   const allowedModules = await adminModulesForJwt(tenantPool);
+
+  // Try to find a matching employee record by email
+  const { rows: empRows } = await tenantPool.query(
+    `SELECT id FROM employees WHERE deleted_at IS NULL AND LOWER(work_email) = LOWER($1) LIMIT 1`,
+    [adminUser.email]
+  );
+  let employeeId = empRows[0]?.id || null;
+
+  if (!employeeId) {
+    try {
+      // Get the default Organization Admin role ID
+      const { rows: roleRows } = await tenantPool.query(
+        `SELECT id FROM rbac_roles WHERE name = 'Organization Admin' AND is_system = true LIMIT 1`
+      );
+      const roleId = roleRows[0]?.id || null;
+
+      // Provision a shadow employee record for the admin
+      const { rows: newEmp } = await tenantPool.query(
+        `INSERT INTO employees (full_name, work_email, username, portal_enabled, rbac_role_id, employment_status)
+         VALUES ($1, $2, $3, true, $4, 'Active')
+         RETURNING id`,
+        [adminUser.name || 'Organization Admin', adminUser.email, adminUser.email.split('@')[0], roleId]
+      );
+      employeeId = newEmp[0]?.id || null;
+      logger.info(`[auth] auto-provisioned employee record id ${employeeId} for admin user ${adminUser.email}`);
+    } catch (err) {
+      logger.error(`[auth] failed to auto-provision employee record for admin user:`, err);
+    }
+  }
+
   const token = jwt.sign(
     {
       id: adminUser.id,
@@ -557,6 +587,7 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
       tenant_id: tenant.id,
       db_name: tenant.db_name,
       userType: 'admin',
+      employeeId: employeeId,
     },
     env.JWT.secret,
     { expiresIn: env.JWT.expiresIn },
@@ -571,6 +602,7 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
       role: 'admin',
       tenantId: tenant.id,
       tenantName: tenant.name,
+      employeeId: employeeId,
     },
     plan_details: planDetails,
     plan_features: planFeatures,

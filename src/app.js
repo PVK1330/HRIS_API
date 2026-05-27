@@ -48,6 +48,8 @@ const competencyRoutes = require('./routes/competencyRoutes');
 const employeePerformanceRoutes = require('./routes/employeePerformanceRoutes');
 const managerPerformanceRoutes = require('./routes/managerPerformanceRoutes');
 const performanceExportRoutes = require('./routes/performance.routes');
+const supportRoutes = require('./routes/support.routes');
+const superadminSupportRoutes = require('./routes/superadminSupport.routes');
 const { getCyclesDropdown, getCompetenciesDropdown } = require('./controllers/employeePerformanceController');
 const { authenticate, loadAuthContext } = require('./middlewares/auth.middleware');
 
@@ -183,6 +185,8 @@ app.use('/api/v1/admin/settings', tenantSettingsRoutes);
 app.use('/api/v1/admin/documents', adminDocumentsRoutes);
 app.use('/api/v1/admin/payroll', require('./modules/payroll/payroll.routes'));
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
+app.use('/api/support', supportRoutes);
+app.use('/api/superadmin/support', superadminSupportRoutes);
 app.use(
   '/api/v1/public/candidate-onboarding',
   require('./routes/public/candidateOnboardingRoutes'),

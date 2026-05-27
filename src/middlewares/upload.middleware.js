@@ -50,6 +50,52 @@ function ensureTenantLogoDir() {
 const TENANT_LOGO_EXT = new Set(['.png', '.jpg', '.jpeg', '.svg']);
 const TENANT_LOGO_MIME = new Set(['image/png', 'image/jpeg', 'image/svg+xml']);
 
+const SUPPORT_UPLOAD_DIR = path.join(UPLOADS_DIR, 'support-attachments');
+
+function ensureSupportUploadDir() {
+  if (!fs.existsSync(SUPPORT_UPLOAD_DIR)) {
+    fs.mkdirSync(SUPPORT_UPLOAD_DIR, { recursive: true });
+  }
+}
+
+const supportStorage = multer.diskStorage({
+  destination(_req, _file, cb) {
+    try {
+      ensureSupportUploadDir();
+      cb(null, SUPPORT_UPLOAD_DIR);
+    } catch (err) {
+      cb(err);
+    }
+  },
+  filename(_req, file, cb) {
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, `support-attachment-${Date.now()}${ext}`);
+  },
+});
+
+const supportUploader = multer({
+  storage: supportStorage,
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  fileFilter,
+});
+
+function uploadSupportFile(fieldName) {
+  const single = supportUploader.single(fieldName);
+  return function uploadSupportFileMiddleware(req, res, next) {
+    single(req, res, function handleMulter(err) {
+      if (!err) return next();
+      if (err instanceof ApiError) return next(err);
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return next(new ApiError(400, 'Attachment must be under 10MB'));
+        }
+        return next(new ApiError(400, `Upload error: ${err.message}`));
+      }
+      return next(new ApiError(400, err.message || 'File upload failed'));
+    });
+  };
+}
+
 const tenantLogoStorage = aws.isS3Configured
   ? multerS3({
       s3: aws.s3Client,
@@ -282,6 +328,7 @@ module.exports = {
   uploadLogo,
   uploadSuperAdminLogo,
   uploadTenantLogo,
+  uploadSupportFile,
   uploadFile,
   LOGO_DIR,
   TENANT_LOGO_DIR,

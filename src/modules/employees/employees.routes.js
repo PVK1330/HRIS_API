@@ -44,6 +44,7 @@ router.use(authenticate, loadAuthContext);
 router.get('/stats', requirePermission(P.EMPLOYEE_VIEW), ctrl.stats);
 router.get('/filters', requirePermission(P.EMPLOYEE_VIEW), ctrl.filterOptions);
 router.get('/filter-options', requirePermission(P.EMPLOYEE_VIEW), ctrl.filterOptions);
+router.get('/gdpr/export', requirePermission(P.EMPLOYEE_VIEW), ctrl.gdprExport);
 
 router.get('/next-emp-id', requirePermission(P.EMPLOYEE_CREATE), ctrl.nextEmpId);
 

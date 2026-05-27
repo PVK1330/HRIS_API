@@ -145,6 +145,67 @@ router.post(
   ctrl.submitSettlement,
 );
 
+/* ---- Resignation Withdrawal ---- */
+
+router.post(
+  '/:id/withdraw',
+  requirePermission(P.EXIT_MANAGE),
+  validateWithJoi(v.idParam, 'params'),
+  validateWithJoi(v.submitWithdrawalBody, 'body'),
+  ctrl.withdrawResignation,
+);
+
+router.put(
+  '/:id/withdraw/approve',
+  requirePermission(P.EXIT_MANAGE),
+  validateWithJoi(v.idParam, 'params'),
+  ctrl.approveWithdrawal,
+);
+
+router.put(
+  '/:id/withdraw/reject',
+  requirePermission(P.EXIT_MANAGE),
+  validateWithJoi(v.idParam, 'params'),
+  validateWithJoi(v.rejectWithdrawalBody, 'body'),
+  ctrl.rejectWithdrawal,
+);
+
+/* ---- Clearance Documents Upload ---- */
+
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const env = require('../../config/env');
+
+const storage = multer.diskStorage({
+  destination(req, file, cb) {
+    const tenantDb = req.tenant?.dbName || 'default';
+    const dir = path.resolve(env.UPLOAD.dir, 'clearance-documents', tenantDb);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    cb(null, dir);
+  },
+  filename(req, file, cb) {
+    const ext = path.extname(file.originalname);
+    const basename = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9]/g, '_');
+    cb(null, `${Date.now()}-${basename}${ext}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
+
+router.post(
+  '/:id/clearance/:taskId/upload',
+  requirePermission(P.EXIT_MANAGE),
+  validateWithJoi(v.taskIdParam, 'params'),
+  upload.single('file'),
+  ctrl.uploadClearanceProof,
+);
+
 /* ---- Audit Logs ---- */
 
 router.get('/:id/audit-log', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.getAuditLog);

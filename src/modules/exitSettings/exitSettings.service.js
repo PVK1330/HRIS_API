@@ -206,7 +206,7 @@ async function listClearanceTemplates(tenant, query = {}) {
   const lim = dataParams.length - 1;
   const off = dataParams.length;
   const { rows } = await pool.query(
-    `SELECT ct.id, ct.department, ct.task_name, ct.sort_order, ct.is_active,
+    `SELECT ct.id, ct.department, ct.task_name, ct.sort_order, ct.is_active, ct.sla_hours,
             ct.created_at, ct.updated_at
      FROM clearance_task_templates ct
      WHERE ${where}
@@ -234,10 +234,10 @@ async function createClearanceTemplate(tenant, data) {
   const pool = await getTenantPool(tenant.dbName);
   const isActive = data.is_active !== undefined ? data.is_active : data.isActive !== undefined ? data.isActive : true;
   const { rows } = await pool.query(
-    `INSERT INTO clearance_task_templates (department, task_name, sort_order, is_active)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO clearance_task_templates (department, task_name, sort_order, is_active, sla_hours)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING id`,
-    [data.department.trim(), data.task_name.trim(), data.sort_order || 0, isActive],
+    [data.department.trim(), data.task_name.trim(), data.sort_order || 0, isActive, data.sla_hours || 0],
   );
   return getClearanceTemplate(tenant, rows[0].id);
 }
@@ -253,6 +253,7 @@ async function updateClearanceTemplate(tenant, id, data) {
   if (data.sort_order !== undefined) { params.push(data.sort_order); fields.push(`sort_order = $${n++}`); }
   const activeVal = data.is_active !== undefined ? data.is_active : data.isActive;
   if (activeVal !== undefined) { params.push(activeVal); fields.push(`is_active = $${n++}`); }
+  if (data.sla_hours !== undefined) { params.push(data.sla_hours); fields.push(`sla_hours = $${n++}`); }
 
   if (!fields.length) return getClearanceTemplate(tenant, id);
 
@@ -278,7 +279,7 @@ async function deleteClearanceTemplate(tenant, id) {
 async function getActiveClearanceTemplates(tenant) {
   const pool = await getTenantPool(tenant.dbName);
   const { rows } = await pool.query(
-    `SELECT department, task_name, sort_order
+    `SELECT department, task_name, sort_order, sla_hours
      FROM clearance_task_templates
      WHERE is_active = true
      ORDER BY sort_order ASC, id ASC`,

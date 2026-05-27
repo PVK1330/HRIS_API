@@ -2,6 +2,7 @@
 
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
+const env = require('../config/env');
 const { socketCorsOrigin } = require('../config/cors');
 const { getTenantPool } = require('../config/db');
 const { runTenantMigrations } = require('../modules/tenant/tenant.service');
@@ -34,6 +35,8 @@ async function ensureMigrated(dbName) {
   return p;
 }
 
+let ioInstance = null;
+
 function initSocket(httpServer) {
   const io = new Server(httpServer, {
     cors: {
@@ -42,6 +45,7 @@ function initSocket(httpServer) {
     },
     path: '/socket.io',
   });
+  ioInstance = io;
 
   // ── Auth middleware ──────────────────────────────────────────────────────────
   io.use((socket, next) => {
@@ -69,13 +73,29 @@ function initSocket(httpServer) {
   // ── Connection ───────────────────────────────────────────────────────────────
   io.on('connection', async (socket) => {
     const { user } = socket;
-    addOnline(user.id, socket.id);
+    const userId = user.employeeId || user.id;
+    addOnline(userId, socket.id);
 
     // Join personal room so we can target this user
-    socket.join(`user:${user.id}`);
+    socket.join(`user:${userId}`);
+
+    // Join tenant-specific room
+    socket.join(`tenant:${user.db_name}`);
 
     // Notify contacts that this user is online
-    io.emit('user:online', { userId: user.id });
+    io.emit('user:online', { userId });
+
+    // Send the list of currently online user IDs to the connected client
+    socket.emit('online_users_list', { onlineIds: Array.from(onlineUsers.keys()) });
+
+    // ── join_exit / join_conversation ──────────────────────────────────────────
+    socket.on('join_exit', (exitId) => {
+      socket.join(`exit:${exitId}`);
+    });
+
+    socket.on('leave_exit', (exitId) => {
+      socket.leave(`exit:${exitId}`);
+    });
 
     // ── join_conversation ──────────────────────────────────────────────────────
     socket.on('join_conversation', (conversationId) => {
@@ -94,9 +114,10 @@ function initSocket(httpServer) {
         await ensureMigrated(user.db_name);
         const pool = getTenantPool(user.db_name);
 
+        const senderId = user.employeeId || user.id;
         const msg = await repo.insertMessage(pool, {
           conversationId,
-          senderId: user.id,
+          senderId,
           body: body.trim(),
         });
 
@@ -130,29 +151,32 @@ function initSocket(httpServer) {
       try {
         await ensureMigrated(user.db_name);
         const pool = getTenantPool(user.db_name);
-        await repo.markRead(pool, conversationId, user.id);
+        const readerId = user.employeeId || user.id;
+        await repo.markRead(pool, conversationId, readerId);
         // Tell the sender their messages were read
         socket.to(`conv:${conversationId}`).emit('messages_read', {
           conversationId,
-          readBy: user.id,
+          readBy: readerId,
         });
       } catch { /* non-critical */ }
     });
 
     // ── typing ─────────────────────────────────────────────────────────────────
     socket.on('typing', ({ conversationId, isTyping }) => {
+      const senderId = user.employeeId || user.id;
       socket.to(`conv:${conversationId}`).emit('user_typing', {
         conversationId,
-        userId: user.id,
+        userId: senderId,
         isTyping,
       });
     });
 
     // ── disconnect ─────────────────────────────────────────────────────────────
     socket.on('disconnect', () => {
-      removeOnline(user.id, socket.id);
-      if (!isOnline(user.id)) {
-        io.emit('user:offline', { userId: user.id });
+      const userId = user.employeeId || user.id;
+      removeOnline(userId, socket.id);
+      if (!isOnline(userId)) {
+        io.emit('user:offline', { userId });
       }
     });
   });
@@ -160,4 +184,8 @@ function initSocket(httpServer) {
   return io;
 }
 
-module.exports = { initSocket, onlineUsers, isOnline };
+function getIo() {
+  return ioInstance;
+}
+
+module.exports = { initSocket, onlineUsers, isOnline, getIo };

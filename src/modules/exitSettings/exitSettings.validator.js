@@ -39,6 +39,7 @@ const createClearanceBody = Joi.object({
   sort_order: Joi.number().integer().min(0).optional().default(0),
   is_active: Joi.boolean().optional().default(true),
   isActive: Joi.boolean().optional(),
+  sla_hours: Joi.number().integer().min(0).optional().default(0),
 });
 
 const updateClearanceBody = Joi.object({
@@ -47,6 +48,7 @@ const updateClearanceBody = Joi.object({
   sort_order: Joi.number().integer().min(0).optional(),
   is_active: Joi.boolean().optional(),
   isActive: Joi.boolean().optional(),
+  sla_hours: Joi.number().integer().min(0).optional(),
 });
 
 module.exports = {

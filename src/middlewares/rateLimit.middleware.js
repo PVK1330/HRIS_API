@@ -53,8 +53,6 @@ const candidateOnboardingLimiter = rateLimit({
     return token
       ? `onboarding:${token}:${ipKey}`
       : `onboarding:${ipKey}`;
-    const ip = ipKeyGenerator(req.ip);
-    return token ? `onboarding:${token}:${ip}` : `onboarding:${ip}`;
   },
 });
 module.exports = {

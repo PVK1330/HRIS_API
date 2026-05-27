@@ -8,8 +8,8 @@ const ApiResponse = require('../../utils/ApiResponse');
  * Request Password Reset
  */
 const forgotPassword = asyncHandler(async (req, res) => {
-  const { email } = req.body;
-  const result = await authService.requestPasswordReset(email);
+  const { email, tenantSlug, tenantId } = req.body;
+  const result = await authService.requestPasswordReset(email, { tenantSlug, tenantId });
   return ApiResponse.ok(res, result, 'If the email exists, an OTP has been sent.');
 });
 

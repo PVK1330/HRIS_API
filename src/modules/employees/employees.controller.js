@@ -56,11 +56,13 @@ const filterOptions = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, "Filter options retrieved successfully");
 });
 
-/** GET /employees/designations-for-department?department=Sales */
+/** GET /employees/designations-for-department?department=Sales&departmentId=1 */
 const designationsForDepartment = asyncHandler(async (req, res) => {
-  const department =
-    req.query.department || req.query.departmentName || req.query.name || "";
-  const data = await service.getDesignationsForDepartment(req.user, department);
+  const data = await service.getDesignationsForDepartment(req.user, {
+    departmentName:
+      req.query.department || req.query.departmentName || req.query.name || "",
+    departmentId: req.query.departmentId ?? req.query.department_id ?? null,
+  });
   return ApiResponse.ok(res, data, "Designations retrieved successfully");
 });
 

@@ -847,8 +847,26 @@ async function getFilterOptions(pool) {
   };
 }
 
-async function getDesignationsForDepartment(pool, departmentName) {
-  const dept = String(departmentName || "").trim();
+async function getDesignationsForDepartment(pool, opts = {}) {
+  const departmentIdRaw = opts.departmentId ?? opts.department_id;
+  const departmentId = parseInt(String(departmentIdRaw ?? ""), 10);
+  const dept = String(opts.departmentName ?? opts.department ?? "").trim();
+
+  if (Number.isInteger(departmentId) && departmentId > 0) {
+    const { rows } = await pool.query(
+      `SELECT ds.id, ds.name, ds.department_id,
+              COALESCE(d.name, ds.department_name) AS department_name
+       FROM designations ds
+       LEFT JOIN departments d ON d.id = ds.department_id
+       WHERE ds.department_id = $1
+         AND COALESCE(ds.is_active, true) = true
+         AND LOWER(COALESCE(ds.status, 'active')) = 'active'
+       ORDER BY ds.name ASC`,
+      [departmentId],
+    );
+    return rows;
+  }
+
   if (!dept) return [];
 
   const { rows } = await pool.query(

@@ -633,7 +633,13 @@ async function updateExitStatus(tenant, id, newStatus, userId) {
     );
 
     const employeeName = empName(record);
-    const autoDocTypes = ['Relieving Letter', 'Experience Letter'];
+    const isTermination = record.exit_type === 'Termination';
+
+    // Determine which docs to auto-generate based on exit type
+    const autoDocTypes = isTermination
+      ? ['Relieving Letter', 'Experience Letter', 'Termination Letter']
+      : ['Relieving Letter', 'Experience Letter'];
+
     const generatedDocs = [];
     for (const docType of autoDocTypes) {
       const { rows: existingDoc } = await pool.query(
@@ -651,19 +657,44 @@ async function updateExitStatus(tenant, id, newStatus, userId) {
       [id],
     );
 
-    // Email documents to user
+    // Email all generated documents to the employee
     const employeeEmail = record.work_email || record.personal_email;
     if (employeeEmail && generatedDocs.length > 0) {
       try {
         const { sendMail } = require('../../utils/mail');
+        const docListHtml = autoDocTypes.map(d => `<li>${d}</li>`).join('');
+        const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });
         await sendMail({
           to: employeeEmail,
-          subject: 'Your Exit Documents',
-          html: `<p>Dear ${employeeName},</p><p>Your offboarding process is complete. Please find your exit documents attached.</p><br/><p>Best Regards,</p><p>HR Department</p>`,
+          subject: `Your Exit Documents – ${employeeName}`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;">
+              <div style="border-bottom: 3px solid #0F766E; padding-bottom: 16px; margin-bottom: 24px;">
+                <h1 style="color: #0F766E; font-size: 22px; margin: 0;">HR Department</h1>
+              </div>
+              <p style="color: #374151;">${today}</p>
+              <p style="color: #374151;">Dear ${employeeName},</p>
+              <p style="color: #374151; line-height: 1.6;">
+                We are writing to confirm that your offboarding process has been completed. Please find attached
+                your formal exit documentation as listed below:
+              </p>
+              <ul style="color: #374151; line-height: 2;">${docListHtml}</ul>
+              <p style="color: #374151; line-height: 1.6;">
+                Please retain these documents for your personal records as they may be required for future
+                employment references.
+              </p>
+              <p style="color: #374151;">We thank you for your contribution and wish you every success in your future endeavours.</p>
+              <br/>
+              <p style="color: #374151; margin: 0;">Yours sincerely,</p>
+              <p style="color: #374151; font-weight: bold; margin: 4px 0;">HR Department</p>
+              <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 24px 0;"/>
+              <p style="color: #9ca3af; font-size: 11px;">This is an automated communication from your HRIS Portal. Please do not reply to this email.</p>
+            </div>
+          `,
           attachments: generatedDocs.map(doc => ({
-            filename: require('path').basename(doc.filePath),
-            path: doc.filePath
-          }))
+            filename: path.basename(doc.filePath),
+            path: doc.filePath,
+          })),
         });
       } catch (err) {
         console.error('Failed to email exit documents:', err);
@@ -674,22 +705,25 @@ async function updateExitStatus(tenant, id, newStatus, userId) {
   await logAudit(pool, id, userId, 'status_changed', { status: oldStatus }, { status: newStatus });
 
   try {
+    const isTermination = record.exit_type === 'Termination';
     const statusTitles = {
-      'clearance': 'Clearance Checklist Activated',
+      clearance: 'Clearance Checklist Activated',
       'In Progress': 'Offboarding In Progress',
-      'interview': 'Exit Interview Scheduled',
-      'settlement': 'Full & Final Settlement Processing',
-      'Completed': 'Offboarding Process Completed',
+      interview: 'Exit Interview Scheduled',
+      settlement: 'Full & Final Settlement Processing',
+      Completed: 'Offboarding Process Completed',
     };
     const statusMsgs = {
-      'clearance': 'Your offboarding clearance checklist has been activated. Please review it on your portal.',
-      'In Progress': 'Your offboarding process is now in progress.',
-      'interview': 'Your clearance tasks are complete. Please complete the exit interview questionnaire.',
-      'settlement': 'Your final settlement sheet is now being prepared by the HR/Finance team.',
-      'Completed': 'Your offboarding is complete. Your Relieving and Experience letters have been successfully generated.',
+      clearance: 'Your offboarding clearance checklist has been activated. Please complete all required tasks via your HR portal.',
+      'In Progress': 'Your offboarding process is now in progress. HR will be in touch with further steps.',
+      interview: 'Your clearance checklist is complete. Please complete your exit interview questionnaire on your portal at your earliest convenience.',
+      settlement: 'Your Full & Final settlement is now being calculated by the HR and Finance team. You will be notified once it is ready.',
+      Completed: isTermination
+        ? 'Your offboarding is now complete. Your Relieving Letter, Experience Letter, and Termination Letter have been generated and emailed to you.'
+        : 'Your offboarding is now complete. Your Relieving Letter and Experience Letter have been generated and emailed to you.',
     };
-    const title = statusTitles[newStatus] || 'Offboarding Progress Update';
-    const message = statusMsgs[newStatus] || `Your offboarding status has transitioned to "${newStatus}".`;
+    const title = statusTitles[newStatus] || 'Offboarding Status Update';
+    const message = statusMsgs[newStatus] || `Your offboarding status has been updated to "${newStatus}".`;
 
     await sendSystemNotification(tenant, {
       employeeId: record.emp_id,
@@ -697,7 +731,7 @@ async function updateExitStatus(tenant, id, newStatus, userId) {
       title,
       message,
       type: 'exit_management',
-      emailSubject: `HRIS - ${title}`,
+      emailSubject: `HRIS – ${title}`,
     });
   } catch (err) {
     console.error('Failed to push exit status notification:', err);
@@ -1014,93 +1048,233 @@ async function listExitDocuments(tenant, exitRecordId) {
 
 async function generateLetterPdf(tenant, exitRecordId, docType, userId) {
   const pool = await getTenantPool(tenant.dbName);
-  
+
   const { rows } = await pool.query(`
     SELECT er.*, e.full_name, e.first_name, e.last_name, e.emp_id, e.department, e.job_title, e.join_date
     FROM exit_records er
     INNER JOIN employees e ON e.id = er.employee_id
     WHERE er.id = $1
   `, [exitRecordId]);
-  
+
   const record = rows[0];
   if (!record) return null;
-  
+
   const empNameStr = record.full_name || [record.first_name, record.last_name].filter(Boolean).join(' ') || 'Employee';
   const tenantDb = tenant.dbName || 'default';
-  
+
   const targetDir = path.resolve(env.UPLOAD.dir, 'exit_documents', tenantDb);
-  if (!fs.existsSync(targetDir)) {
-    fs.mkdirSync(targetDir, { recursive: true });
-  }
-  
+  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+
   const filename = `${exitRecordId}_${docType.replace(/\s+/g, '_').toLowerCase()}.pdf`;
   const filePath = path.join(targetDir, filename);
   const relativeUrl = `/uploads/exit_documents/${tenantDb}/${filename}`;
-  
+
+  // ── UK-format date helpers ────────────────────────────────────────────────
+  const fmtUK = (d) =>
+    d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' }) : '—';
+  const today = fmtUK(new Date());
+  const lwd   = fmtUK(record.last_working_day);
+  const joined = fmtUK(record.join_date);
+  const refNo = `REF-${exitRecordId}-${Date.now().toString().slice(-6)}`;
+
+  // ── PDF layout constants ──────────────────────────────────────────────────
+  const TEAL   = '#0F766E';
+  const DARK   = '#1e293b';
+  const GREY   = '#64748b';
+  const LINE   = '#e2e8f0';
+  const LEFT   = 50;
+  const RIGHT  = 545;
+  const WIDTH  = RIGHT - LEFT;
+
   const doc = new PDFDocument({ margin: 50, size: 'A4' });
   const writeStream = fs.createWriteStream(filePath);
   doc.pipe(writeStream);
-  
-  doc.fillColor('#0F766E').fontSize(20).text(docType, { align: 'center' });
-  doc.moveDown(2);
-  
-  doc.fillColor('#1e293b').fontSize(12);
-  doc.text(`Date: ${new Date().toLocaleDateString('en-GB')}`);
-  doc.moveDown();
-  doc.text(`To Whom It May Concern,`);
-  doc.moveDown();
-  
-  if (docType === 'Relieving Letter') {
-    doc.text(`This is to certify that ${empNameStr} was employed with us as ${record.job_title || 'an employee'} in the ${record.department || 'company'} department.`);
-    doc.moveDown();
-    doc.text(`They have been relieved of their duties effective ${new Date(record.last_working_day).toLocaleDateString('en-GB')}.`);
-  } else if (docType === 'Experience Letter') {
-    doc.text(`This is to certify that ${empNameStr} worked with our organization from ${new Date(record.join_date).toLocaleDateString('en-GB')} to ${new Date(record.last_working_day).toLocaleDateString('en-GB')}.`);
-    doc.moveDown();
-    doc.text(`During their tenure, they held the position of ${record.job_title || 'an employee'}.`);
-  } else {
-    doc.text(`This is a ${docType} for ${empNameStr}.`);
+
+  // ── HEADER BAND ──────────────────────────────────────────────────────────
+  doc.rect(LEFT, 40, WIDTH, 60).fill(TEAL);
+  doc
+    .fillColor('#ffffff')
+    .fontSize(18)
+    .font('Helvetica-Bold')
+    .text('HR DEPARTMENT', LEFT + 12, 52, { width: WIDTH - 24 });
+  doc
+    .fontSize(10)
+    .font('Helvetica')
+    .text(docType.toUpperCase(), LEFT + 12, 74, { width: WIDTH - 24 });
+
+  // ── REFERENCE & DATE block (right-aligned inside header) ────────────────
+  doc
+    .fillColor('#ffffff')
+    .fontSize(8)
+    .text(`Ref: ${refNo}`, LEFT, 54, { width: WIDTH - 14, align: 'right' })
+    .text(`Date: ${today}`, LEFT, 66, { width: WIDTH - 14, align: 'right' });
+
+  doc.moveDown(5);
+
+  // ── ADDRESSEE block ──────────────────────────────────────────────────────
+  doc
+    .fillColor(DARK)
+    .font('Helvetica-Bold')
+    .fontSize(11)
+    .text(empNameStr, LEFT, 120);
+  if (record.department) {
+    doc.font('Helvetica').fontSize(10).fillColor(GREY).text(record.department, LEFT);
   }
-  
-  doc.moveDown(2);
-  doc.text(`We wish them all the best in their future endeavors.`);
-  
-  doc.moveDown(4);
-  doc.text('For the Company,');
-  doc.moveDown();
-  doc.text('HR Department');
-  
+  if (record.job_title) {
+    doc.text(record.job_title, LEFT);
+  }
+
+  // ── THIN RULE ─────────────────────────────────────────────────────────────
+  const ruleY = doc.y + 14;
+  doc.moveTo(LEFT, ruleY).lineTo(RIGHT, ruleY).strokeColor(LINE).lineWidth(1).stroke();
+  doc.y = ruleY + 14;
+
+  // ── SALUTATION ───────────────────────────────────────────────────────────
+  doc
+    .fillColor(DARK)
+    .font('Helvetica')
+    .fontSize(11)
+    .text(`Dear ${empNameStr},`, LEFT, doc.y);
+
+  doc.moveDown(0.8);
+
+  // ── SUBJECT LINE ─────────────────────────────────────────────────────────
+  doc
+    .font('Helvetica-Bold')
+    .fontSize(11)
+    .fillColor(TEAL)
+    .text(`Re: ${docType}`, LEFT);
+
+  doc.moveDown(0.8);
+  doc.font('Helvetica').fillColor(DARK).fontSize(11);
+
+  // ── BODY — per document type ─────────────────────────────────────────────
+  if (docType === 'Relieving Letter') {
+    doc.text(
+      `We write to confirm that you were employed by this organisation in the capacity of ` +
+      `${record.job_title || 'Employee'}${ record.department ? ' within the ' + record.department + ' Department' : ''}. ` +
+      `Your last day of service with the company was ${lwd}, on which date you were formally relieved of all duties and responsibilities.`,
+      LEFT, doc.y, { width: WIDTH, align: 'justify' },
+    );
+    doc.moveDown(0.8);
+    doc.text(
+      `All company property, access credentials, and confidential information must be returned or relinquished in accordance with your contractual obligations and the Company's exit policy.`,
+      LEFT, doc.y, { width: WIDTH, align: 'justify' },
+    );
+    doc.moveDown(0.8);
+    doc.text(
+      `This letter serves as confirmation that you have been duly relieved from your position and that there are no outstanding obligations on the part of the Company with respect to your employment, subject to any post-termination clauses contained within your contract of employment.`,
+      LEFT, doc.y, { width: WIDTH, align: 'justify' },
+    );
+  } else if (docType === 'Experience Letter') {
+    doc.text(
+      `This letter is to certify that ${empNameStr} was employed with our organisation from ${joined} to ${lwd}, ` +
+      `serving as ${record.job_title || 'an employee'}${ record.department ? ' in the ' + record.department + ' Department' : ''}.`,
+      LEFT, doc.y, { width: WIDTH, align: 'justify' },
+    );
+    doc.moveDown(0.8);
+    doc.text(
+      `During the period of their employment, ${empNameStr} demonstrated professionalism and commitment to their responsibilities. ` +
+      `We confirm that their conduct and performance were satisfactory throughout their tenure.`,
+      LEFT, doc.y, { width: WIDTH, align: 'justify' },
+    );
+    doc.moveDown(0.8);
+    doc.text(
+      `This letter is issued at the request of the individual named herein for whatever lawful purpose it may serve.`,
+      LEFT, doc.y, { width: WIDTH, align: 'justify' },
+    );
+  } else if (docType === 'Termination Letter') {
+    doc.text(
+      `We write to formally inform you that your employment with this organisation has been terminated, ` +
+      `effective ${lwd}. This decision has been made in accordance with the terms of your contract of employment ` +
+      `and the Company's disciplinary and termination procedures.`,
+      LEFT, doc.y, { width: WIDTH, align: 'justify' },
+    );
+    doc.moveDown(0.8);
+    if (record.exit_reason) {
+      doc.text(`Reason for Termination:`, LEFT, doc.y, { continued: false });
+      doc.font('Helvetica-Oblique').text(record.exit_reason, LEFT, doc.y, { width: WIDTH, align: 'justify' });
+      doc.font('Helvetica');
+      doc.moveDown(0.8);
+    }
+    doc.text(
+      `You are reminded of your obligations regarding the return of all company property, confidentiality of information, ` +
+      `and any post-termination restrictions set out in your contract of employment.`,
+      LEFT, doc.y, { width: WIDTH, align: 'justify' },
+    );
+    doc.moveDown(0.8);
+    doc.text(
+      `Your final salary payment, including any accrued holiday entitlement, will be processed in accordance with the Company's standard payroll procedures and applicable UK employment legislation.`,
+      LEFT, doc.y, { width: WIDTH, align: 'justify' },
+    );
+  } else {
+    doc.text(`This document relates to ${docType} for ${empNameStr}.`, LEFT, doc.y, { width: WIDTH });
+  }
+
+  doc.moveDown(0.8);
+  doc.text(
+    `Should you have any queries regarding this letter or your employment record, please do not hesitate to contact the HR Department.`,
+    LEFT, doc.y, { width: WIDTH, align: 'justify' },
+  );
+
+  // ── CLOSING ──────────────────────────────────────────────────────────────
+  doc.moveDown(1.5);
+  doc.text('Yours sincerely,', LEFT);
+  doc.moveDown(3);
+
+  // Signature line
+  doc.moveTo(LEFT, doc.y).lineTo(LEFT + 180, doc.y).strokeColor(DARK).lineWidth(0.5).stroke();
+  doc.moveDown(0.3);
+  doc.font('Helvetica-Bold').text('HR Manager', LEFT);
+  doc.font('Helvetica').fillColor(GREY).text('Human Resources Department', LEFT);
+
+  // ── FOOTER BAND ──────────────────────────────────────────────────────────
+  const footerY = doc.page.height - 60;
+  doc.rect(LEFT, footerY, WIDTH, 36).fill('#f8fafc');
+  doc
+    .fillColor(GREY)
+    .fontSize(8)
+    .font('Helvetica')
+    .text(
+      `This is a computer-generated document and does not require a physical signature. | Ref: ${refNo} | Issued: ${today}`,
+      LEFT + 8,
+      footerY + 12,
+      { width: WIDTH - 16, align: 'center' },
+    );
+
   doc.end();
-  
+
   await new Promise((resolve, reject) => {
     writeStream.on('finish', resolve);
     writeStream.on('error', reject);
   });
-  
-  const docTitle = `${docType} - ${empNameStr}`;
+
+  // ── Upsert DB record ─────────────────────────────────────────────────────
+  const docTitle = `${docType} – ${empNameStr}`;
   const { rows: existingDoc } = await pool.query(
     `SELECT id FROM exit_documents WHERE exit_record_id = $1 AND document_type = $2`,
-    [exitRecordId, docType]
+    [exitRecordId, docType],
   );
-  
+
   let insertedRow;
   if (existingDoc.length) {
     const res = await pool.query(
       `UPDATE exit_documents
-       SET file_url = $1, file_name = $2, generated_at = NOW(), generated_by = $3
+         SET file_url = $1, file_name = $2, generated_at = NOW(), generated_by = $3
        WHERE id = $4 RETURNING *`,
-      [relativeUrl, filename, userId || null, existingDoc[0].id]
+      [relativeUrl, filename, userId || null, existingDoc[0].id],
     );
     insertedRow = res.rows[0];
   } else {
     const res = await pool.query(
-      `INSERT INTO exit_documents (exit_record_id, document_type, document_title, file_url, file_name, generated_at, generated_by)
+      `INSERT INTO exit_documents
+         (exit_record_id, document_type, document_title, file_url, file_name, generated_at, generated_by)
        VALUES ($1, $2, $3, $4, $5, NOW(), $6) RETURNING *`,
-      [exitRecordId, docType, docTitle, relativeUrl, filename, userId || null]
+      [exitRecordId, docType, docTitle, relativeUrl, filename, userId || null],
     );
     insertedRow = res.rows[0];
   }
-  
+
   return { relativeUrl, filePath, row: insertedRow };
 }
 

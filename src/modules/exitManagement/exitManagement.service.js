@@ -7,7 +7,7 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
 const env = require('../../config/env');
-const { getIo } = require('../socket');
+const { getIo } = require('../../socket');
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */

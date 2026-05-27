@@ -585,7 +585,7 @@ async function updateExitStatus(tenant, id, newStatus, userId) {
   const pool = await getTenantPool(tenant.dbName);
 
   const { rows } = await pool.query(
-    `SELECT er.*, e.id AS emp_id, e.full_name, e.first_name, e.last_name
+    `SELECT er.*, e.id AS emp_id, e.full_name, e.first_name, e.last_name, e.work_email, e.personal_email
      FROM exit_records er
      LEFT JOIN employees e ON e.id = er.employee_id
      WHERE er.id = $1`,
@@ -623,17 +623,15 @@ async function updateExitStatus(tenant, id, newStatus, userId) {
 
     const employeeName = empName(record);
     const autoDocTypes = ['Relieving Letter', 'Experience Letter'];
+    const generatedDocs = [];
     for (const docType of autoDocTypes) {
       const { rows: existingDoc } = await pool.query(
         `SELECT id FROM exit_documents WHERE exit_record_id = $1 AND document_type = $2`,
         [id, docType],
       );
       if (!existingDoc.length) {
-        await pool.query(
-          `INSERT INTO exit_documents (exit_record_id, document_type, document_title, generated_at, generated_by)
-           VALUES ($1, $2, $3, NOW(), $4)`,
-          [id, docType, `${docType} - ${employeeName}`, userId || null],
-        );
+        const docResult = await generateLetterPdf(tenant, id, docType, userId);
+        if (docResult) generatedDocs.push(docResult);
       }
     }
 
@@ -641,6 +639,25 @@ async function updateExitStatus(tenant, id, newStatus, userId) {
       `UPDATE exit_records SET experience_letter_issued = true, updated_at = NOW() WHERE id = $1`,
       [id],
     );
+
+    // Email documents to user
+    const employeeEmail = record.work_email || record.personal_email;
+    if (employeeEmail && generatedDocs.length > 0) {
+      try {
+        const { sendMail } = require('../../utils/mail');
+        await sendMail({
+          to: employeeEmail,
+          subject: 'Your Exit Documents',
+          html: `<p>Dear ${employeeName},</p><p>Your offboarding process is complete. Please find your exit documents attached.</p><br/><p>Best Regards,</p><p>HR Department</p>`,
+          attachments: generatedDocs.map(doc => ({
+            filename: require('path').basename(doc.filePath),
+            path: doc.filePath
+          }))
+        });
+      } catch (err) {
+        console.error('Failed to email exit documents:', err);
+      }
+    }
   }
 
   await logAudit(pool, id, userId, 'status_changed', { status: oldStatus }, { status: newStatus });
@@ -974,6 +991,98 @@ async function listExitDocuments(tenant, exitRecordId) {
   return rows;
 }
 
+async function generateLetterPdf(tenant, exitRecordId, docType, userId) {
+  const pool = await getTenantPool(tenant.dbName);
+  
+  const { rows } = await pool.query(`
+    SELECT er.*, e.full_name, e.first_name, e.last_name, e.emp_id, e.department, e.job_title, e.join_date
+    FROM exit_records er
+    INNER JOIN employees e ON e.id = er.employee_id
+    WHERE er.id = $1
+  `, [exitRecordId]);
+  
+  const record = rows[0];
+  if (!record) return null;
+  
+  const empNameStr = record.full_name || [record.first_name, record.last_name].filter(Boolean).join(' ') || 'Employee';
+  const tenantDb = tenant.dbName || 'default';
+  
+  const targetDir = path.resolve(env.UPLOAD.dir, 'exit_documents', tenantDb);
+  if (!fs.existsSync(targetDir)) {
+    fs.mkdirSync(targetDir, { recursive: true });
+  }
+  
+  const filename = `${exitRecordId}_${docType.replace(/\s+/g, '_').toLowerCase()}.pdf`;
+  const filePath = path.join(targetDir, filename);
+  const relativeUrl = `/uploads/exit_documents/${tenantDb}/${filename}`;
+  
+  const doc = new PDFDocument({ margin: 50, size: 'A4' });
+  const writeStream = fs.createWriteStream(filePath);
+  doc.pipe(writeStream);
+  
+  doc.fillColor('#0F766E').fontSize(20).text(docType, { align: 'center' });
+  doc.moveDown(2);
+  
+  doc.fillColor('#1e293b').fontSize(12);
+  doc.text(`Date: ${new Date().toLocaleDateString('en-GB')}`);
+  doc.moveDown();
+  doc.text(`To Whom It May Concern,`);
+  doc.moveDown();
+  
+  if (docType === 'Relieving Letter') {
+    doc.text(`This is to certify that ${empNameStr} was employed with us as ${record.job_title || 'an employee'} in the ${record.department || 'company'} department.`);
+    doc.moveDown();
+    doc.text(`They have been relieved of their duties effective ${new Date(record.last_working_day).toLocaleDateString('en-GB')}.`);
+  } else if (docType === 'Experience Letter') {
+    doc.text(`This is to certify that ${empNameStr} worked with our organization from ${new Date(record.join_date).toLocaleDateString('en-GB')} to ${new Date(record.last_working_day).toLocaleDateString('en-GB')}.`);
+    doc.moveDown();
+    doc.text(`During their tenure, they held the position of ${record.job_title || 'an employee'}.`);
+  } else {
+    doc.text(`This is a ${docType} for ${empNameStr}.`);
+  }
+  
+  doc.moveDown(2);
+  doc.text(`We wish them all the best in their future endeavors.`);
+  
+  doc.moveDown(4);
+  doc.text('For the Company,');
+  doc.moveDown();
+  doc.text('HR Department');
+  
+  doc.end();
+  
+  await new Promise((resolve, reject) => {
+    writeStream.on('finish', resolve);
+    writeStream.on('error', reject);
+  });
+  
+  const docTitle = `${docType} - ${empNameStr}`;
+  const { rows: existingDoc } = await pool.query(
+    `SELECT id FROM exit_documents WHERE exit_record_id = $1 AND document_type = $2`,
+    [exitRecordId, docType]
+  );
+  
+  let insertedRow;
+  if (existingDoc.length) {
+    const res = await pool.query(
+      `UPDATE exit_documents
+       SET file_url = $1, file_name = $2, generated_at = NOW(), generated_by = $3
+       WHERE id = $4 RETURNING *`,
+      [relativeUrl, filename, userId || null, existingDoc[0].id]
+    );
+    insertedRow = res.rows[0];
+  } else {
+    const res = await pool.query(
+      `INSERT INTO exit_documents (exit_record_id, document_type, document_title, file_url, file_name, generated_at, generated_by)
+       VALUES ($1, $2, $3, $4, $5, NOW(), $6) RETURNING *`,
+      [exitRecordId, docType, docTitle, relativeUrl, filename, userId || null]
+    );
+    insertedRow = res.rows[0];
+  }
+  
+  return { relativeUrl, filePath, row: insertedRow };
+}
+
 async function generateExitDocument(tenant, exitRecordId, data, userId) {
   const pool = await getTenantPool(tenant.dbName);
 
@@ -988,14 +1097,10 @@ async function generateExitDocument(tenant, exitRecordId, data, userId) {
 
   const record = erRows[0];
   const employeeName = empName(record);
-  const title = data.document_title || `${data.document_type} - ${employeeName}`;
 
-  const { rows } = await pool.query(
-    `INSERT INTO exit_documents (exit_record_id, document_type, document_title, generated_at, generated_by)
-     VALUES ($1, $2, $3, NOW(), $4)
-     RETURNING *`,
-    [exitRecordId, data.document_type, title, userId || null],
-  );
+  // Use our new PDF generator
+  const result = await generateLetterPdf(tenant, exitRecordId, data.document_type, userId);
+  const rows = result ? [result.row] : [];
 
   const docTypeLower = (data.document_type || '').toLowerCase();
   if (docTypeLower.includes('experience')) {

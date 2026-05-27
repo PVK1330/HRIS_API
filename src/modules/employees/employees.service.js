@@ -404,10 +404,18 @@ async function getFilterOptions(user) {
   return repo.getFilterOptions(pool);
 }
 
-async function getDesignationsForDepartment(user, departmentName) {
+async function getDesignationsForDepartment(user, opts = {}) {
   const pool = resolvePool(user);
   await ensureMigrated(user.db_name);
-  const designations = await repo.getDesignationsForDepartment(pool, departmentName);
+  const normalized =
+    typeof opts === "string"
+      ? { departmentName: opts }
+      : {
+          departmentName:
+            opts.departmentName ?? opts.department ?? opts.name ?? "",
+          departmentId: opts.departmentId ?? opts.department_id ?? null,
+        };
+  const designations = await repo.getDesignationsForDepartment(pool, normalized);
   return { designations };
 }
 

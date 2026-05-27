@@ -2,7 +2,7 @@
 
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
-const { pushNotification } = require('../notifications/notifications.service');
+const { pushNotification, sendSystemNotification } = require('../notifications/notifications.service');
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
@@ -361,11 +361,13 @@ async function createResignation(tenant, data, userId) {
   try {
     const employeeNameStr = empName(emp);
     const lwdStr = data.last_working_day ? new Date(data.last_working_day).toLocaleDateString('en-GB') : '—';
-    await pushNotification(tenant, {
+    await sendSystemNotification(tenant, {
       forAdmin: true,
       title: 'New Resignation Submitted',
       message: `Resignation submitted by ${employeeNameStr} (LWD: ${lwdStr}).`,
+      emailMessage: `Resignation has been submitted by employee ${employeeNameStr}. Last working day is set to ${lwdStr}.`,
       type: 'exit_management',
+      emailSubject: 'HRIS - New Resignation Submitted',
     });
   } catch (err) {
     console.error('Failed to push resignation submission notification:', err);
@@ -433,12 +435,14 @@ async function createTermination(tenant, data, userId) {
 
   try {
     const lwdStr = data.last_working_day ? new Date(data.last_working_day).toLocaleDateString('en-GB') : '—';
-    await pushNotification(tenant, {
+    await sendSystemNotification(tenant, {
       employeeId: data.employee_id,
       forAdmin: false,
       title: 'Termination Process Initiated',
       message: `An offboarding process has been initiated for you. Last working day: ${lwdStr}.`,
+      emailMessage: `An offboarding process has been initiated for you. Your last working day is scheduled for ${lwdStr}.`,
       type: 'exit_management',
+      emailSubject: 'HRIS - Offboarding Process Initiated',
     });
   } catch (err) {
     console.error('Failed to push termination notification:', err);
@@ -496,7 +500,7 @@ async function approveResignation(tenant, id, userId) {
   const pool = await getTenantPool(tenant.dbName);
 
   const { rows } = await pool.query(
-    `SELECT er.*, e.id AS emp_id FROM exit_records er
+    `SELECT er.*, e.id AS emp_id, e.work_email, e.full_name, e.first_name, e.last_name FROM exit_records er
      LEFT JOIN employees e ON e.id = er.employee_id
      WHERE er.id = $1`,
     [id],
@@ -528,12 +532,14 @@ async function approveResignation(tenant, id, userId) {
 
   try {
     const lwdStr = record.last_working_day ? new Date(record.last_working_day).toLocaleDateString('en-GB') : '—';
-    await pushNotification(tenant, {
+    await sendSystemNotification(tenant, {
       employeeId: record.emp_id,
       forAdmin: false,
       title: 'Resignation Approved',
       message: `Your resignation has been approved. Your last working day is: ${lwdStr}.`,
+      emailMessage: `Your resignation request has been approved. Your last working day is scheduled for ${lwdStr}.`,
       type: 'exit_management',
+      emailSubject: 'HRIS - Resignation Approved',
     });
   } catch (err) {
     console.error('Failed to push resignation approval notification:', err);
@@ -546,7 +552,10 @@ async function rejectResignation(tenant, id, rejectionReason, userId) {
   const pool = await getTenantPool(tenant.dbName);
 
   const { rows } = await pool.query(
-    `SELECT * FROM exit_records WHERE id = $1`, [id],
+    `SELECT er.*, e.work_email, e.full_name, e.first_name, e.last_name FROM exit_records er
+     LEFT JOIN employees e ON e.id = er.employee_id
+     WHERE er.id = $1`,
+    [id],
   );
   const record = rows[0];
   if (!record) throw ApiError.notFound('Exit record not found');
@@ -567,12 +576,14 @@ async function rejectResignation(tenant, id, rejectionReason, userId) {
   await logAudit(pool, id, userId, 'resignation_rejected', { status: 'Pending Approval' }, { status: 'Rejected', rejection_reason: rejectionReason });
 
   try {
-    await pushNotification(tenant, {
+    await sendSystemNotification(tenant, {
       employeeId: record.employee_id,
       forAdmin: false,
       title: 'Resignation Rejected',
       message: `Your resignation request has been rejected. Reason: ${rejectionReason}`,
+      emailMessage: `Your resignation request has been rejected. Reason for rejection: ${rejectionReason}`,
       type: 'exit_management',
+      emailSubject: 'HRIS - Resignation Rejected',
     });
   } catch (err) {
     console.error('Failed to push resignation rejection notification:', err);
@@ -677,12 +688,16 @@ async function updateExitStatus(tenant, id, newStatus, userId) {
       'settlement': 'Your final settlement sheet is now being prepared by the HR/Finance team.',
       'Completed': 'Your offboarding is complete. Your Relieving and Experience letters have been successfully generated.',
     };
-    await pushNotification(tenant, {
+    const title = statusTitles[newStatus] || 'Offboarding Progress Update';
+    const message = statusMsgs[newStatus] || `Your offboarding status has transitioned to "${newStatus}".`;
+
+    await sendSystemNotification(tenant, {
       employeeId: record.emp_id,
       forAdmin: false,
-      title: statusTitles[newStatus] || 'Offboarding Progress Update',
-      message: statusMsgs[newStatus] || `Your offboarding status has transitioned to "${newStatus}".`,
+      title,
+      message,
       type: 'exit_management',
+      emailSubject: `HRIS - ${title}`,
     });
   } catch (err) {
     console.error('Failed to push exit status notification:', err);
@@ -751,12 +766,14 @@ async function addClearanceTask(tenant, exitRecordId, data) {
         [exitRecordId]
       );
       const targetEmpName = exRec[0] ? empName(exRec[0]) : 'Employee';
-      await pushNotification(tenant, {
+      await sendSystemNotification(tenant, {
         employeeId: taskRow.assigned_to,
         forAdmin: false,
         title: 'Offboarding Clearance Task Assigned',
         message: `You have been assigned a clearance task: "${taskRow.task_name}" for ${targetEmpName}.`,
+        emailMessage: `You have been assigned a clearance task: "${taskRow.task_name}" for employee ${targetEmpName}.`,
         type: 'exit_management',
+        emailSubject: 'HRIS - New Clearance Task Assigned',
       });
     } catch (err) {
       console.error('Failed to send task creation assignment notification:', err);
@@ -821,12 +838,14 @@ async function updateClearanceTask(tenant, exitRecordId, taskId, data, userId) {
         [exitRecordId]
       );
       const targetEmpName = exRec[0] ? empName(exRec[0]) : 'Employee';
-      await pushNotification(tenant, {
+      await sendSystemNotification(tenant, {
         employeeId: data.assigned_to,
         forAdmin: false,
         title: 'Offboarding Clearance Task Assigned',
         message: `You have been assigned a clearance task: "${updatedTask.task_name}" for ${targetEmpName}.`,
+        emailMessage: `You have been assigned a clearance task: "${updatedTask.task_name}" for employee ${targetEmpName}.`,
         type: 'exit_management',
+        emailSubject: 'HRIS - New Clearance Task Assigned',
       });
     } catch (err) {
       console.error('Failed to send task assignment notification:', err);
@@ -837,7 +856,7 @@ async function updateClearanceTask(tenant, exitRecordId, taskId, data, userId) {
   if (data.is_completed && !existing[0].is_completed) {
     try {
       const { rows: exRec } = await pool.query(
-        `SELECT er.*, e.id AS emp_id, e.first_name, e.last_name, e.full_name FROM exit_records er LEFT JOIN employees e ON e.id = er.employee_id WHERE er.id = $1`,
+        `SELECT er.*, e.id AS emp_id, e.work_email, e.first_name, e.last_name, e.full_name FROM exit_records er LEFT JOIN employees e ON e.id = er.employee_id WHERE er.id = $1`,
         [exitRecordId]
       );
       if (exRec[0]) {
@@ -845,20 +864,22 @@ async function updateClearanceTask(tenant, exitRecordId, taskId, data, userId) {
         const completedByName = await getUserName(pool, userId);
         
         // Notify HR Admins
-        await pushNotification(tenant, {
+        await sendSystemNotification(tenant, {
           forAdmin: true,
           title: 'Clearance Task Completed',
           message: `Task "${updatedTask.task_name}" for ${targetEmpName} has been completed by ${completedByName}.`,
           type: 'exit_management',
+          sendEmail: false,
         });
 
         // Notify exiting employee
-        await pushNotification(tenant, {
+        await sendSystemNotification(tenant, {
           employeeId: exRec[0].emp_id,
           forAdmin: false,
           title: 'Clearance Task Completed',
           message: `The clearance task "${updatedTask.task_name}" in department "${updatedTask.department}" has been marked as completed.`,
           type: 'exit_management',
+          emailSubject: 'HRIS - Clearance Task Completed',
         });
       }
     } catch (err) {
@@ -1476,11 +1497,12 @@ async function requestResignationWithdrawal(tenant, id, data, userId) {
 
   // Notify HR/Admin in-app
   try {
-    await pushNotification(tenant, {
+    await sendSystemNotification(tenant, {
       forAdmin: true,
       title: 'Resignation Withdrawal Request',
       message: `${empNameStr} has submitted a request to withdraw their resignation.`,
-      type: 'exit_management'
+      type: 'exit_management',
+      sendEmail: false
     });
   } catch (err) {
     console.error('Failed to push withdrawal notification:', err);
@@ -1568,12 +1590,13 @@ async function approveResignationWithdrawal(tenant, id, userId) {
 
     // Notify employee in-app
     try {
-      await pushNotification(tenant, {
+      await sendSystemNotification(tenant, {
         employeeId: record.emp_id,
         forAdmin: false,
         title: 'Resignation Withdrawal Approved',
         message: 'Your resignation withdrawal request has been approved. Your employment status is now active.',
-        type: 'exit_management'
+        type: 'exit_management',
+        sendEmail: false
       });
     } catch (err) {
       console.error('Failed to push withdrawal approval notification:', err);
@@ -1640,12 +1663,13 @@ async function rejectResignationWithdrawal(tenant, id, rejectionReason, userId) 
 
   // Notify employee in-app
   try {
-    await pushNotification(tenant, {
+    await sendSystemNotification(tenant, {
       employeeId: record.emp_id,
       forAdmin: false,
       title: 'Resignation Withdrawal Rejected',
       message: `Your resignation withdrawal request has been rejected. Reason: ${rejectionReason}`,
-      type: 'exit_management'
+      type: 'exit_management',
+      sendEmail: false
     });
   } catch (err) {
     console.error('Failed to push withdrawal rejection notification:', err);

@@ -13,18 +13,18 @@ async function ensureMigrated(dbName) {
   return p;
 }
 
-async function pushNotification(tenant, { employeeId, forAdmin, title, message, type }) {
+async function pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId }) {
   if (!tenant?.dbName) return null;
   await ensureMigrated(tenant.dbName);
   const pool = await getTenantPool(tenant.dbName);
-  return repo.create(pool, { employeeId, forAdmin, title, message, type });
+  return repo.create(pool, { employeeId, forAdmin, title, message, type, ticketId });
 }
 
 async function sendSystemNotification(tenant, { employeeId, forAdmin, title, message, emailMessage, type, sendEmail = true, emailSubject = null }) {
   // 1. Instantly deliver central in-app push notification
   let notificationRecord = null;
-  try {
-    notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, title, message, type });
+    try {
+      notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId: null });
   } catch (err) {
     console.error('Failed to log push notification centrally:', err);
   }

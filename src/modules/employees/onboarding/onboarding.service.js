@@ -369,7 +369,9 @@ async function sendOfferLetter(
     offerExpiryDate: offerExpiryDate || null,
     employmentType: emp.employment_type,
     managerName: emp.manager_name,
-  });
+      pool,
+      tenant: { company_name: companyName, dbName: user.db_name }
+    });
 
   const docRow = await docRepo.insertDocument(pool, {
     employee_id: employeeId,

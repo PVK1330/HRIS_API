@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const env = require('../../config/env');
 const { getIo } = require('../../socket');
+const { generatePdfFromHtml, replacePlaceholders } = require('../../utils/pdfGenerator');
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -320,6 +321,10 @@ async function getExitRecord(tenant, id) {
 async function createResignation(tenant, data, userId) {
   const pool = await getTenantPool(tenant.dbName);
   const emp = await assertEmployeeExists(pool, data.employee_id);
+
+  if (['Terminated', 'Resigned'].includes(emp.employment_status)) {
+    throw ApiError.badRequest(`Cannot create resignation for employee with status: ${emp.employment_status}`);
+  }
 
   const { rows: existing } = await pool.query(
     `SELECT id FROM exit_records
@@ -1069,188 +1074,63 @@ async function generateLetterPdf(tenant, exitRecordId, docType, userId) {
   const filePath = path.join(targetDir, filename);
   const relativeUrl = `/uploads/exit_documents/${tenantDb}/${filename}`;
 
-  // ── UK-format date helpers ────────────────────────────────────────────────
   const fmtUK = (d) =>
-    d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' }) : '—';
-  const today = fmtUK(new Date());
-  const lwd   = fmtUK(record.last_working_day);
-  const joined = fmtUK(record.join_date);
-  const refNo = `REF-${exitRecordId}-${Date.now().toString().slice(-6)}`;
+    d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' }) : 'N/A';
+  
+  const placeholders = {
+    employee_name: empNameStr,
+    first_name: record.first_name || '',
+    last_name: record.last_name || '',
+    emp_id: record.emp_id || '',
+    department: record.department || '',
+    job_title: record.job_title || 'an employee',
+    join_date: fmtUK(record.join_date),
+    last_working_day: fmtUK(record.last_working_day),
+    exit_reason: record.exit_reason || '',
+    today_date: fmtUK(new Date()),
+    document_type: docType
+  };
 
-  // ── PDF layout constants ──────────────────────────────────────────────────
-  const TEAL   = '#0F766E';
-  const DARK   = '#1e293b';
-  const GREY   = '#64748b';
-  const LINE   = '#e2e8f0';
-  const LEFT   = 50;
-  const RIGHT  = 545;
-  const WIDTH  = RIGHT - LEFT;
+  const { rows: templates } = await pool.query(`
+    SELECT body FROM letter_templates 
+    WHERE name ILIKE $1 OR category = 'Exit' AND name ILIKE $1
+    LIMIT 1
+  `, [`%${docType}%`]);
 
-  const doc = new PDFDocument({ margin: 50, size: 'A4' });
-  const writeStream = fs.createWriteStream(filePath);
-  doc.pipe(writeStream);
-
-  // ── HEADER BAND ──────────────────────────────────────────────────────────
-  doc.rect(LEFT, 40, WIDTH, 60).fill(TEAL);
-  doc
-    .fillColor('#ffffff')
-    .fontSize(18)
-    .font('Helvetica-Bold')
-    .text('HR DEPARTMENT', LEFT + 12, 52, { width: WIDTH - 24 });
-  doc
-    .fontSize(10)
-    .font('Helvetica')
-    .text(docType.toUpperCase(), LEFT + 12, 74, { width: WIDTH - 24 });
-
-  // ── REFERENCE & DATE block (right-aligned inside header) ────────────────
-  doc
-    .fillColor('#ffffff')
-    .fontSize(8)
-    .text(`Ref: ${refNo}`, LEFT, 54, { width: WIDTH - 14, align: 'right' })
-    .text(`Date: ${today}`, LEFT, 66, { width: WIDTH - 14, align: 'right' });
-
-  doc.moveDown(5);
-
-  // ── ADDRESSEE block ──────────────────────────────────────────────────────
-  doc
-    .fillColor(DARK)
-    .font('Helvetica-Bold')
-    .fontSize(11)
-    .text(empNameStr, LEFT, 120);
-  if (record.department) {
-    doc.font('Helvetica').fontSize(10).fillColor(GREY).text(record.department, LEFT);
-  }
-  if (record.job_title) {
-    doc.text(record.job_title, LEFT);
-  }
-
-  // ── THIN RULE ─────────────────────────────────────────────────────────────
-  const ruleY = doc.y + 14;
-  doc.moveTo(LEFT, ruleY).lineTo(RIGHT, ruleY).strokeColor(LINE).lineWidth(1).stroke();
-  doc.y = ruleY + 14;
-
-  // ── SALUTATION ───────────────────────────────────────────────────────────
-  doc
-    .fillColor(DARK)
-    .font('Helvetica')
-    .fontSize(11)
-    .text(`Dear ${empNameStr},`, LEFT, doc.y);
-
-  doc.moveDown(0.8);
-
-  // ── SUBJECT LINE ─────────────────────────────────────────────────────────
-  doc
-    .font('Helvetica-Bold')
-    .fontSize(11)
-    .fillColor(TEAL)
-    .text(`Re: ${docType}`, LEFT);
-
-  doc.moveDown(0.8);
-  doc.font('Helvetica').fillColor(DARK).fontSize(11);
-
-  // ── BODY — per document type ─────────────────────────────────────────────
-  if (docType === 'Relieving Letter') {
-    doc.text(
-      `We write to confirm that you were employed by this organisation in the capacity of ` +
-      `${record.job_title || 'Employee'}${ record.department ? ' within the ' + record.department + ' Department' : ''}. ` +
-      `Your last day of service with the company was ${lwd}, on which date you were formally relieved of all duties and responsibilities.`,
-      LEFT, doc.y, { width: WIDTH, align: 'justify' },
-    );
-    doc.moveDown(0.8);
-    doc.text(
-      `All company property, access credentials, and confidential information must be returned or relinquished in accordance with your contractual obligations and the Company's exit policy.`,
-      LEFT, doc.y, { width: WIDTH, align: 'justify' },
-    );
-    doc.moveDown(0.8);
-    doc.text(
-      `This letter serves as confirmation that you have been duly relieved from your position and that there are no outstanding obligations on the part of the Company with respect to your employment, subject to any post-termination clauses contained within your contract of employment.`,
-      LEFT, doc.y, { width: WIDTH, align: 'justify' },
-    );
-  } else if (docType === 'Experience Letter') {
-    doc.text(
-      `This letter is to certify that ${empNameStr} was employed with our organisation from ${joined} to ${lwd}, ` +
-      `serving as ${record.job_title || 'an employee'}${ record.department ? ' in the ' + record.department + ' Department' : ''}.`,
-      LEFT, doc.y, { width: WIDTH, align: 'justify' },
-    );
-    doc.moveDown(0.8);
-    doc.text(
-      `During the period of their employment, ${empNameStr} demonstrated professionalism and commitment to their responsibilities. ` +
-      `We confirm that their conduct and performance were satisfactory throughout their tenure.`,
-      LEFT, doc.y, { width: WIDTH, align: 'justify' },
-    );
-    doc.moveDown(0.8);
-    doc.text(
-      `This letter is issued at the request of the individual named herein for whatever lawful purpose it may serve.`,
-      LEFT, doc.y, { width: WIDTH, align: 'justify' },
-    );
-  } else if (docType === 'Termination Letter') {
-    doc.text(
-      `We write to formally inform you that your employment with this organisation has been terminated, ` +
-      `effective ${lwd}. This decision has been made in accordance with the terms of your contract of employment ` +
-      `and the Company's disciplinary and termination procedures.`,
-      LEFT, doc.y, { width: WIDTH, align: 'justify' },
-    );
-    doc.moveDown(0.8);
-    if (record.exit_reason) {
-      doc.text(`Reason for Termination:`, LEFT, doc.y, { continued: false });
-      doc.font('Helvetica-Oblique').text(record.exit_reason, LEFT, doc.y, { width: WIDTH, align: 'justify' });
-      doc.font('Helvetica');
-      doc.moveDown(0.8);
-    }
-    doc.text(
-      `You are reminded of your obligations regarding the return of all company property, confidentiality of information, ` +
-      `and any post-termination restrictions set out in your contract of employment.`,
-      LEFT, doc.y, { width: WIDTH, align: 'justify' },
-    );
-    doc.moveDown(0.8);
-    doc.text(
-      `Your final salary payment, including any accrued holiday entitlement, will be processed in accordance with the Company's standard payroll procedures and applicable UK employment legislation.`,
-      LEFT, doc.y, { width: WIDTH, align: 'justify' },
-    );
+  let htmlBody = '';
+  if (templates.length > 0) {
+    htmlBody = templates[0].body;
   } else {
-    doc.text(`This document relates to ${docType} for ${empNameStr}.`, LEFT, doc.y, { width: WIDTH });
+    if (docType === 'Relieving Letter') {
+      htmlBody = `
+        <p>Dear <strong>{{employee_name}}</strong>,</p>
+        <p>We write to confirm that you were employed by this organisation in the capacity of {{job_title}} within the {{department}} Department.</p>
+        <p>Your last day of service with the company was {{last_working_day}}, on which date you were formally relieved of all duties and responsibilities.</p>
+        <p>This letter serves as confirmation that you have been duly relieved from your position.</p>
+      `;
+    } else if (docType === 'Experience Letter') {
+      htmlBody = `
+        <p><strong>To Whom It May Concern</strong></p>
+        <p>This letter is to certify that <strong>{{employee_name}}</strong> was employed with our organisation from {{join_date}} to {{last_working_day}}, serving as {{job_title}} in the {{department}} Department.</p>
+        <p>During the period of their employment, {{employee_name}} demonstrated professionalism and commitment. We confirm that their conduct and performance were satisfactory throughout their tenure.</p>
+      `;
+    } else if (docType === 'Termination Letter') {
+      htmlBody = `
+        <p>Dear <strong>{{employee_name}}</strong>,</p>
+        <p>We write to formally inform you that your employment with this organisation has been terminated, effective {{last_working_day}}.</p>
+        <p>Reason for Termination: <em>{{exit_reason}}</em></p>
+        <p>You are reminded of your obligations regarding the return of all company property and confidentiality of information.</p>
+      `;
+    } else {
+      htmlBody = `<p>This document relates to {{document_type}} for {{employee_name}}.</p>`;
+    }
   }
 
-  doc.moveDown(0.8);
-  doc.text(
-    `Should you have any queries regarding this letter or your employment record, please do not hesitate to contact the HR Department.`,
-    LEFT, doc.y, { width: WIDTH, align: 'justify' },
-  );
+  htmlBody = replacePlaceholders(htmlBody, placeholders);
+  const pdfBuffer = await generatePdfFromHtml(htmlBody, tenant);
+  fs.writeFileSync(filePath, pdfBuffer);
 
-  // ── CLOSING ──────────────────────────────────────────────────────────────
-  doc.moveDown(1.5);
-  doc.text('Yours sincerely,', LEFT);
-  doc.moveDown(3);
-
-  // Signature line
-  doc.moveTo(LEFT, doc.y).lineTo(LEFT + 180, doc.y).strokeColor(DARK).lineWidth(0.5).stroke();
-  doc.moveDown(0.3);
-  doc.font('Helvetica-Bold').text('HR Manager', LEFT);
-  doc.font('Helvetica').fillColor(GREY).text('Human Resources Department', LEFT);
-
-  // ── FOOTER BAND ──────────────────────────────────────────────────────────
-  const footerY = doc.page.height - 60;
-  doc.rect(LEFT, footerY, WIDTH, 36).fill('#f8fafc');
-  doc
-    .fillColor(GREY)
-    .fontSize(8)
-    .font('Helvetica')
-    .text(
-      `This is a computer-generated document and does not require a physical signature. | Ref: ${refNo} | Issued: ${today}`,
-      LEFT + 8,
-      footerY + 12,
-      { width: WIDTH - 16, align: 'center' },
-    );
-
-  doc.end();
-
-  await new Promise((resolve, reject) => {
-    writeStream.on('finish', resolve);
-    writeStream.on('error', reject);
-  });
-
-  // ── Upsert DB record ─────────────────────────────────────────────────────
-  const docTitle = `${docType} – ${empNameStr}`;
+  const docTitle = `${docType} - ${empNameStr}`;
   const { rows: existingDoc } = await pool.query(
     `SELECT id FROM exit_documents WHERE exit_record_id = $1 AND document_type = $2`,
     [exitRecordId, docType],
@@ -1277,6 +1157,7 @@ async function generateLetterPdf(tenant, exitRecordId, docType, userId) {
 
   return { relativeUrl, filePath, row: insertedRow };
 }
+
 
 async function generateExitDocument(tenant, exitRecordId, data, userId) {
   const pool = await getTenantPool(tenant.dbName);

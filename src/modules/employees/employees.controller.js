@@ -5,6 +5,9 @@ const ApiResponse = require("../../utils/ApiResponse");
 const ApiError = require("../../utils/ApiError");
 const service = require("./employees.service");
 const exportLib = require("./employees.export");
+const PDFDocument = require("pdfkit");
+const fs = require("fs");
+const path = require("path");
 
 function exportFilename(entity, ext) {
   const d = new Date();
@@ -114,6 +117,55 @@ const completeOnboarding = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, result, result.message);
 });
 
+const gdprExport = asyncHandler(async (req, res) => {
+  const result = await service.getEmployee(req.user, req.user.id, req.auth);
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="GDPR_Data_Export_${req.user.id}.pdf"`);
+
+  const doc = new PDFDocument({ margin: 50, size: 'A4' });
+  doc.pipe(res);
+
+  const logoPath = path.join(__dirname, '../../../../../HRIS/public/HRIS_Logo.png');
+  if (fs.existsSync(logoPath)) {
+    doc.image(logoPath, 50, 45, { width: 120 });
+  }
+
+  doc.fillColor('#0F766E').fontSize(18).text('GDPR Personal Data Export', { align: 'right' });
+  doc.moveDown(0.5);
+  doc.fillColor('#374151').fontSize(10).text(`Generated On: ${new Date().toLocaleDateString()}`, { align: 'right' });
+  doc.text(`Compliance: GDPR Article 15 - Right of access`, { align: 'right' });
+  doc.moveDown(3);
+
+  doc.fillColor('#0F766E').fontSize(14).text('Employee Profile', { underline: true });
+  doc.moveDown(0.5);
+  doc.fillColor('#1e293b').fontSize(11);
+
+  const addField = (label, value) => {
+    doc.font('Helvetica-Bold').text(`${label}: `, { continued: true });
+    doc.font('Helvetica').text(value || 'N/A');
+  };
+
+  addField('Full Name', result.full_name || `${result.first_name || ''} ${result.last_name || ''}`.trim());
+  addField('Employee ID', result.emp_id);
+  addField('Personal Email', result.personal_email);
+  addField('Work Email', result.work_email);
+  addField('Phone', result.phone_number);
+  addField('Job Title', result.job_title);
+  addField('Department', result.department);
+  addField('Employment Status', result.employment_status);
+  addField('Join Date', result.join_date ? new Date(result.join_date).toLocaleDateString() : 'N/A');
+
+  doc.moveDown(2);
+  doc.fillColor('#0F766E').fontSize(14).text('Address Information', { underline: true });
+  doc.moveDown(0.5);
+  doc.fillColor('#1e293b').fontSize(11);
+  addField('Present Address', result.present_address);
+  addField('Permanent Address', result.permanent_address);
+
+  doc.end();
+});
+
 module.exports = {
   list,
   dropdownList,
@@ -127,4 +179,5 @@ module.exports = {
   update,
   remove,
   completeOnboarding,
+  gdprExport,
 };

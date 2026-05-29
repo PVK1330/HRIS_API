@@ -10,11 +10,27 @@ const {
 const { P } = require('../../constants/permissions');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
 const ctrl = require('./exitManagement.controller');
+const workflowCtrl = require('./workflowTemplate.controller');
+const instanceCtrl = require('./workflowInstance.controller');
 const v = require('./exitManagement.validator');
 
 const router = Router();
 
 router.use(authenticate, tenantResolver, loadAuthContext);
+
+/* ---- Workflow Templates ---- */
+router.post('/workflows', requirePermission(P.EXIT_MANAGE), workflowCtrl.createWorkflow);
+router.get('/workflows', requirePermission(P.EXIT_MANAGE), workflowCtrl.listWorkflows);
+router.get('/workflows/:id', requirePermission(P.EXIT_MANAGE), workflowCtrl.getWorkflow);
+router.put('/workflows/:id', requirePermission(P.EXIT_MANAGE), workflowCtrl.updateWorkflow);
+router.put('/workflows/:id/publish', requirePermission(P.EXIT_MANAGE), workflowCtrl.publishWorkflow);
+router.post('/workflows/:id/clone', requirePermission(P.EXIT_MANAGE), workflowCtrl.cloneWorkflow);
+router.delete('/workflows/:id', requirePermission(P.EXIT_MANAGE), workflowCtrl.deleteWorkflow);
+
+/* ---- Workflow Runtime Execution ---- */
+router.post('/workflows/:workflowId/start', requirePermission(P.EXIT_MANAGE), instanceCtrl.startWorkflow);
+router.put('/instances/:instanceId/steps/:stepId/approve', requirePermission(P.EXIT_MANAGE), instanceCtrl.approveStep);
+router.put('/instances/:instanceId/steps/:stepId/reject', requirePermission(P.EXIT_MANAGE), instanceCtrl.rejectStep);
 
 /* ---- Exit Records ---- */
 

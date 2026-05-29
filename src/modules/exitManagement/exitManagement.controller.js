@@ -3,6 +3,7 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const ApiResponse = require('../../utils/ApiResponse');
 const service = require('./exitManagement.service');
+const exitSettingsService = require('../exitSettings/exitSettings.service');
 
 const list = asyncHandler(async (req, res) => {
   const result = await service.listExitRecords(req.tenant, req.query);
@@ -170,6 +171,11 @@ const uploadClearanceProof = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, task, 'Clearance proof document uploaded successfully');
 });
 
+const getPipelineStages = asyncHandler(async (req, res) => {
+  const data = await exitSettingsService.getExitPipelineStages(req.tenant);
+  return ApiResponse.ok(res, data, 'Pipeline stages retrieved');
+});
+
 module.exports = {
   list,
   stats,
@@ -197,5 +203,6 @@ module.exports = {
   withdrawResignation,
   approveWithdrawal,
   rejectWithdrawal,
-  uploadClearanceProof
+  uploadClearanceProof,
+  getPipelineStages,
 };

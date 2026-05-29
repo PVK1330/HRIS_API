@@ -171,16 +171,25 @@ async function listExitRecords(tenant, query = {}) {
 
   const { rows } = await pool.query(
     `SELECT er.id, er.employee_id, er.exit_type, er.status,
+            er.pipeline_stage, er.workflow_configured,
             er.last_working_day, er.notice_period_days, er.exit_reason,
             er.resignation_date, er.notice_date,
             er.termination_type_id, tt.name AS termination_type_name,
             er.approved_by, er.approved_at, er.rejection_reason, er.remarks,
             er.created_at, er.updated_at,
-            e.full_name, e.first_name, e.last_name, e.work_email, e.job_title, e.department,
+            e.full_name, e.first_name, e.last_name, e.work_email,
+            e.job_title AS designation, e.department,
+            COALESCE(e.id::text, '') AS employee_code,
+            COALESCE(er.resignation_date, er.created_at::date) AS applied_date,
             (SELECT COUNT(*)::int FROM clearance_tasks ct WHERE ct.exit_record_id = er.id) AS total_tasks,
             (SELECT COUNT(*)::int FROM clearance_tasks ct WHERE ct.exit_record_id = er.id AND ct.is_completed = true) AS completed_tasks,
             (SELECT COUNT(*)::int FROM asset_returns ar WHERE ar.exit_record_id = er.id) AS total_assets,
-            (SELECT COUNT(*)::int FROM asset_returns ar WHERE ar.exit_record_id = er.id AND ar.status IN ('Returned', 'Lost')) AS resolved_assets
+            (SELECT COUNT(*)::int FROM asset_returns ar WHERE ar.exit_record_id = er.id AND ar.status IN ('Returned', 'Lost')) AS resolved_assets,
+            (SELECT d.name FROM exit_department_workflows w
+             JOIN departments d ON d.id = w.department_id
+             WHERE w.exit_record_id = er.id AND w.status = 'Active' LIMIT 1) AS current_approval_stage,
+            (SELECT COUNT(*)::int FROM exit_department_workflows w WHERE w.exit_record_id = er.id) AS workflow_step_count,
+            (SELECT COUNT(*)::int FROM exit_department_workflows w WHERE w.exit_record_id = er.id AND w.status = 'Approved') AS workflow_steps_done
      FROM exit_records er
      LEFT JOIN employees e ON e.id = er.employee_id
      LEFT JOIN termination_types tt ON tt.id = er.termination_type_id
@@ -190,10 +199,16 @@ async function listExitRecords(tenant, query = {}) {
     dataParams,
   );
 
+  const deptWorkflow = require('./exitDepartmentWorkflow.service');
+  const wfMap = await deptWorkflow.getWorkflowSummaryForList(pool, rows.map((r) => r.id));
+
   return {
     records: rows.map((r) => ({
       ...r,
       employee_name: empName(r),
+      assigned_department_heads: [...new Set(wfMap[r.id]?.heads || [])],
+      status_progress: r.pipeline_stage || 'submitted',
+      current_approval_stage: r.current_approval_stage || (r.workflow_configured ? 'Awaiting assignment' : 'Not configured'),
     })),
     pagination: {
       total,
@@ -307,6 +322,9 @@ async function getExitRecord(tenant, id) {
     ),
   ]);
 
+  const deptWorkflow = require('./exitDepartmentWorkflow.service');
+  const workflow = await deptWorkflow.getWorkflowForExit(tenant, id).catch(() => null);
+
   return {
     ...r,
     employee_name: empName(r),
@@ -315,6 +333,7 @@ async function getExitRecord(tenant, id) {
     exit_documents: documents.rows,
     exit_interview: interviews.rows[0] || null,
     final_settlement: settlements.rows[0] || null,
+    department_workflow: workflow,
   };
 }
 
@@ -1779,5 +1798,6 @@ module.exports = {
   generateSettlementSlipPdf,
   requestResignationWithdrawal,
   approveResignationWithdrawal,
-  rejectResignationWithdrawal
+  rejectResignationWithdrawal,
+  seedClearanceTasksForExit: seedClearanceTasks,
 };

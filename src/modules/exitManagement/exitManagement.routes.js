@@ -10,27 +10,25 @@ const {
 const { P } = require('../../constants/permissions');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
 const ctrl = require('./exitManagement.controller');
-const workflowCtrl = require('./workflowTemplate.controller');
-const instanceCtrl = require('./workflowInstance.controller');
+const wfCtrl = require('./exitDepartmentWorkflow.controller');
 const v = require('./exitManagement.validator');
 
 const router = Router();
 
 router.use(authenticate, tenantResolver, loadAuthContext);
 
-/* ---- Workflow Templates ---- */
-router.post('/workflows', requirePermission(P.EXIT_MANAGE), workflowCtrl.createWorkflow);
-router.get('/workflows', requirePermission(P.EXIT_MANAGE), workflowCtrl.listWorkflows);
-router.get('/workflows/:id', requirePermission(P.EXIT_MANAGE), workflowCtrl.getWorkflow);
-router.put('/workflows/:id', requirePermission(P.EXIT_MANAGE), workflowCtrl.updateWorkflow);
-router.put('/workflows/:id/publish', requirePermission(P.EXIT_MANAGE), workflowCtrl.publishWorkflow);
-router.post('/workflows/:id/clone', requirePermission(P.EXIT_MANAGE), workflowCtrl.cloneWorkflow);
-router.delete('/workflows/:id', requirePermission(P.EXIT_MANAGE), workflowCtrl.deleteWorkflow);
+/* ---- Department workflow (must be before /:id) ---- */
+router.get('/departments/with-heads', requirePermission(P.EXIT_MANAGE), wfCtrl.listDepartments);
+router.get('/pipeline-stages', requirePermission(P.EXIT_MANAGE), ctrl.getPipelineStages);
 
-/* ---- Workflow Runtime Execution ---- */
-router.post('/workflows/:workflowId/start', requirePermission(P.EXIT_MANAGE), instanceCtrl.startWorkflow);
-router.put('/instances/:instanceId/steps/:stepId/approve', requirePermission(P.EXIT_MANAGE), instanceCtrl.approveStep);
-router.put('/instances/:instanceId/steps/:stepId/reject', requirePermission(P.EXIT_MANAGE), instanceCtrl.rejectStep);
+router.get('/:id/workflow', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), wfCtrl.getWorkflow);
+router.put('/:id/workflow/assign', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), validateWithJoi(v.assignWorkflowBody, 'body'), wfCtrl.assignWorkflow);
+router.put('/:id/workflow/reorder', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), validateWithJoi(v.reorderWorkflowBody, 'body'), wfCtrl.reorderWorkflow);
+router.put('/:id/workflow/restart', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), wfCtrl.restartWorkflow);
+router.put('/:id/workflow/steps/:stepId/approve', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.stepIdParam, 'params'), validateWithJoi(v.approveStepBody, 'body'), wfCtrl.approveStep);
+router.put('/:id/workflow/steps/:stepId/reject', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.stepIdParam, 'params'), validateWithJoi(v.rejectStepBody, 'body'), wfCtrl.rejectStep);
+router.put('/:id/workflow/steps/:stepId/skip', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.stepIdParam, 'params'), wfCtrl.skipStep);
+router.put('/:id/workflow/steps/:stepId/reassign', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.stepIdParam, 'params'), validateWithJoi(v.reassignHeadBody, 'body'), wfCtrl.reassignHead);
 
 /* ---- Exit Records ---- */
 
@@ -211,7 +209,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+  limits: { fileSize: 10 * 1024 * 1024 }
 });
 
 router.post(

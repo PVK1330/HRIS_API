@@ -166,10 +166,47 @@ const rejectWithdrawalBody = Joi.object({
   rejection_reason: Joi.string().trim().min(5).max(2000).required(),
 });
 
+const stepIdParam = Joi.object({
+  id: Joi.number().integer().positive().required(),
+  stepId: Joi.number().integer().positive().required(),
+});
+
+const assignWorkflowBody = Joi.object({
+  steps: Joi.array()
+    .items(
+      Joi.object({
+        department_id: Joi.number().integer().positive().required(),
+        department_head_id: Joi.number().integer().positive().allow(null).optional(),
+        step_order: Joi.number().integer().min(1).optional(),
+        is_mandatory: Joi.boolean().default(true),
+        remarks: Joi.string().trim().max(2000).allow('', null).optional(),
+      }),
+    )
+    .min(1)
+    .required(),
+});
+
+const reorderWorkflowBody = Joi.object({
+  ordered_step_ids: Joi.array().items(Joi.number().integer().positive()).min(1).required(),
+});
+
+const approveStepBody = Joi.object({
+  comments: Joi.string().trim().max(2000).allow('', null).optional(),
+});
+
+const rejectStepBody = Joi.object({
+  rejection_reason: Joi.string().trim().min(3).max(2000).required(),
+});
+
+const reassignHeadBody = Joi.object({
+  department_head_id: Joi.number().integer().positive().required(),
+});
+
 module.exports = {
   idParam,
   taskIdParam,
   assetIdParam,
+  stepIdParam,
   listingQuery,
   createResignationBody,
   createTerminationBody,
@@ -184,5 +221,10 @@ module.exports = {
   submitInterviewBody,
   processSettlementBody,
   submitWithdrawalBody,
-  rejectWithdrawalBody
+  rejectWithdrawalBody,
+  assignWorkflowBody,
+  reorderWorkflowBody,
+  approveStepBody,
+  rejectStepBody,
+  reassignHeadBody,
 };

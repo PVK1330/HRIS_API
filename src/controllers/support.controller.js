@@ -2,6 +2,8 @@
 
 const ApiError = require('../utils/ApiError');
 const supportService = require('../services/support.service');
+const { pushNotification } = require('../modules/notifications/notifications.service');
+const socket = require('../socket');
 
 function transformTicket(row) {
   return {
@@ -64,6 +66,22 @@ async function createTicket(req, res, next) {
       attachmentUrl,
     });
 
+    // Notify Super Admins about new ticket
+    try {
+      const title = 'New Support Ticket';
+      const message = `${ticket.admin_name} created a new support ticket: ${ticket.subject}`;
+      await pushNotification(req.tenant, { forAdmin: true, title, message, type: 'SUPPORT_TICKET_CREATED', ticketId: ticket.id });
+    } catch (err) {
+      console.error('Failed to push support ticket created notification:', err);
+    }
+
+    // Emit socket event for real-time UI
+    try {
+      socket.emitTicketCreated(ticket);
+    } catch (err) {
+      console.error('Failed to emit ticket created socket event:', err);
+    }
+
     return res.status(201).json({
       success: true,
       message: 'Support ticket created successfully',
@@ -114,6 +132,22 @@ async function updateTicket(req, res, next) {
     if (req.file) payload.attachmentUrl = `/uploads/${req.file.filename}`;
 
     const ticket = await supportService.updateTicket(req.user, req.params.id, payload);
+
+    // Notify the Admin who created the ticket about updates from Super Admin
+    try {
+      const title = 'Support Ticket Updated';
+      const message = `Your ticket ${ticket.subject} status changed to ${ticket.status}`;
+      await pushNotification(req.tenant, { employeeId: ticket.admin_id, forAdmin: false, title, message, type: 'SUPPORT_TICKET_UPDATED', ticketId: ticket.id });
+    } catch (err) {
+      console.error('Failed to push support ticket updated notification:', err);
+    }
+
+    // Emit socket event for real-time UI
+    try {
+      socket.emitTicketUpdate(ticket);
+    } catch (err) {
+      console.error('Failed to emit ticket updated socket event:', err);
+    }
     return res.json({ success: true, data: transformTicket(ticket) });
   } catch (err) {
     return next(err);

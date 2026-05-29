@@ -186,6 +186,7 @@ app.use('/api/v1/admin/documents', adminDocumentsRoutes);
 app.use('/api/v1/admin/payroll', require('./modules/payroll/payroll.routes'));
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
 app.use('/api/support', supportRoutes);
+app.use('/api/admin/support', supportRoutes);
 app.use('/api/superadmin/support', superadminSupportRoutes);
 app.use(
   '/api/v1/public/candidate-onboarding',

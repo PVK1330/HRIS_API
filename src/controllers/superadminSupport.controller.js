@@ -1,4 +1,6 @@
 const superadminSupportService = require('../services/superadminSupport.service');
+const { emitTicketUpdate, emitTicketDeleted } = require('../socket');
+const { pushNotification } = require('../modules/notifications/notifications.service');
 
 /**
  * Superadmin Support Controller
@@ -124,7 +126,7 @@ async function updateStatus(req, res) {
       });
     }
 
-    const validStatuses = ['Open', 'In Progress', 'Resolved', 'Closed'];
+    const validStatuses = ['Open', 'In Progress', 'Waiting for Admin', 'Resolved', 'Closed'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -139,6 +141,16 @@ async function updateStatus(req, res) {
         success: false,
         message: 'Ticket not found',
       });
+    }
+
+    // Notify the Admin who created the ticket about status change
+    try {
+      const tenant = { dbName: updatedTicket.dbName };
+      const title = 'Support Ticket Updated';
+      const message = `Your ticket ${updatedTicket.subject} status changed to ${updatedTicket.status}`;
+      await pushNotification(tenant, { employeeId: updatedTicket.admin_id, forAdmin: false, title, message, type: 'SUPPORT_TICKET_UPDATED', ticketId: updatedTicket.id });
+    } catch (err) {
+      console.error('Failed to push support ticket status-updated notification (superadmin):', err);
     }
 
     res.json({
@@ -200,6 +212,16 @@ async function addReply(req, res) {
     // Fetch updated ticket with new reply
     const updatedTicket = await superadminSupportService.getTicketById(id);
 
+    // Notify the Admin who created the ticket about the superadmin reply
+    try {
+      const tenant = { dbName: updatedTicket.dbName };
+      const title = 'Support Ticket Updated';
+      const message = `A super admin replied to your ticket: ${updatedTicket.subject}`;
+      await pushNotification(tenant, { employeeId: updatedTicket.admin_id, forAdmin: false, title, message, type: 'SUPPORT_TICKET_UPDATED', ticketId: updatedTicket.id });
+    } catch (err) {
+      console.error('Failed to push support ticket reply notification (superadmin):', err);
+    }
+
     res.json({
       success: true,
       message: 'Reply added successfully',
@@ -215,6 +237,106 @@ async function addReply(req, res) {
       message: 'Failed to add reply',
       error: error.message,
     });
+  }
+}
+
+/**
+ * PATCH /api/superadmin/support/tickets/:id
+ * Update ticket details, status, or add an admin reply
+ */
+async function updateTicket(req, res) {
+  try {
+    const { id } = req.params;
+    const { status, assignedTo, superAdminDescription, internalNotes } = req.body;
+    const superadminId = req.user?.id;
+
+    if (!status && !assignedTo && !superAdminDescription) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one of status, assignedTo, or superAdminDescription is required',
+      });
+    }
+
+    const validStatuses = ['Open', 'In Progress', 'Waiting for Admin', 'Resolved', 'Closed'];
+    if (status && !validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
+      });
+    }
+
+    let updatedTicket = null;
+
+    if (status || assignedTo || superAdminDescription) {
+      updatedTicket = await superadminSupportService.updateTicket(id, { status, assignedTo, superAdminDescription });
+    }
+
+    // If super admin provided a description, save it as a reply/message in ticket history
+    if (superAdminDescription) {
+      if (!superadminId) {
+        return res.status(401).json({ success: false, message: 'Unauthorized: Superadmin ID required' });
+      }
+      await superadminSupportService.addReply(id, superadminId, superAdminDescription, internalNotes || null);
+    }
+
+    const refreshedTicket = await superadminSupportService.getTicketById(id);
+    if (!refreshedTicket) {
+      return res.status(404).json({
+        success: false,
+        message: 'Ticket not found',
+      });
+    }
+
+    const transformedTicket = transformTicket(refreshedTicket);
+
+    // Emit real-time update to all connected clients
+    emitTicketUpdate(transformedTicket);
+
+    // Notify the Admin who created the ticket about updates from Super Admin
+    try {
+      const tenant = { dbName: refreshedTicket.dbName };
+      const title = 'Support Ticket Updated';
+      const message = `Your ticket ${refreshedTicket.subject} status changed to ${refreshedTicket.status}`;
+      await pushNotification(tenant, { employeeId: refreshedTicket.admin_id, forAdmin: false, title, message, type: 'SUPPORT_TICKET_UPDATED', ticketId: refreshedTicket.id });
+    } catch (err) {
+      console.error('Failed to push support ticket updated notification (superadmin):', err);
+    }
+
+    res.json({
+      success: true,
+      message: 'Ticket updated successfully',
+      data: transformedTicket,
+    });
+  } catch (error) {
+    console.error('Error updating ticket:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update ticket',
+      error: error.message,
+    });
+  }
+}
+
+/**
+ * DELETE /api/superadmin/support/tickets/:id
+ * Delete a ticket (and its replies) across tenants
+ */
+async function deleteTicket(req, res) {
+  try {
+    const { id } = req.params;
+
+    const deleted = await superadminSupportService.deleteTicket(id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Ticket not found' });
+    }
+
+    // notify clients
+    emitTicketDeleted(id);
+
+    res.json({ success: true, message: 'Ticket deleted successfully', data: { id } });
+  } catch (error) {
+    console.error('Error deleting ticket:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete ticket', error: error.message });
   }
 }
 
@@ -240,6 +362,7 @@ function transformTicket(ticket) {
     closedAt: ticket.closed_at,
     replyCount: ticket.reply_count || 0,
     replies: (ticket.replies || []).map(transformReply),
+    messages: (ticket.replies || []).map(transformReply),
   };
 }
 
@@ -262,5 +385,7 @@ module.exports = {
   getStats,
   getTicketDetails,
   updateStatus,
+  updateTicket,
   addReply,
+  deleteTicket,
 };

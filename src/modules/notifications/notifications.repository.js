@@ -1,11 +1,11 @@
 'use strict';
 
-async function create(pool, { employeeId, forAdmin, title, message, type }) {
+async function create(pool, { employeeId, forAdmin, title, message, type, ticketId }) {
   const { rows } = await pool.query(`
-    INSERT INTO notifications (employee_id, for_admin, title, message, type)
-    VALUES ($1, $2, $3, $4, $5)
+    INSERT INTO notifications (employee_id, for_admin, title, message, type, ticket_id)
+    VALUES ($1, $2, $3, $4, $5, $6)
     RETURNING *
-  `, [employeeId || null, Boolean(forAdmin), title, message, type || 'info']);
+  `, [employeeId || null, Boolean(forAdmin), title, message, type || 'info', ticketId || null]);
   return rows[0];
 }
 
@@ -32,7 +32,9 @@ async function listForUser(pool, user) {
     title: r.title,
     message: r.message,
     type: r.type,
-    read: r.is_read,
+    ticketId: r.ticket_id || null,
+    isRead: Boolean(r.is_read),
+    createdAt: r.created_at,
     time: r.created_at ? new Date(r.created_at).toLocaleDateString() + ' ' + new Date(r.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''
   }));
 }

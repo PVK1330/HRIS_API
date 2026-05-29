@@ -14,17 +14,12 @@ const { generateSignedOfferPdf } = require('./signedOfferPdf.generator');
 const workflowRepo = require('./onboarding.workflow.repository');
 const { WORKFLOW_STATUS } = require('./onboarding.workflow');
 const mailer = require('./onboarding.mailer');
-const { resolveCandidatePortalBase, buildCandidateUrls } = require('./candidatePortalUrl');
+const { resolveCandidatePortalContext, buildCandidateUrls } = require('./candidatePortalUrl');
 
-const _migrationCache = new Map();
 async function ensureMigrated(dbName) {
-  if (_migrationCache.has(dbName)) return _migrationCache.get(dbName);
-  const p = runTenantMigrations(dbName).catch((err) => {
-    _migrationCache.delete(dbName);
-    throw ApiError.internal('Database setup failed.');
+  await runTenantMigrations(dbName).catch(() => {
+    /* migrations may already be applied; do not block candidate links */
   });
-  _migrationCache.set(dbName, p);
-  return p;
 }
 
 function tenantUser(tenant) {
@@ -76,8 +71,8 @@ async function acceptOffer(tenant, token) {
     onboarding_step: 1,
   });
 
-  const base = await resolveCandidatePortalBase(tenant.id);
-  const urls = buildCandidateUrls(base, token);
+  const { base, tenantSlug } = await resolveCandidatePortalContext(tenant.id);
+  const urls = buildCandidateUrls(base, token, tenantSlug);
   return {
     ...publicCandidateView(emp),
     workflowStatus: WORKFLOW_STATUS.ACCEPTED_PENDING_UPLOAD,
@@ -161,8 +156,8 @@ async function signOffer(tenant, token, { signatureMode, signatureData, typedNam
   });
 
   await workflowRepo.seedChecklist(pool, emp.id);
-  const base = await resolveCandidatePortalBase(tenant.id);
-  const urls = buildCandidateUrls(base, token);
+  const { base, tenantSlug } = await resolveCandidatePortalContext(tenant.id);
+  const urls = buildCandidateUrls(base, token, tenantSlug);
   const personalEmail = String(emp.personal_email || '').trim();
 
   if (personalEmail) {

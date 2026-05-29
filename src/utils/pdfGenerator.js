@@ -2,6 +2,40 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 
+const PDF_NAV_TIMEOUT_MS = Number(process.env.PDF_NAV_TIMEOUT_MS) || 60_000;
+
+function resolveLogoPath() {
+  const candidates = [
+    process.env.HRIS_LOGO_PATH,
+    path.resolve(__dirname, '../../../HRIS/public/HRIS_Logo.png'),
+    path.resolve(__dirname, '../../public/HRIS_Logo.png'),
+    path.resolve(process.cwd(), '../HRIS/public/HRIS_Logo.png'),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function getPuppeteerLaunchOptions() {
+  const options = {
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+    ],
+  };
+
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    options.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+
+  return options;
+}
+
 /**
  * Replace placeholders like {{employee_name}} in the HTML template
  */
@@ -21,12 +55,10 @@ function replacePlaceholders(html, data) {
  * @returns {Buffer} - The generated PDF buffer
  */
 async function generatePdfFromHtml(htmlBody, tenant = {}) {
-  // Use a default path for the logo. The user can configure the logo path as needed.
-  // We use the logo path from HRIS/public as a fallback.
-  const logoPath = path.resolve(__dirname, '../../../../../HRIS/public/HRIS_Logo.png');
   let logoDataUri = '';
-  
-  if (fs.existsSync(logoPath)) {
+  const logoPath = resolveLogoPath();
+
+  if (logoPath) {
     const logoBuffer = fs.readFileSync(logoPath);
     const logoBase64 = logoBuffer.toString('base64');
     logoDataUri = `data:image/png;base64,${logoBase64}`;
@@ -111,14 +143,42 @@ async function generatePdfFromHtml(htmlBody, tenant = {}) {
 
   let browser = null;
   try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
-    
+    browser = await puppeteer.launch(getPuppeteerLaunchOptions());
+
     const page = await browser.newPage();
-    await page.setContent(fullHtml, { waitUntil: 'networkidle0' });
-    
+    page.setDefaultNavigationTimeout(PDF_NAV_TIMEOUT_MS);
+    page.setDefaultTimeout(PDF_NAV_TIMEOUT_MS);
+
+    // Abort slow external requests (CDN fonts/images in letter templates) that block networkidle0
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const url = req.url();
+      if (url.startsWith('data:') || url === 'about:blank') {
+        req.continue();
+        return;
+      }
+      if (/^https?:\/\//i.test(url)) {
+        req.abort('blockedbyclient');
+        return;
+      }
+      req.continue();
+    });
+
+    // domcontentloaded is reliable for inline/static HTML; networkidle0 often times out
+    await page.setContent(fullHtml, {
+      waitUntil: 'domcontentloaded',
+      timeout: PDF_NAV_TIMEOUT_MS,
+    });
+
+    try {
+      await Promise.race([
+        page.evaluate(() => document.fonts && document.fonts.ready),
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
+    } catch {
+      /* optional font wait */
+    }
+
     const pdfBuffer = await page.pdf({
       format: 'A4',
       printBackground: true,
@@ -126,13 +186,20 @@ async function generatePdfFromHtml(htmlBody, tenant = {}) {
         top: '50px',
         bottom: '50px',
         left: '50px',
-        right: '50px'
-      }
+        right: '50px',
+      },
     });
-    
+
     return pdfBuffer;
   } catch (error) {
     console.error('Error generating PDF with Puppeteer:', error);
+    if (error.message && /Could not find Chrome|executablePath/i.test(error.message)) {
+      const hint = new Error(
+        'PDF engine: Chrome/Chromium not found. Install Chrome or set PUPPETEER_EXECUTABLE_PATH in .env to your chrome.exe path.',
+      );
+      hint.cause = error;
+      throw hint;
+    }
     throw error;
   } finally {
     if (browser) {

@@ -37,6 +37,15 @@ function handleUpload(req, res, next) {
 
 const tokenParam = param('token').isString().trim().isLength({ min: 16, max: 128 });
 
+/** Allow tenant from query string (email links on plain localhost). */
+router.use((req, _res, next) => {
+  const fromQuery = req.query.tenant;
+  if (fromQuery && !req.headers['x-tenant-id'] && !req.headers['x-tenant-domain']) {
+    req.headers['x-tenant-id'] = String(fromQuery);
+  }
+  next();
+});
+
 router.use(tenantResolver);
 router.use(candidateOnboardingLimiter);
 

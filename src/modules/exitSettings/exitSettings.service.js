@@ -329,10 +329,16 @@ async function saveOrgDepartmentWorkflowTemplate(tenant, steps = []) {
     await client.query(`DELETE FROM exit_organization_workflow_templates`);
 
     const sorted = [...steps].sort((a, b) => (a.step_order || 0) - (b.step_order || 0));
+    const seenDepts = new Set();
+    let insertOrder = 1;
+
     for (let i = 0; i < sorted.length; i += 1) {
       const s = sorted[i];
       const deptId = Number(s.department_id);
       if (!deptId) throw ApiError.badRequest('Invalid department_id');
+
+      if (seenDepts.has(deptId)) continue;
+      seenDepts.add(deptId);
 
       const { rows: dept } = await client.query(
         `SELECT id FROM departments WHERE id = $1 AND is_active = true`,
@@ -344,8 +350,9 @@ async function saveOrgDepartmentWorkflowTemplate(tenant, steps = []) {
         `INSERT INTO exit_organization_workflow_templates
          (department_id, step_order, is_mandatory, remarks, is_active)
          VALUES ($1, $2, $3, $4, true)`,
-        [deptId, i + 1, s.is_mandatory !== false, s.remarks || null],
+        [deptId, insertOrder, s.is_mandatory !== false, s.remarks || null],
       );
+      insertOrder += 1;
     }
     await client.query('COMMIT');
   } catch (err) {

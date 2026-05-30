@@ -135,9 +135,21 @@ const updateAssetReturnBody = Joi.object({
 
 const generateDocumentBody = Joi.object({
   document_type: Joi.string()
-    .valid('Experience Letter', 'No Objection Certificate', 'NOC', 'Relieving Letter', 'Termination Letter', 'Full & Final Statement', 'Full & Final Settlement', 'Final Payslip')
+    .valid(
+      'Experience Letter',
+      'No Objection Certificate',
+      'NOC',
+      'Relieving Letter',
+      'Termination Letter',
+      'Full & Final Statement',
+      'Full & Final Settlement',
+      'FnF Settlement',
+      'Final Payslip',
+      'Recommendation Letter',
+    )
     .required(),
   document_title: Joi.string().trim().min(1).max(255).optional(),
+  template_id: Joi.number().integer().positive().optional(),
 });
 
 const submitInterviewBody = Joi.object({

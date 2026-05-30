@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const env = require('../../config/env');
 const { getIo } = require('../../socket');
-const { generatePdfFromHtml, replacePlaceholders } = require('../../utils/pdfGenerator');
+const { generateExitLetterPdf } = require('./exitLetterGenerator');
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -1070,111 +1070,89 @@ async function listExitDocuments(tenant, exitRecordId) {
   return rows;
 }
 
-async function generateLetterPdf(tenant, exitRecordId, docType, userId) {
+async function generateLetterPdf(tenant, exitRecordId, docType, userId, options = {}) {
   const pool = await getTenantPool(tenant.dbName);
+  return generateExitLetterPdf(tenant, exitRecordId, docType, userId, { ...options, pool });
+}
 
-  const { rows } = await pool.query(`
-    SELECT er.*, e.full_name, e.first_name, e.last_name, e.emp_id, e.department, e.job_title, e.join_date
-    FROM exit_records er
-    INNER JOIN employees e ON e.id = er.employee_id
-    WHERE er.id = $1
-  `, [exitRecordId]);
+async function deliverExitDocumentToEmployee(tenant, record, docType, pdfResult) {
+  const employeeId = record.employee_id;
+  const employeeName = empName(record);
+  const employeeEmail = record.work_email || record.personal_email;
+  const title = `${docType} Ready`;
+  const message = `Your ${docType} has been generated. You can view it in your exit portal under Exit Documents.`;
+  const emailIntro = `Please find attached your ${docType}. You may also access this document from your HRIS exit portal.`;
 
-  const record = rows[0];
-  if (!record) return null;
+  let notificationSent = false;
+  let emailSent = false;
 
-  const empNameStr = record.full_name || [record.first_name, record.last_name].filter(Boolean).join(' ') || 'Employee';
-  const tenantDb = tenant.dbName || 'default';
+  try {
+    await sendSystemNotification(tenant, {
+      employeeId,
+      forAdmin: false,
+      title,
+      message,
+      type: 'exit_management',
+      emailSubject: `HRIS – ${docType} – ${employeeName}`,
+      sendEmail: false,
+    });
+    notificationSent = true;
+  } catch (err) {
+    console.error('Failed to push exit document notification:', err);
+  }
 
-  const targetDir = path.resolve(env.UPLOAD.dir, 'exit_documents', tenantDb);
-  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
-
-  const filename = `${exitRecordId}_${docType.replace(/\s+/g, '_').toLowerCase()}.pdf`;
-  const filePath = path.join(targetDir, filename);
-  const relativeUrl = `/uploads/exit_documents/${tenantDb}/${filename}`;
-
-  const fmtUK = (d) =>
-    d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' }) : 'N/A';
-  
-  const placeholders = {
-    employee_name: empNameStr,
-    first_name: record.first_name || '',
-    last_name: record.last_name || '',
-    emp_id: record.emp_id || '',
-    department: record.department || '',
-    job_title: record.job_title || 'an employee',
-    join_date: fmtUK(record.join_date),
-    last_working_day: fmtUK(record.last_working_day),
-    exit_reason: record.exit_reason || '',
-    today_date: fmtUK(new Date()),
-    document_type: docType
-  };
-
-  const { rows: templates } = await pool.query(`
-    SELECT body FROM letter_templates 
-    WHERE name ILIKE $1 OR category = 'Exit' AND name ILIKE $1
-    LIMIT 1
-  `, [`%${docType}%`]);
-
-  let htmlBody = '';
-  if (templates.length > 0) {
-    htmlBody = templates[0].body;
-  } else {
-    if (docType === 'Relieving Letter') {
-      htmlBody = `
-        <p>Dear <strong>{{employee_name}}</strong>,</p>
-        <p>We write to confirm that you were employed by this organisation in the capacity of {{job_title}} within the {{department}} Department.</p>
-        <p>Your last day of service with the company was {{last_working_day}}, on which date you were formally relieved of all duties and responsibilities.</p>
-        <p>This letter serves as confirmation that you have been duly relieved from your position.</p>
-      `;
-    } else if (docType === 'Experience Letter') {
-      htmlBody = `
-        <p><strong>To Whom It May Concern</strong></p>
-        <p>This letter is to certify that <strong>{{employee_name}}</strong> was employed with our organisation from {{join_date}} to {{last_working_day}}, serving as {{job_title}} in the {{department}} Department.</p>
-        <p>During the period of their employment, {{employee_name}} demonstrated professionalism and commitment. We confirm that their conduct and performance were satisfactory throughout their tenure.</p>
-      `;
-    } else if (docType === 'Termination Letter') {
-      htmlBody = `
-        <p>Dear <strong>{{employee_name}}</strong>,</p>
-        <p>We write to formally inform you that your employment with this organisation has been terminated, effective {{last_working_day}}.</p>
-        <p>Reason for Termination: <em>{{exit_reason}}</em></p>
-        <p>You are reminded of your obligations regarding the return of all company property and confidentiality of information.</p>
-      `;
-    } else {
-      htmlBody = `<p>This document relates to {{document_type}} for {{employee_name}}.</p>`;
+  if (employeeEmail && pdfResult?.filePath && fs.existsSync(pdfResult.filePath)) {
+    try {
+      const { sendMail } = require('../../utils/mail');
+      const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });
+      await sendMail({
+        to: employeeEmail,
+        subject: `Your ${docType} – ${employeeName}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;">
+            <div style="border-bottom: 3px solid #0F766E; padding-bottom: 16px; margin-bottom: 24px;">
+              <h1 style="color: #0F766E; font-size: 22px; margin: 0;">HR Department</h1>
+            </div>
+            <p style="color: #374151;">${today}</p>
+            <p style="color: #374151;">Dear ${employeeName},</p>
+            <p style="color: #374151; line-height: 1.6;">${emailIntro}</p>
+            <p style="color: #374151; line-height: 1.6;">Please retain this document for your personal records.</p>
+            <br/>
+            <p style="color: #374151; margin: 0;">Yours sincerely,</p>
+            <p style="color: #374151; font-weight: bold; margin: 4px 0;">HR Department</p>
+            <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 24px 0;"/>
+            <p style="color: #9ca3af; font-size: 11px;">This is an automated communication from your HRIS Portal. Please do not reply to this email.</p>
+          </div>
+        `,
+        text: `${title}\n\nDear ${employeeName},\n\n${emailIntro}\n\nHR Department`,
+        attachments: [{
+          filename: path.basename(pdfResult.filePath),
+          path: pdfResult.filePath,
+        }],
+      });
+      emailSent = true;
+    } catch (err) {
+      console.error('Failed to email exit document:', err);
     }
   }
 
-  htmlBody = replacePlaceholders(htmlBody, placeholders);
-  const pdfBuffer = await generatePdfFromHtml(htmlBody, tenant);
-  fs.writeFileSync(filePath, pdfBuffer);
-
-  const docTitle = `${docType} - ${empNameStr}`;
-  const { rows: existingDoc } = await pool.query(
-    `SELECT id FROM exit_documents WHERE exit_record_id = $1 AND document_type = $2`,
-    [exitRecordId, docType],
-  );
-
-  let insertedRow;
-  if (existingDoc.length) {
-    const res = await pool.query(
-      `UPDATE exit_documents
-         SET file_url = $1, file_name = $2, generated_at = NOW(), generated_by = $3
-       WHERE id = $4 RETURNING *`,
-      [relativeUrl, filename, userId || null, existingDoc[0].id],
-    );
-    insertedRow = res.rows[0];
-  } else {
-    const res = await pool.query(
-      `INSERT INTO exit_documents
-         (exit_record_id, document_type, document_title, file_url, file_name, generated_at, generated_by)
-       VALUES ($1, $2, $3, $4, $5, NOW(), $6) RETURNING *`,
-      [exitRecordId, docType, docTitle, relativeUrl, filename, userId || null],
-    );
-    insertedRow = res.rows[0];
+  const io = getIo();
+  if (io) {
+    if (employeeId) {
+      io.to(`user:${employeeId}`).emit('notification:new', {
+        title,
+        message,
+        type: 'exit_management',
+      });
+    }
+    io.to(`exit:${record.id}`).emit('exit:document_generated', {
+      exitRecordId: record.id,
+      documentType: docType,
+      fileUrl: pdfResult?.relativeUrl || null,
+    });
   }
 
-  return { relativeUrl, filePath, row: insertedRow };
+  return { notificationSent, emailSent };
 }
 
 
@@ -1182,7 +1160,8 @@ async function generateExitDocument(tenant, exitRecordId, data, userId) {
   const pool = await getTenantPool(tenant.dbName);
 
   const { rows: erRows } = await pool.query(
-    `SELECT er.*, e.full_name, e.first_name, e.last_name, e.work_email, e.job_title, e.department
+    `SELECT er.*, e.id AS emp_id, e.full_name, e.first_name, e.last_name,
+            e.work_email, e.personal_email, e.job_title, e.department
      FROM exit_records er
      LEFT JOIN employees e ON e.id = er.employee_id
      WHERE er.id = $1`,
@@ -1191,13 +1170,14 @@ async function generateExitDocument(tenant, exitRecordId, data, userId) {
   if (!erRows.length) throw ApiError.notFound('Exit record not found');
 
   const record = erRows[0];
-  const employeeName = empName(record);
+  const docType = data.document_type || 'Exit Document';
 
-  // Use our new PDF generator
-  const result = await generateLetterPdf(tenant, exitRecordId, data.document_type, userId);
-  const rows = result ? [result.row] : [];
+  const result = await generateLetterPdf(tenant, exitRecordId, docType, userId, {
+    templateId: data.template_id || null,
+  });
+  if (!result?.row) throw ApiError.internal('Failed to generate exit document');
 
-  const docTypeLower = (data.document_type || '').toLowerCase();
+  const docTypeLower = docType.toLowerCase();
   if (docTypeLower.includes('experience')) {
     await pool.query(
       `UPDATE exit_records SET experience_letter_issued = true, updated_at = NOW() WHERE id = $1`,
@@ -1210,7 +1190,23 @@ async function generateExitDocument(tenant, exitRecordId, data, userId) {
     );
   }
 
-  return rows[0];
+  const delivery = await deliverExitDocumentToEmployee(tenant, record, docType, result);
+
+  await logAudit(pool, exitRecordId, userId, 'document_generated', null, {
+    document_type: docType,
+    template_id: result.templateId,
+    template_name: result.templateName,
+    notification_sent: delivery.notificationSent,
+    email_sent: delivery.emailSent,
+  });
+
+  return {
+    ...result.row,
+    template_id: result.templateId,
+    template_name: result.templateName,
+    notification_sent: delivery.notificationSent,
+    email_sent: delivery.emailSent,
+  };
 }
 
 /* ------------------------------------------------------------------ */

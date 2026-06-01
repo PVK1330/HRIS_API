@@ -179,6 +179,15 @@ async function listClearanceTemplates(tenant, query = {}) {
   const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 50));
   const offset = (page - 1) * limit;
 
+  // LEGACY: clearance_task_templates was removed by the workflow-engine redesign (migration 079).
+  // Clearance items are now stage-attached checklist templates configured in the Exit Workflow
+  // builder. Return empty gracefully so older settings screens do not 500.
+  try {
+    await pool.query('SELECT 1 FROM clearance_task_templates LIMIT 1');
+  } catch (_) {
+    return { records: [], pagination: { total: 0, page, limit, totalPages: 1 } };
+  }
+
   const conditions = ['1=1'];
   const params = [];
   let i = 1;
@@ -232,6 +241,13 @@ async function getClearanceTemplate(tenant, id) {
 
 async function createClearanceTemplate(tenant, data) {
   const pool = await getTenantPool(tenant.dbName);
+  try { await pool.query('SELECT 1 FROM clearance_task_templates LIMIT 1'); }
+  catch (_) {
+    throw ApiError.badRequest(
+      'Clearance items are now configured as stage checklist templates inside the Exit Workflow builder '
+      + '(POST /api/v1/admin/settings/exit-workflows).',
+    );
+  }
   const isActive = data.is_active !== undefined ? data.is_active : data.isActive !== undefined ? data.isActive : true;
   const { rows } = await pool.query(
     `INSERT INTO clearance_task_templates (department, task_name, sort_order, is_active, sla_hours)
@@ -278,13 +294,17 @@ async function deleteClearanceTemplate(tenant, id) {
 
 async function getActiveClearanceTemplates(tenant) {
   const pool = await getTenantPool(tenant.dbName);
-  const { rows } = await pool.query(
-    `SELECT department, task_name, sort_order, sla_hours
-     FROM clearance_task_templates
-     WHERE is_active = true
-     ORDER BY sort_order ASC, id ASC`,
-  );
-  return rows;
+  try {
+    const { rows } = await pool.query(
+      `SELECT department, task_name, sort_order, sla_hours
+       FROM clearance_task_templates
+       WHERE is_active = true
+       ORDER BY sort_order ASC, id ASC`,
+    );
+    return rows;
+  } catch (_) {
+    return []; // legacy table removed by the workflow-engine redesign
+  }
 }
 
 function deptHeadName(r) {
@@ -293,16 +313,24 @@ function deptHeadName(r) {
 
 async function getOrgDepartmentWorkflowTemplate(tenant) {
   const pool = await getTenantPool(tenant.dbName);
-  const { rows } = await pool.query(
-    `SELECT t.id, t.department_id, t.step_order, t.is_mandatory, t.remarks, t.is_active,
-            d.name AS department_name, d.manager_id AS department_head_id,
-            e.full_name AS head_full_name, e.first_name AS head_first, e.last_name AS head_last
-     FROM exit_organization_workflow_templates t
-     JOIN departments d ON d.id = t.department_id
-     LEFT JOIN employees e ON e.id = d.manager_id AND e.deleted_at IS NULL
-     WHERE t.is_active = true
-     ORDER BY t.step_order ASC, t.id ASC`,
-  );
+  // LEGACY: exit_organization_workflow_templates was removed by the workflow-engine redesign.
+  // The department approval sequence now lives in exit_workflows / exit_workflow_stages and is
+  // managed via /api/v1/admin/settings/exit-workflows. Return empty gracefully to avoid 500s.
+  let rows = [];
+  try {
+    ({ rows } = await pool.query(
+      `SELECT t.id, t.department_id, t.step_order, t.is_mandatory, t.remarks, t.is_active,
+              d.name AS department_name, d.manager_id AS department_head_id,
+              e.full_name AS head_full_name, e.first_name AS head_first, e.last_name AS head_last
+       FROM exit_organization_workflow_templates t
+       JOIN departments d ON d.id = t.department_id
+       LEFT JOIN employees e ON e.id = d.manager_id AND e.deleted_at IS NULL
+       WHERE t.is_active = true
+       ORDER BY t.step_order ASC, t.id ASC`,
+    ));
+  } catch (_) {
+    return { steps: [] };
+  }
   return {
     steps: rows.map((r) => ({
       id: r.id,
@@ -317,8 +345,15 @@ async function getOrgDepartmentWorkflowTemplate(tenant) {
   };
 }
 
+const WORKFLOW_MOVED_MSG =
+  'Exit workflow configuration has moved to the new Exit Workflow builder '
+  + '(POST /api/v1/admin/settings/exit-workflows). Configure stages, departments, roles, '
+  + 'approval mode, SLA and escalation there.';
+
 async function saveOrgDepartmentWorkflowTemplate(tenant, steps = []) {
   const pool = await getTenantPool(tenant.dbName);
+  try { await pool.query('SELECT 1 FROM exit_organization_workflow_templates LIMIT 1'); }
+  catch (_) { throw ApiError.badRequest(WORKFLOW_MOVED_MSG); }
   if (!Array.isArray(steps) || !steps.length) {
     throw ApiError.badRequest('Add at least one department to the default workflow');
   }
@@ -474,6 +509,8 @@ async function getExitPipelineStages(tenant) {
 
 async function saveExitPipelineStages(tenant, stages = []) {
   const pool = await getTenantPool(tenant.dbName);
+  try { await pool.query('SELECT 1 FROM exit_pipeline_stages LIMIT 1'); }
+  catch (_) { throw ApiError.badRequest(WORKFLOW_MOVED_MSG); }
   if (!Array.isArray(stages) || !stages.length) {
     throw ApiError.badRequest('At least one pipeline stage is required');
   }

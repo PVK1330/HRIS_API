@@ -1,1799 +1,550 @@
 'use strict';
 
+/**
+ * Exit Management runtime — exit_requests lifecycle on the stage engine.
+ * Visibility/actions resolved ONLY via ExitAccessResolver (stage ownership), never scope.
+ * Canonical tokens: status IN_PROGRESS active; exit_approvals.action uppercase.
+ */
+
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
-const { pushNotification, sendSystemNotification } = require('../notifications/notifications.service');
-const PDFDocument = require('pdfkit');
-const fs = require('fs');
-const path = require('path');
-const env = require('../../config/env');
-const { getIo } = require('../../socket');
-const { generateExitLetterPdf } = require('./exitLetterGenerator');
+const resolver = require('./exitAccessResolver.service');
+const engine = require('./exitStageEngine.service');
 
-/* ------------------------------------------------------------------ */
-/*  Constants                                                          */
-/* ------------------------------------------------------------------ */
-
-const SORT_COL = {
-  created_at: 'er.created_at',
-  updated_at: 'er.updated_at',
-  last_working_day: 'er.last_working_day',
-  employee_name: 'e.first_name',
-};
-
-const DEFAULT_CLEARANCE_TASKS = [
-  { department: 'IT', task_name: 'Revoke system access & email', sort_order: 1 },
-  { department: 'IT', task_name: 'Collect laptop & peripherals', sort_order: 2 },
-  { department: 'IT', task_name: 'Revoke VPN & security tokens', sort_order: 3 },
-  { department: 'HR', task_name: 'Collect ID card & access card', sort_order: 4 },
-  { department: 'HR', task_name: 'Process final settlement', sort_order: 5 },
-  { department: 'HR', task_name: 'Issue experience letter', sort_order: 6 },
-  { department: 'HR', task_name: 'Issue No Objection Certificate', sort_order: 7 },
-  { department: 'Finance', task_name: 'Clear pending reimbursements', sort_order: 8 },
-  { department: 'Finance', task_name: 'Process full & final settlement', sort_order: 9 },
-  { department: 'Admin', task_name: 'Return parking pass / keys', sort_order: 10 },
-];
-
-/* ------------------------------------------------------------------ */
-/*  Helpers                                                            */
-/* ------------------------------------------------------------------ */
-
-function buildWhereClause(query) {
-  const conditions = ['1=1'];
-  const params = [];
-  let i = 1;
-
-  const search = (query.search || '').trim();
-  if (search) {
-    params.push(`%${search}%`);
-    conditions.push(
-      `(e.full_name ILIKE $${i} OR e.first_name ILIKE $${i} OR e.last_name ILIKE $${i} OR COALESCE(er.exit_reason, '') ILIKE $${i})`,
-    );
-    i += 1;
-  }
-
-  const status = (query.status || 'all').trim();
-  if (status !== 'all') {
-    params.push(status);
-    conditions.push(`er.status = $${i}`);
-    i += 1;
-  }
-
-  const exitType = (query.exit_type || 'all').trim();
-  if (exitType !== 'all') {
-    params.push(exitType);
-    conditions.push(`er.exit_type = $${i}`);
-    i += 1;
-  }
-
-  if (query.employee_id) {
-    params.push(Number(query.employee_id));
-    conditions.push(`er.employee_id = $${i}`);
-    i += 1;
-  }
-
-  return { where: conditions.join(' AND '), params, nextIndex: i };
+let notifications = null;
+function notify() {
+  if (!notifications) notifications = require('../notifications/notifications.service');
+  return notifications;
 }
-
-async function assertEmployeeExists(pool, employeeId) {
-  const { rows } = await pool.query(
-    `SELECT id, full_name, first_name, last_name, employment_status FROM employees WHERE id = $1 AND deleted_at IS NULL`,
-    [employeeId],
-  );
-  if (!rows.length) throw ApiError.notFound('Employee not found');
-  return rows[0];
+function emit(tenant, room, event, payload) {
+  try {
+    const { getIo } = require('../../socket');
+    const io = getIo();
+    if (io) io.to(room).emit(event, payload);
+  } catch (_) { /* non-blocking */ }
 }
 
 function empName(r) {
-  return r.full_name || [r.first_name, r.last_name].filter(Boolean).join(' ') || 'Unknown';
+  return r?.full_name || [r?.first_name, r?.last_name].filter(Boolean).join(' ') || 'Unknown';
 }
 
-async function seedClearanceTasks(pool, exitRecordId) {
-  const { rows: existing } = await pool.query(
-    `SELECT COUNT(*)::int AS cnt FROM clearance_tasks WHERE exit_record_id = $1`,
-    [exitRecordId],
-  );
-  if (existing[0].cnt > 0) return;
-
-  let tasks = DEFAULT_CLEARANCE_TASKS;
-  try {
-    const { rows: templates } = await pool.query(
-      `SELECT department, task_name, sort_order, sla_hours
-       FROM clearance_task_templates
-       WHERE is_active = true
-       ORDER BY sort_order ASC, id ASC`,
-    );
-    if (templates.length > 0) tasks = templates;
-  } catch {
-    // table may not exist yet on older tenants; fall back to hardcoded defaults
-  }
-
-  for (const task of tasks) {
-    const sla = task.sla_hours || 0;
-    const dueDate = sla > 0 ? new Date(Date.now() + sla * 60 * 60 * 1000) : null;
-    await pool.query(
-      `INSERT INTO clearance_tasks (exit_record_id, department, task_name, sort_order, sla_hours, due_date)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [exitRecordId, task.department, task.task_name, task.sort_order, sla, dueDate],
-    );
-  }
-}
-
-async function checkAutoReadyForClosure(pool, exitRecordId) {
-  const { rows: taskRows } = await pool.query(
-    `SELECT COUNT(*)::int AS total,
-            COUNT(*) FILTER (WHERE is_completed = true)::int AS done
-     FROM clearance_tasks WHERE exit_record_id = $1`,
-    [exitRecordId],
-  );
-  const tasks = taskRows[0] || { total: 0, done: 0 };
-
-  const { rows: assetRows } = await pool.query(
-    `SELECT COUNT(*)::int AS total,
-            COUNT(*) FILTER (WHERE status IN ('Returned', 'Lost'))::int AS resolved
-     FROM asset_returns WHERE exit_record_id = $1`,
-    [exitRecordId],
-  );
-  const assets = assetRows[0] || { total: 0, resolved: 0 };
-
-  const allClearanceDone = tasks.total === 0 || tasks.total === tasks.done;
-  const allAssetsResolved = assets.total === 0 || assets.total === assets.resolved;
-
-  return allClearanceDone && allAssetsResolved;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Exit Records CRUD                                                  */
-/* ------------------------------------------------------------------ */
-
-async function listExitRecords(tenant, query = {}) {
-  const pool = await getTenantPool(tenant.dbName);
-  const page = Math.max(1, parseInt(query.page, 10) || 1);
-  const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 10));
-  const offset = (page - 1) * limit;
-  const sortBy = SORT_COL[query.sortBy] ? query.sortBy : 'created_at';
-  const sortOrder = String(query.sortOrder || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-
-  const { where, params } = buildWhereClause(query);
-
-  const { rows: countRows } = await pool.query(
-    `SELECT COUNT(*)::int AS total
-     FROM exit_records er
-     LEFT JOIN employees e ON e.id = er.employee_id
-     WHERE ${where}`,
-    [...params],
-  );
-  const total = countRows[0]?.total ?? 0;
-
-  const dataParams = [...params, limit, offset];
-  const lim = dataParams.length - 1;
-  const off = dataParams.length;
-
+async function getDefaultWorkflowFor(pool, exitType) {
   const { rows } = await pool.query(
-    `SELECT er.id, er.employee_id, er.exit_type, er.status,
-            er.pipeline_stage, er.workflow_configured,
-            er.last_working_day, er.notice_period_days, er.exit_reason,
-            er.resignation_date, er.notice_date,
-            er.termination_type_id, tt.name AS termination_type_name,
-            er.approved_by, er.approved_at, er.rejection_reason, er.remarks,
-            er.created_at, er.updated_at,
-            e.full_name, e.first_name, e.last_name, e.work_email,
-            e.job_title AS designation, e.department,
-            COALESCE(e.id::text, '') AS employee_code,
-            COALESCE(er.resignation_date, er.created_at::date) AS applied_date,
-            (SELECT COUNT(*)::int FROM clearance_tasks ct WHERE ct.exit_record_id = er.id) AS total_tasks,
-            (SELECT COUNT(*)::int FROM clearance_tasks ct WHERE ct.exit_record_id = er.id AND ct.is_completed = true) AS completed_tasks,
-            (SELECT COUNT(*)::int FROM asset_returns ar WHERE ar.exit_record_id = er.id) AS total_assets,
-            (SELECT COUNT(*)::int FROM asset_returns ar WHERE ar.exit_record_id = er.id AND ar.status IN ('Returned', 'Lost')) AS resolved_assets,
-            (SELECT d.name FROM exit_department_workflows w
-             JOIN departments d ON d.id = w.department_id
-             WHERE w.exit_record_id = er.id AND w.status = 'Active' LIMIT 1) AS current_approval_stage,
-            (SELECT COUNT(*)::int FROM exit_department_workflows w WHERE w.exit_record_id = er.id) AS workflow_step_count,
-            (SELECT COUNT(*)::int FROM exit_department_workflows w WHERE w.exit_record_id = er.id AND w.status = 'Approved') AS workflow_steps_done
-     FROM exit_records er
-     LEFT JOIN employees e ON e.id = er.employee_id
-     LEFT JOIN termination_types tt ON tt.id = er.termination_type_id
-     WHERE ${where}
-     ORDER BY ${SORT_COL[sortBy]} ${sortOrder}, er.id DESC
-     LIMIT $${lim} OFFSET $${off}`,
-    dataParams,
-  );
-
-  const deptWorkflow = require('./exitDepartmentWorkflow.service');
-  const wfMap = await deptWorkflow.getWorkflowSummaryForList(pool, rows.map((r) => r.id));
-
-  return {
-    records: rows.map((r) => ({
-      ...r,
-      employee_name: empName(r),
-      assigned_department_heads: [...new Set(wfMap[r.id]?.heads || [])],
-      status_progress: r.pipeline_stage || 'submitted',
-      current_approval_stage: r.current_approval_stage || (r.workflow_configured ? 'Awaiting assignment' : 'Not configured'),
-    })),
-    pagination: {
-      total,
-      page,
-      limit,
-      totalPages: Math.max(1, Math.ceil(total / limit)),
-      hasNext: page * limit < total,
-      hasPrev: page > 1,
-    },
-    filters: {
-      applied: {
-        page,
-        limit,
-        search: (query.search || '').trim(),
-        status: (query.status || 'all').trim(),
-        exit_type: (query.exit_type || 'all').trim(),
-        sortBy,
-        sortOrder: sortOrder.toLowerCase(),
-      },
-    },
-  };
-}
-
-async function getExitStats(tenant) {
-  const pool = await getTenantPool(tenant.dbName);
-  const { rows } = await pool.query(
-    `SELECT
-       COUNT(*)::int AS total,
-       COUNT(*) FILTER (WHERE status = 'Pending Approval')::int AS pending_approval,
-       COUNT(*) FILTER (WHERE status = 'Approved')::int AS approved,
-       COUNT(*) FILTER (WHERE status = 'In Progress')::int AS in_progress,
-       COUNT(*) FILTER (WHERE status = 'clearance')::int AS in_clearance,
-       COUNT(*) FILTER (WHERE status = 'interview')::int AS in_interview,
-       COUNT(*) FILTER (WHERE status = 'settlement')::int AS in_settlement,
-       COUNT(*) FILTER (WHERE status = 'Completed')::int AS completed,
-       COUNT(*) FILTER (WHERE status = 'Rejected')::int AS rejected,
-       COUNT(*) FILTER (WHERE exit_type = 'Resignation')::int AS resignations,
-       COUNT(*) FILTER (WHERE exit_type = 'Termination')::int AS terminations
-     FROM exit_records`,
-  );
-  const r = rows[0];
-  return {
-    total: r.total,
-    pendingApproval: r.pending_approval,
-    approved: r.approved,
-    inProgress: r.in_progress,
-    inClearance: r.in_clearance,
-    inInterview: r.in_interview,
-    inSettlement: r.in_settlement,
-    completed: r.completed,
-    rejected: r.rejected,
-    resignations: r.resignations,
-    terminations: r.terminations,
-  };
-}
-
-async function getExitRecord(tenant, id) {
-  const pool = await getTenantPool(tenant.dbName);
-  const { rows } = await pool.query(
-    `SELECT er.*,
-            tt.name AS termination_type_name,
-            e.full_name, e.first_name, e.last_name, e.work_email, e.job_title, e.department,
-            e.employment_status,
-            ab.full_name AS approved_by_name
-     FROM exit_records er
-     LEFT JOIN employees e ON e.id = er.employee_id
-     LEFT JOIN termination_types tt ON tt.id = er.termination_type_id
-     LEFT JOIN employees ab ON ab.id = er.approved_by
-     WHERE er.id = $1`,
-    [id],
-  );
-  const r = rows[0];
-  if (!r) throw ApiError.notFound('Exit record not found');
-
-  const [clearance, assets, documents, interviews, settlements] = await Promise.all([
-    pool.query(
-      `SELECT ct.*, cb.first_name AS completed_by_name
-       FROM clearance_tasks ct
-       LEFT JOIN employees cb ON cb.id = ct.completed_by
-       WHERE ct.exit_record_id = $1
-       ORDER BY ct.sort_order ASC, ct.id ASC`,
-      [id],
-    ),
-    pool.query(
-      `SELECT ar.*, rb.first_name AS returned_by_name
-       FROM asset_returns ar
-       LEFT JOIN employees rb ON rb.id = ar.returned_by
-       WHERE ar.exit_record_id = $1
-       ORDER BY ar.created_at ASC`,
-      [id],
-    ),
-    pool.query(
-      `SELECT * FROM exit_documents WHERE exit_record_id = $1 ORDER BY created_at DESC`,
-      [id],
-    ),
-    pool.query(
-      `SELECT ei.*, cb.full_name AS conducted_by_full_name
-       FROM exit_interviews ei
-       LEFT JOIN employees cb ON cb.id = ei.conducted_by
-       WHERE ei.exit_request_id = $1
-       ORDER BY ei.created_at DESC LIMIT 1`,
-      [id],
-    ),
-    pool.query(
-      `SELECT fs.*, pb.full_name AS processed_by_name
-       FROM final_settlements fs
-       LEFT JOIN employees pb ON pb.id = fs.processed_by
-       WHERE fs.exit_request_id = $1
-       ORDER BY fs.created_at DESC LIMIT 1`,
-      [id],
-    ),
-  ]);
-
-  const deptWorkflow = require('./exitDepartmentWorkflow.service');
-  const workflow = await deptWorkflow.getWorkflowForExit(tenant, id).catch(() => null);
-
-  return {
-    ...r,
-    employee_name: empName(r),
-    clearance_tasks: clearance.rows,
-    asset_returns: assets.rows,
-    exit_documents: documents.rows,
-    exit_interview: interviews.rows[0] || null,
-    final_settlement: settlements.rows[0] || null,
-    department_workflow: workflow,
-  };
-}
-
-async function createResignation(tenant, data, userId) {
-  const pool = await getTenantPool(tenant.dbName);
-  const emp = await assertEmployeeExists(pool, data.employee_id);
-
-  if (['Terminated', 'Resigned'].includes(emp.employment_status)) {
-    throw ApiError.badRequest(`Cannot create resignation for employee with status: ${emp.employment_status}`);
-  }
-
-  const { rows: existing } = await pool.query(
-    `SELECT id FROM exit_records
-     WHERE employee_id = $1 AND status NOT IN ('Completed', 'Rejected')`,
-    [data.employee_id],
-  );
-  if (existing.length) {
-    throw ApiError.conflict('An active exit record already exists for this employee');
-  }
-
-  const { rows } = await pool.query(
-    `INSERT INTO exit_records
-       (employee_id, exit_type, status, notice_date, resignation_date, last_working_day,
-        notice_period_days, exit_reason, exit_interview_date, exit_interview_by,
-        exit_interview_notes, remarks, initiated_by, is_voluntary)
-     VALUES ($1, 'Resignation', 'Pending Approval', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true)
-     RETURNING id`,
-    [
-      data.employee_id,
-      data.notice_date || null,
-      data.resignation_date || null,
-      data.last_working_day,
-      data.notice_period_days || null,
-      data.exit_reason || null,
-      data.exit_interview_date || null,
-      data.exit_interview_by || null,
-      data.exit_interview_notes || null,
-      data.remarks || null,
-      userId,
-    ],
-  );
-
-  const exitId = rows[0].id;
-
-  await logAudit(pool, exitId, userId, 'resignation_submitted', null, {
-    status: 'Pending Approval', exit_type: 'Resignation', employee_id: data.employee_id,
-  });
-
-  try {
-    const employeeNameStr = empName(emp);
-    const lwdStr = data.last_working_day ? new Date(data.last_working_day).toLocaleDateString('en-GB') : '—';
-    await sendSystemNotification(tenant, {
-      forAdmin: true,
-      title: 'New Resignation Submitted',
-      message: `Resignation submitted by ${employeeNameStr} (LWD: ${lwdStr}).`,
-      emailMessage: `Resignation has been submitted by employee ${employeeNameStr}. Last working day is set to ${lwdStr}.`,
-      type: 'exit_management',
-      emailSubject: 'HRIS - New Resignation Submitted',
-    });
-  } catch (err) {
-    console.error('Failed to push resignation submission notification:', err);
-  }
-
-  return getExitRecord(tenant, exitId);
-}
-
-async function createTermination(tenant, data, userId) {
-  const pool = await getTenantPool(tenant.dbName);
-  const emp = await assertEmployeeExists(pool, data.employee_id);
-
-  const { rows: ttRows } = await pool.query(
-    `SELECT id FROM termination_types WHERE id = $1 AND is_active = true`,
-    [data.termination_type_id],
-  );
-  if (!ttRows.length) throw ApiError.badRequest('Invalid or inactive termination type');
-
-  const { rows: existing } = await pool.query(
-    `SELECT id FROM exit_records
-     WHERE employee_id = $1 AND status NOT IN ('Completed', 'Rejected')`,
-    [data.employee_id],
-  );
-  if (existing.length) {
-    throw ApiError.conflict('An active exit record already exists for this employee');
-  }
-
-  const isVol = data.is_voluntary !== undefined ? data.is_voluntary : false;
-  const { rows } = await pool.query(
-    `INSERT INTO exit_records
-       (employee_id, exit_type, status, termination_type_id, notice_date,
-        last_working_day, notice_period_days, exit_reason,
-        exit_interview_date, exit_interview_by, exit_interview_notes, remarks,
-        initiated_by, is_voluntary)
-     VALUES ($1, 'Termination', 'In Progress', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-     RETURNING id`,
-    [
-      data.employee_id,
-      data.termination_type_id,
-      data.notice_date || null,
-      data.last_working_day,
-      data.notice_period_days || null,
-      data.exit_reason || null,
-      data.exit_interview_date || null,
-      data.exit_interview_by || null,
-      data.exit_interview_notes || null,
-      data.remarks || null,
-      userId,
-      isVol,
-    ],
-  );
-
-  const exitId = rows[0].id;
-
-  await pool.query(
-    `UPDATE employees SET employment_status = 'Notice Period' WHERE id = $1`,
-    [data.employee_id],
-  );
-
-  await seedClearanceTasks(pool, exitId);
-
-  await logAudit(pool, exitId, userId, 'termination_initiated', null, {
-    status: 'In Progress', exit_type: 'Termination', employee_id: data.employee_id,
-  });
-
-  try {
-    const lwdStr = data.last_working_day ? new Date(data.last_working_day).toLocaleDateString('en-GB') : '—';
-    await sendSystemNotification(tenant, {
-      employeeId: data.employee_id,
-      forAdmin: false,
-      title: 'Termination Process Initiated',
-      message: `An offboarding process has been initiated for you. Last working day: ${lwdStr}.`,
-      emailMessage: `An offboarding process has been initiated for you. Your last working day is scheduled for ${lwdStr}.`,
-      type: 'exit_management',
-      emailSubject: 'HRIS - Offboarding Process Initiated',
-    });
-  } catch (err) {
-    console.error('Failed to push termination notification:', err);
-  }
-
-  return getExitRecord(tenant, exitId);
-}
-
-async function updateExitRecord(tenant, id, data, userId) {
-  const pool = await getTenantPool(tenant.dbName);
-
-  const { rows: existing } = await pool.query(
-    `SELECT id, status FROM exit_records WHERE id = $1`, [id],
-  );
-  if (!existing.length) throw ApiError.notFound('Exit record not found');
-  if (['Completed', 'Rejected'].includes(existing[0].status)) {
-    throw ApiError.badRequest(`Cannot edit a record with status "${existing[0].status}"`);
-  }
-
-  const fields = [];
-  const params = [];
-  let n = 1;
-
-  const allowedFields = [
-    'last_working_day', 'notice_period_days', 'exit_reason',
-    'exit_interview_date', 'exit_interview_by', 'exit_interview_notes',
-    'remarks', 'termination_type_id', 'notice_date', 'resignation_date',
-  ];
-
-  const changedFields = {};
-  for (const field of allowedFields) {
-    if (data[field] !== undefined) {
-      params.push(data[field]);
-      fields.push(`${field} = $${n++}`);
-      changedFields[field] = data[field];
-    }
-  }
-
-  if (!fields.length) return getExitRecord(tenant, id);
-
-  fields.push('updated_at = NOW()');
-  params.push(id);
-  const { rows } = await pool.query(
-    `UPDATE exit_records SET ${fields.join(', ')} WHERE id = $${n} RETURNING id`,
-    params,
-  );
-  if (!rows.length) throw ApiError.notFound('Exit record not found');
-
-  await logAudit(pool, id, userId, 'record_updated', null, changedFields);
-
-  return getExitRecord(tenant, id);
-}
-
-async function approveResignation(tenant, id, userId) {
-  const pool = await getTenantPool(tenant.dbName);
-
-  const { rows } = await pool.query(
-    `SELECT er.*, e.id AS emp_id, e.work_email, e.full_name, e.first_name, e.last_name FROM exit_records er
-     LEFT JOIN employees e ON e.id = er.employee_id
-     WHERE er.id = $1`,
-    [id],
-  );
-  const record = rows[0];
-  if (!record) throw ApiError.notFound('Exit record not found');
-  if (record.exit_type !== 'Resignation') {
-    throw ApiError.badRequest('Only resignations can be approved');
-  }
-  if (record.status !== 'Pending Approval') {
-    throw ApiError.badRequest(`Cannot approve a record with status "${record.status}"`);
-  }
-
-  await pool.query(
-    `UPDATE exit_records
-     SET status = 'Approved', approved_by = $1, approved_at = NOW(), updated_at = NOW()
-     WHERE id = $2`,
-    [userId, id],
-  );
-
-  await pool.query(
-    `UPDATE employees SET employment_status = 'Notice Period' WHERE id = $1`,
-    [record.emp_id],
-  );
-
-  await seedClearanceTasks(pool, id);
-
-  await logAudit(pool, id, userId, 'resignation_approved', { status: 'Pending Approval' }, { status: 'Approved' });
-
-  try {
-    const lwdStr = record.last_working_day ? new Date(record.last_working_day).toLocaleDateString('en-GB') : '—';
-    await sendSystemNotification(tenant, {
-      employeeId: record.emp_id,
-      forAdmin: false,
-      title: 'Resignation Approved',
-      message: `Your resignation has been approved. Your last working day is: ${lwdStr}.`,
-      emailMessage: `Your resignation request has been approved. Your last working day is scheduled for ${lwdStr}.`,
-      type: 'exit_management',
-      emailSubject: 'HRIS - Resignation Approved',
-    });
-  } catch (err) {
-    console.error('Failed to push resignation approval notification:', err);
-  }
-
-  return getExitRecord(tenant, id);
-}
-
-async function rejectResignation(tenant, id, rejectionReason, userId) {
-  const pool = await getTenantPool(tenant.dbName);
-
-  const { rows } = await pool.query(
-    `SELECT er.*, e.work_email, e.full_name, e.first_name, e.last_name FROM exit_records er
-     LEFT JOIN employees e ON e.id = er.employee_id
-     WHERE er.id = $1`,
-    [id],
-  );
-  const record = rows[0];
-  if (!record) throw ApiError.notFound('Exit record not found');
-  if (record.exit_type !== 'Resignation') {
-    throw ApiError.badRequest('Only resignations can be rejected');
-  }
-  if (record.status !== 'Pending Approval') {
-    throw ApiError.badRequest(`Cannot reject a record with status "${record.status}"`);
-  }
-
-  await pool.query(
-    `UPDATE exit_records
-     SET status = 'Rejected', rejection_reason = $1, approved_by = $2, approved_at = NOW(), updated_at = NOW()
-     WHERE id = $3`,
-    [rejectionReason, userId, id],
-  );
-
-  await logAudit(pool, id, userId, 'resignation_rejected', { status: 'Pending Approval' }, { status: 'Rejected', rejection_reason: rejectionReason });
-
-  try {
-    await sendSystemNotification(tenant, {
-      employeeId: record.employee_id,
-      forAdmin: false,
-      title: 'Resignation Rejected',
-      message: `Your resignation request has been rejected. Reason: ${rejectionReason}`,
-      emailMessage: `Your resignation request has been rejected. Reason for rejection: ${rejectionReason}`,
-      type: 'exit_management',
-      emailSubject: 'HRIS - Resignation Rejected',
-    });
-  } catch (err) {
-    console.error('Failed to push resignation rejection notification:', err);
-  }
-
-  return getExitRecord(tenant, id);
-}
-
-async function updateExitStatus(tenant, id, newStatus, userId) {
-  const pool = await getTenantPool(tenant.dbName);
-
-  const { rows } = await pool.query(
-    `SELECT er.*, e.id AS emp_id, e.full_name, e.first_name, e.last_name, e.work_email, e.personal_email
-     FROM exit_records er
-     LEFT JOIN employees e ON e.id = er.employee_id
-     WHERE er.id = $1`,
-    [id],
-  );
-  const record = rows[0];
-  if (!record) throw ApiError.notFound('Exit record not found');
-
-  const VALID_TRANSITIONS = {
-    'Approved': ['In Progress', 'clearance'],
-    'In Progress': ['clearance', 'interview', 'Completed'],
-    'clearance': ['interview', 'Completed'],
-    'interview': ['settlement', 'Completed'],
-    'settlement': ['Completed'],
-  };
-
-  const allowed = VALID_TRANSITIONS[record.status] || [];
-  if (!allowed.includes(newStatus)) {
-    throw ApiError.badRequest(
-      `Cannot transition from "${record.status}" to "${newStatus}"`,
-    );
-  }
-
-  const oldStatus = record.status;
-  await pool.query(
-    `UPDATE exit_records SET status = $1, updated_at = NOW() WHERE id = $2`,
-    [newStatus, id],
-  );
-
-  if (newStatus === 'Completed') {
-    await pool.query(
-      `UPDATE employees SET employment_status = 'Terminated' WHERE id = $1`,
-      [record.emp_id],
-    );
-
-    const employeeName = empName(record);
-    const isTermination = record.exit_type === 'Termination';
-
-    // Determine which docs to auto-generate based on exit type
-    const autoDocTypes = isTermination
-      ? ['Relieving Letter', 'Experience Letter', 'Termination Letter']
-      : ['Relieving Letter', 'Experience Letter'];
-
-    const generatedDocs = [];
-    for (const docType of autoDocTypes) {
-      const { rows: existingDoc } = await pool.query(
-        `SELECT id FROM exit_documents WHERE exit_record_id = $1 AND document_type = $2`,
-        [id, docType],
-      );
-      if (!existingDoc.length) {
-        const docResult = await generateLetterPdf(tenant, id, docType, userId);
-        if (docResult) generatedDocs.push(docResult);
-      }
-    }
-
-    await pool.query(
-      `UPDATE exit_records SET experience_letter_issued = true, updated_at = NOW() WHERE id = $1`,
-      [id],
-    );
-
-    // Email all generated documents to the employee
-    const employeeEmail = record.work_email || record.personal_email;
-    if (employeeEmail && generatedDocs.length > 0) {
-      try {
-        const { sendMail } = require('../../utils/mail');
-        const docListHtml = autoDocTypes.map(d => `<li>${d}</li>`).join('');
-        const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });
-        await sendMail({
-          to: employeeEmail,
-          subject: `Your Exit Documents – ${employeeName}`,
-          html: `
-            <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;">
-              <div style="border-bottom: 3px solid #0F766E; padding-bottom: 16px; margin-bottom: 24px;">
-                <h1 style="color: #0F766E; font-size: 22px; margin: 0;">HR Department</h1>
-              </div>
-              <p style="color: #374151;">${today}</p>
-              <p style="color: #374151;">Dear ${employeeName},</p>
-              <p style="color: #374151; line-height: 1.6;">
-                We are writing to confirm that your offboarding process has been completed. Please find attached
-                your formal exit documentation as listed below:
-              </p>
-              <ul style="color: #374151; line-height: 2;">${docListHtml}</ul>
-              <p style="color: #374151; line-height: 1.6;">
-                Please retain these documents for your personal records as they may be required for future
-                employment references.
-              </p>
-              <p style="color: #374151;">We thank you for your contribution and wish you every success in your future endeavours.</p>
-              <br/>
-              <p style="color: #374151; margin: 0;">Yours sincerely,</p>
-              <p style="color: #374151; font-weight: bold; margin: 4px 0;">HR Department</p>
-              <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 24px 0;"/>
-              <p style="color: #9ca3af; font-size: 11px;">This is an automated communication from your HRIS Portal. Please do not reply to this email.</p>
-            </div>
-          `,
-          attachments: generatedDocs.map(doc => ({
-            filename: path.basename(doc.filePath),
-            path: doc.filePath,
-          })),
-        });
-      } catch (err) {
-        console.error('Failed to email exit documents:', err);
-      }
-    }
-  }
-
-  await logAudit(pool, id, userId, 'status_changed', { status: oldStatus }, { status: newStatus });
-
-  try {
-    const isTermination = record.exit_type === 'Termination';
-    const statusTitles = {
-      clearance: 'Clearance Checklist Activated',
-      'In Progress': 'Offboarding In Progress',
-      interview: 'Exit Interview Scheduled',
-      settlement: 'Full & Final Settlement Processing',
-      Completed: 'Offboarding Process Completed',
-    };
-    const statusMsgs = {
-      clearance: 'Your offboarding clearance checklist has been activated. Please complete all required tasks via your HR portal.',
-      'In Progress': 'Your offboarding process is now in progress. HR will be in touch with further steps.',
-      interview: 'Your clearance checklist is complete. Please complete your exit interview questionnaire on your portal at your earliest convenience.',
-      settlement: 'Your Full & Final settlement is now being calculated by the HR and Finance team. You will be notified once it is ready.',
-      Completed: isTermination
-        ? 'Your offboarding is now complete. Your Relieving Letter, Experience Letter, and Termination Letter have been generated and emailed to you.'
-        : 'Your offboarding is now complete. Your Relieving Letter and Experience Letter have been generated and emailed to you.',
-    };
-    const title = statusTitles[newStatus] || 'Offboarding Status Update';
-    const message = statusMsgs[newStatus] || `Your offboarding status has been updated to "${newStatus}".`;
-
-    await sendSystemNotification(tenant, {
-      employeeId: record.emp_id,
-      forAdmin: false,
-      title,
-      message,
-      type: 'exit_management',
-      emailSubject: `HRIS – ${title}`,
-    });
-  } catch (err) {
-    console.error('Failed to push exit status notification:', err);
-  }
-
-  return getExitRecord(tenant, id);
-}
-
-/* ------------------------------------------------------------------ */
-/*  Clearance Tasks                                                    */
-/* ------------------------------------------------------------------ */
-
-async function listClearanceTasks(tenant, exitRecordId) {
-  const pool = await getTenantPool(tenant.dbName);
-  const { rows: erCheck } = await pool.query(
-    `SELECT id FROM exit_records WHERE id = $1`, [exitRecordId],
-  );
-  if (!erCheck.length) throw ApiError.notFound('Exit record not found');
-
-  const { rows } = await pool.query(
-    `SELECT ct.*,
-            at2.first_name AS assigned_to_name,
-            cb.first_name AS completed_by_name
-     FROM clearance_tasks ct
-     LEFT JOIN employees at2 ON at2.id = ct.assigned_to
-     LEFT JOIN employees cb ON cb.id = ct.completed_by
-     WHERE ct.exit_record_id = $1
-     ORDER BY ct.sort_order ASC, ct.id ASC`,
-    [exitRecordId],
-  );
-  return rows;
-}
-
-async function addClearanceTask(tenant, exitRecordId, data) {
-  const pool = await getTenantPool(tenant.dbName);
-  const { rows: erCheck } = await pool.query(
-    `SELECT id FROM exit_records WHERE id = $1`, [exitRecordId],
-  );
-  if (!erCheck.length) throw ApiError.notFound('Exit record not found');
-
-  const sla = data.sla_hours || 0;
-  const dueDate = data.due_date ? new Date(data.due_date) : (sla > 0 ? new Date(Date.now() + sla * 60 * 60 * 1000) : null);
-
-  const { rows } = await pool.query(
-    `INSERT INTO clearance_tasks (exit_record_id, department, task_name, assigned_to, notes, sort_order, sla_hours, due_date)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     RETURNING *`,
-    [
-      exitRecordId,
-      data.department,
-      data.task_name,
-      data.assigned_to || null,
-      data.notes || null,
-      data.sort_order || 0,
-      sla,
-      dueDate
-    ],
-  );
-
-  const taskRow = rows[0];
-
-  if (taskRow.assigned_to) {
-    try {
-      const { rows: exRec } = await pool.query(
-        `SELECT er.*, e.first_name, e.last_name, e.full_name FROM exit_records er LEFT JOIN employees e ON e.id = er.employee_id WHERE er.id = $1`,
-        [exitRecordId]
-      );
-      const targetEmpName = exRec[0] ? empName(exRec[0]) : 'Employee';
-      await sendSystemNotification(tenant, {
-        employeeId: taskRow.assigned_to,
-        forAdmin: false,
-        title: 'Offboarding Clearance Task Assigned',
-        message: `You have been assigned a clearance task: "${taskRow.task_name}" for ${targetEmpName}.`,
-        emailMessage: `You have been assigned a clearance task: "${taskRow.task_name}" for employee ${targetEmpName}.`,
-        type: 'exit_management',
-        emailSubject: 'HRIS - New Clearance Task Assigned',
-      });
-    } catch (err) {
-      console.error('Failed to send task creation assignment notification:', err);
-    }
-  }
-
-  return taskRow;
-}
-
-async function updateClearanceTask(tenant, exitRecordId, taskId, data, userId) {
-  const pool = await getTenantPool(tenant.dbName);
-
-  const { rows: existing } = await pool.query(
-    `SELECT * FROM clearance_tasks WHERE id = $1 AND exit_record_id = $2`,
-    [taskId, exitRecordId],
-  );
-  if (!existing.length) throw ApiError.notFound('Clearance task not found');
-
-  const fields = [];
-  const params = [];
-  let n = 1;
-
-  const simpleFields = ['task_name', 'department', 'assigned_to', 'notes', 'sort_order', 'sla_hours', 'due_date', 'document_url', 'document_name', 'uploaded_at'];
-  for (const field of simpleFields) {
-    if (data[field] !== undefined) {
-      params.push(data[field]);
-      fields.push(`${field} = $${n++}`);
-    }
-  }
-
-  if (data.is_completed !== undefined) {
-    params.push(data.is_completed);
-    fields.push(`is_completed = $${n++}`);
-    if (data.is_completed && !existing[0].is_completed) {
-      fields.push(`completed_at = NOW()`);
-      params.push(userId);
-      fields.push(`completed_by = $${n++}`);
-    } else if (!data.is_completed) {
-      fields.push(`completed_at = NULL`);
-      fields.push(`completed_by = NULL`);
-    }
-  }
-
-  if (!fields.length) {
-    return existing[0];
-  }
-
-  fields.push('updated_at = NOW()');
-  params.push(taskId);
-  const { rows } = await pool.query(
-    `UPDATE clearance_tasks SET ${fields.join(', ')} WHERE id = $${n} RETURNING *`,
-    params,
-  );
-
-  const updatedTask = rows[0];
-
-  // Notify newly assigned employee if assignment changed
-  if (data.assigned_to !== undefined && data.assigned_to !== existing[0].assigned_to && data.assigned_to !== null) {
-    try {
-      const { rows: exRec } = await pool.query(
-        `SELECT er.*, e.first_name, e.last_name, e.full_name FROM exit_records er LEFT JOIN employees e ON e.id = er.employee_id WHERE er.id = $1`,
-        [exitRecordId]
-      );
-      const targetEmpName = exRec[0] ? empName(exRec[0]) : 'Employee';
-      await sendSystemNotification(tenant, {
-        employeeId: data.assigned_to,
-        forAdmin: false,
-        title: 'Offboarding Clearance Task Assigned',
-        message: `You have been assigned a clearance task: "${updatedTask.task_name}" for ${targetEmpName}.`,
-        emailMessage: `You have been assigned a clearance task: "${updatedTask.task_name}" for employee ${targetEmpName}.`,
-        type: 'exit_management',
-        emailSubject: 'HRIS - New Clearance Task Assigned',
-      });
-    } catch (err) {
-      console.error('Failed to send task assignment notification:', err);
-    }
-  }
-
-  // Notify completion if marked completed
-  if (data.is_completed && !existing[0].is_completed) {
-    try {
-      const { rows: exRec } = await pool.query(
-        `SELECT er.*, e.id AS emp_id, e.work_email, e.first_name, e.last_name, e.full_name FROM exit_records er LEFT JOIN employees e ON e.id = er.employee_id WHERE er.id = $1`,
-        [exitRecordId]
-      );
-      if (exRec[0]) {
-        const targetEmpName = empName(exRec[0]);
-        const completedByName = await getUserName(pool, userId);
-        
-        // Notify HR Admins
-        await sendSystemNotification(tenant, {
-          forAdmin: true,
-          title: 'Clearance Task Completed',
-          message: `Task "${updatedTask.task_name}" for ${targetEmpName} has been completed by ${completedByName}.`,
-          type: 'exit_management',
-          sendEmail: false,
-        });
-
-        // Notify exiting employee
-        await sendSystemNotification(tenant, {
-          employeeId: exRec[0].emp_id,
-          forAdmin: false,
-          title: 'Clearance Task Completed',
-          message: `The clearance task "${updatedTask.task_name}" in department "${updatedTask.department}" has been marked as completed.`,
-          type: 'exit_management',
-          emailSubject: 'HRIS - Clearance Task Completed',
-        });
-      }
-    } catch (err) {
-      console.error('Failed to send task completion notification:', err);
-    }
-  }
-
-  const ready = await checkAutoReadyForClosure(pool, exitRecordId);
-  if (ready) {
-    await pool.query(
-      `UPDATE exit_records SET status = 'In Progress', updated_at = NOW()
-       WHERE id = $1 AND status IN ('Approved', 'clearance')`,
-      [exitRecordId],
-    );
-  }
-
-  return updatedTask;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Asset Returns                                                      */
-/* ------------------------------------------------------------------ */
-
-async function listAssetReturns(tenant, exitRecordId) {
-  const pool = await getTenantPool(tenant.dbName);
-  const { rows: erCheck } = await pool.query(
-    `SELECT id FROM exit_records WHERE id = $1`, [exitRecordId],
-  );
-  if (!erCheck.length) throw ApiError.notFound('Exit record not found');
-
-  const { rows } = await pool.query(
-    `SELECT ar.*, rb.first_name AS returned_by_name
-     FROM asset_returns ar
-     LEFT JOIN employees rb ON rb.id = ar.returned_by
-     WHERE ar.exit_record_id = $1
-     ORDER BY ar.created_at ASC`,
-    [exitRecordId],
-  );
-  return rows;
-}
-
-async function addAssetReturn(tenant, exitRecordId, data) {
-  const pool = await getTenantPool(tenant.dbName);
-  const { rows: erCheck } = await pool.query(
-    `SELECT id FROM exit_records WHERE id = $1`, [exitRecordId],
-  );
-  if (!erCheck.length) throw ApiError.notFound('Exit record not found');
-
-  const { rows } = await pool.query(
-    `INSERT INTO asset_returns
-       (exit_record_id, asset_name, asset_code, asset_type,
-        condition_on_return, return_date, returned_by, notes, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     RETURNING *`,
-    [
-      exitRecordId,
-      data.asset_name,
-      data.asset_code || null,
-      data.asset_type || null,
-      data.condition_on_return || null,
-      data.return_date || null,
-      data.returned_by || null,
-      data.notes || null,
-      data.status || 'Pending',
-    ],
-  );
-  return rows[0];
-}
-
-async function updateAssetReturn(tenant, exitRecordId, assetId, data, userId) {
-  const pool = await getTenantPool(tenant.dbName);
-
-  const { rows: existing } = await pool.query(
-    `SELECT * FROM asset_returns WHERE id = $1 AND exit_record_id = $2`,
-    [assetId, exitRecordId],
-  );
-  if (!existing.length) throw ApiError.notFound('Asset return not found');
-
-  const fields = [];
-  const params = [];
-  let n = 1;
-
-  const allowedFields = [
-    'asset_name', 'asset_code', 'asset_type', 'condition_on_return',
-    'return_date', 'returned_by', 'notes', 'status',
-  ];
-  for (const field of allowedFields) {
-    if (data[field] !== undefined) {
-      params.push(data[field]);
-      fields.push(`${field} = $${n++}`);
-    }
-  }
-
-  if (!fields.length) return existing[0];
-
-  fields.push('updated_at = NOW()');
-  params.push(assetId);
-  const { rows } = await pool.query(
-    `UPDATE asset_returns SET ${fields.join(', ')} WHERE id = $${n} RETURNING *`,
-    params,
-  );
-
-  const ready = await checkAutoReadyForClosure(pool, exitRecordId);
-  if (ready) {
-    await pool.query(
-      `UPDATE exit_records SET status = 'In Progress', updated_at = NOW()
-       WHERE id = $1 AND status IN ('Approved', 'clearance')`,
-      [exitRecordId],
-    );
-  }
-
-  return rows[0];
-}
-
-/* ------------------------------------------------------------------ */
-/*  Exit Documents                                                     */
-/* ------------------------------------------------------------------ */
-
-async function listExitDocuments(tenant, exitRecordId) {
-  const pool = await getTenantPool(tenant.dbName);
-  const { rows: erCheck } = await pool.query(
-    `SELECT id FROM exit_records WHERE id = $1`, [exitRecordId],
-  );
-  if (!erCheck.length) throw ApiError.notFound('Exit record not found');
-
-  const { rows } = await pool.query(
-    `SELECT * FROM exit_documents WHERE exit_record_id = $1 ORDER BY created_at DESC`,
-    [exitRecordId],
-  );
-  return rows;
-}
-
-async function generateLetterPdf(tenant, exitRecordId, docType, userId, options = {}) {
-  const pool = await getTenantPool(tenant.dbName);
-  return generateExitLetterPdf(tenant, exitRecordId, docType, userId, { ...options, pool });
-}
-
-async function deliverExitDocumentToEmployee(tenant, record, docType, pdfResult) {
-  const employeeId = record.employee_id;
-  const employeeName = empName(record);
-  const employeeEmail = record.work_email || record.personal_email;
-  const title = `${docType} Ready`;
-  const message = `Your ${docType} has been generated. You can view it in your exit portal under Exit Documents.`;
-  const emailIntro = `Please find attached your ${docType}. You may also access this document from your HRIS exit portal.`;
-
-  let notificationSent = false;
-  let emailSent = false;
-
-  try {
-    await sendSystemNotification(tenant, {
-      employeeId,
-      forAdmin: false,
-      title,
-      message,
-      type: 'exit_management',
-      emailSubject: `HRIS – ${docType} – ${employeeName}`,
-      sendEmail: false,
-    });
-    notificationSent = true;
-  } catch (err) {
-    console.error('Failed to push exit document notification:', err);
-  }
-
-  if (employeeEmail && pdfResult?.filePath && fs.existsSync(pdfResult.filePath)) {
-    try {
-      const { sendMail } = require('../../utils/mail');
-      const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });
-      await sendMail({
-        to: employeeEmail,
-        subject: `Your ${docType} – ${employeeName}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;">
-            <div style="border-bottom: 3px solid #0F766E; padding-bottom: 16px; margin-bottom: 24px;">
-              <h1 style="color: #0F766E; font-size: 22px; margin: 0;">HR Department</h1>
-            </div>
-            <p style="color: #374151;">${today}</p>
-            <p style="color: #374151;">Dear ${employeeName},</p>
-            <p style="color: #374151; line-height: 1.6;">${emailIntro}</p>
-            <p style="color: #374151; line-height: 1.6;">Please retain this document for your personal records.</p>
-            <br/>
-            <p style="color: #374151; margin: 0;">Yours sincerely,</p>
-            <p style="color: #374151; font-weight: bold; margin: 4px 0;">HR Department</p>
-            <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 24px 0;"/>
-            <p style="color: #9ca3af; font-size: 11px;">This is an automated communication from your HRIS Portal. Please do not reply to this email.</p>
-          </div>
-        `,
-        text: `${title}\n\nDear ${employeeName},\n\n${emailIntro}\n\nHR Department`,
-        attachments: [{
-          filename: path.basename(pdfResult.filePath),
-          path: pdfResult.filePath,
-        }],
-      });
-      emailSent = true;
-    } catch (err) {
-      console.error('Failed to email exit document:', err);
-    }
-  }
-
-  const io = getIo();
-  if (io) {
-    if (employeeId) {
-      io.to(`user:${employeeId}`).emit('notification:new', {
-        title,
-        message,
-        type: 'exit_management',
-      });
-    }
-    io.to(`exit:${record.id}`).emit('exit:document_generated', {
-      exitRecordId: record.id,
-      documentType: docType,
-      fileUrl: pdfResult?.relativeUrl || null,
-    });
-  }
-
-  return { notificationSent, emailSent };
-}
-
-
-async function generateExitDocument(tenant, exitRecordId, data, userId) {
-  const pool = await getTenantPool(tenant.dbName);
-
-  const { rows: erRows } = await pool.query(
-    `SELECT er.*, e.id AS emp_id, e.full_name, e.first_name, e.last_name,
-            e.work_email, e.personal_email, e.job_title, e.department
-     FROM exit_records er
-     LEFT JOIN employees e ON e.id = er.employee_id
-     WHERE er.id = $1`,
-    [exitRecordId],
-  );
-  if (!erRows.length) throw ApiError.notFound('Exit record not found');
-
-  const record = erRows[0];
-  const docType = data.document_type || 'Exit Document';
-
-  const result = await generateLetterPdf(tenant, exitRecordId, docType, userId, {
-    templateId: data.template_id || null,
-  });
-  if (!result?.row) throw ApiError.internal('Failed to generate exit document');
-
-  const docTypeLower = docType.toLowerCase();
-  if (docTypeLower.includes('experience')) {
-    await pool.query(
-      `UPDATE exit_records SET experience_letter_issued = true, updated_at = NOW() WHERE id = $1`,
-      [exitRecordId],
-    );
-  } else if (docTypeLower.includes('noc') || docTypeLower.includes('no objection')) {
-    await pool.query(
-      `UPDATE exit_records SET noc_issued = true, updated_at = NOW() WHERE id = $1`,
-      [exitRecordId],
-    );
-  }
-
-  const delivery = await deliverExitDocumentToEmployee(tenant, record, docType, result);
-
-  await logAudit(pool, exitRecordId, userId, 'document_generated', null, {
-    document_type: docType,
-    template_id: result.templateId,
-    template_name: result.templateName,
-    notification_sent: delivery.notificationSent,
-    email_sent: delivery.emailSent,
-  });
-
-  return {
-    ...result.row,
-    template_id: result.templateId,
-    template_name: result.templateName,
-    notification_sent: delivery.notificationSent,
-    email_sent: delivery.emailSent,
-  };
-}
-
-/* ------------------------------------------------------------------ */
-/*  Exit Interviews                                                    */
-/* ------------------------------------------------------------------ */
-
-async function submitExitInterview(tenant, data, userId) {
-  const pool = await getTenantPool(tenant.dbName);
-  const { rows: erCheck } = await pool.query(
-    `SELECT id, status FROM exit_records WHERE id = $1`, [data.exit_request_id],
-  );
-  if (!erCheck.length) throw ApiError.notFound('Exit record not found');
-
-  const { rows: existing } = await pool.query(
-    `SELECT id FROM exit_interviews WHERE exit_request_id = $1`, [data.exit_request_id],
-  );
-  if (existing.length) throw ApiError.conflict('Exit interview already submitted for this record');
-
-  const conductedByName = await getUserName(pool, userId);
-  const { rows } = await pool.query(
-    `INSERT INTO exit_interviews
-       (exit_request_id, conducted_by, conducted_by_name, format, feedback,
-        rehire_eligible, overall_rating, conducted_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-     RETURNING *`,
-    [
-      data.exit_request_id, userId, conductedByName,
-      data.format, data.feedback, data.rehire_eligible || 'maybe',
-      data.overall_rating,
-    ],
-  );
-
-  await logAudit(pool, data.exit_request_id, userId, 'exit_interview_submitted', null, {
-    format: data.format, rating: data.overall_rating, rehire: data.rehire_eligible,
-  });
-
-  return rows[0];
-}
-
-async function getExitInterview(tenant, exitRequestId) {
-  const pool = await getTenantPool(tenant.dbName);
-  const { rows } = await pool.query(
-    `SELECT ei.*, cb.full_name AS conducted_by_full_name
-     FROM exit_interviews ei
-     LEFT JOIN employees cb ON cb.id = ei.conducted_by
-     WHERE ei.exit_request_id = $1
-     ORDER BY ei.created_at DESC LIMIT 1`,
-    [exitRequestId],
+    `SELECT * FROM exit_workflows
+     WHERE is_active = true AND (exit_type = $1 OR exit_type IS NULL)
+       AND EXISTS (SELECT 1 FROM exit_workflow_stages s WHERE s.workflow_id = exit_workflows.id)
+     ORDER BY (exit_type = $1) DESC NULLS LAST, is_default DESC, id ASC
+     LIMIT 1`,
+    [exitType],
   );
   return rows[0] || null;
 }
 
 /* ------------------------------------------------------------------ */
-/*  Final Settlements                                                  */
+/*  Submit                                                            */
 /* ------------------------------------------------------------------ */
 
-async function processSettlement(tenant, data, userId) {
+async function submitExitRequest(tenant, data, exitUser) {
   const pool = await getTenantPool(tenant.dbName);
-  const { rows: erCheck } = await pool.query(
-    `SELECT id, status FROM exit_records WHERE id = $1`, [data.exit_request_id],
+  const employeeId = data.employee_id || exitUser.employeeId;
+  if (!employeeId) throw ApiError.badRequest('employee_id is required');
+
+  const { rows: empRows } = await pool.query(
+    `SELECT id, full_name, first_name, last_name, work_email, employment_status
+     FROM employees WHERE id = $1 AND deleted_at IS NULL`, [employeeId],
   );
-  if (!erCheck.length) throw ApiError.notFound('Exit record not found');
+  if (!empRows.length) throw ApiError.notFound('Employee not found');
 
-  const { rows: existing } = await pool.query(
-    `SELECT id, payment_status FROM final_settlements WHERE exit_request_id = $1`, [data.exit_request_id],
+  const { rows: active } = await pool.query(
+    `SELECT id FROM exit_requests
+     WHERE employee_id = $1 AND status IN ('DRAFT','SUBMITTED','IN_PROGRESS')`, [employeeId],
   );
-  if (existing.length && existing[0].payment_status === 'processed') {
-    throw ApiError.conflict('Settlement already processed');
-  }
+  if (active.length) throw ApiError.conflict('An active exit request already exists for this employee');
 
-  const netPayable = (parseFloat(data.unpaid_salary) || 0)
-    + (parseFloat(data.leave_encashment) || 0)
-    + (parseFloat(data.gratuity) || 0)
-    - (parseFloat(data.deductions) || 0);
-
-  let row;
-  if (existing.length) {
-    const { rows } = await pool.query(
-      `UPDATE final_settlements
-       SET unpaid_salary = $1, leave_encashment = $2, gratuity = $3,
-           deductions = $4, net_payable = $5, payment_status = 'processed',
-           payment_date = NOW(), processed_by = $6, notes = $7, updated_at = NOW()
-       WHERE exit_request_id = $8 RETURNING *`,
-      [
-        data.unpaid_salary || 0, data.leave_encashment || 0, data.gratuity || 0,
-        data.deductions || 0, netPayable, userId, data.notes || null, data.exit_request_id,
-      ],
-    );
-    row = rows[0];
-  } else {
-    const { rows } = await pool.query(
-      `INSERT INTO final_settlements
-         (exit_request_id, unpaid_salary, leave_encashment, gratuity,
-          deductions, net_payable, payment_status, payment_date, processed_by, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, 'processed', NOW(), $7, $8)
-       RETURNING *`,
-      [
-        data.exit_request_id, data.unpaid_salary || 0, data.leave_encashment || 0,
-        data.gratuity || 0, data.deductions || 0, netPayable, userId, data.notes || null,
-      ],
-    );
-    row = rows[0];
-  }
-
-  await logAudit(pool, data.exit_request_id, userId, 'settlement_processed', null, {
-    net_payable: netPayable, payment_status: 'processed',
-  });
-
-  const result = row;
-  try {
-    const fileUrl = await generateSettlementSlipPdf(tenant, data.exit_request_id, row, userId);
-    result.file_url = fileUrl;
-  } catch (err) {
-    console.error('Failed to generate Full & Final Settlement PDF slip:', err);
-  }
-
-  return result;
-}
-
-async function getSettlement(tenant, exitRequestId) {
-  const pool = await getTenantPool(tenant.dbName);
-  const { rows } = await pool.query(
-    `SELECT fs.*, pb.full_name AS processed_by_name, ed.file_url
-     FROM final_settlements fs
-     LEFT JOIN employees pb ON pb.id = fs.processed_by
-     LEFT JOIN exit_documents ed ON ed.exit_record_id = fs.exit_request_id AND ed.document_type = 'Full & Final Statement'
-     WHERE fs.exit_request_id = $1
-     ORDER BY fs.created_at DESC LIMIT 1`,
-    [exitRequestId],
-  );
-  return rows[0] || null;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Audit Logs                                                         */
-/* ------------------------------------------------------------------ */
-
-async function getUserName(pool, userId) {
-  if (!userId) return 'System';
-  const { rows } = await pool.query(
-    `SELECT full_name, first_name, last_name FROM employees WHERE id = $1`, [userId],
-  );
-  return rows[0] ? empName(rows[0]) : 'Unknown';
-}
-
-async function logAudit(pool, exitRequestId, userId, action, beforeVal, afterVal) {
-  const performedByName = await getUserName(pool, userId);
-  await pool.query(
-    `INSERT INTO exit_audit_logs
-       (exit_request_id, performed_by, performed_by_name, action, before_value, after_value)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [
-      exitRequestId, userId, performedByName, action,
-      beforeVal ? JSON.stringify(beforeVal) : null,
-      afterVal ? JSON.stringify(afterVal) : null,
-    ],
-  );
-}
-
-async function getAuditLog(tenant, exitRequestId) {
-  const pool = await getTenantPool(tenant.dbName);
-  const { rows: erCheck } = await pool.query(
-    `SELECT id FROM exit_records WHERE id = $1`, [exitRequestId],
-  );
-  if (!erCheck.length) throw ApiError.notFound('Exit record not found');
-
-  const { rows } = await pool.query(
-    `SELECT * FROM exit_audit_logs
-     WHERE exit_request_id = $1
-     ORDER BY created_at DESC`,
-    [exitRequestId],
-  );
-  return rows;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Termination Types Dropdown                                         */
-/* ------------------------------------------------------------------ */
-
-async function getActiveTerminationTypes(tenant) {
-  const pool = await getTenantPool(tenant.dbName);
-  const { rows } = await pool.query(
-    `SELECT id, name, description
-     FROM termination_types
-     WHERE is_active = true
-     ORDER BY sort_order ASC, name ASC`,
-  );
-  return rows;
-}
-
-/* ------------------------------------------------------------------ */
-/*  PDF Settlement Slip Generator                                      */
-/* ------------------------------------------------------------------ */
-
-async function generateSettlementSlipPdf(tenant, exitRecordId, settlementData, userId) {
-  const pool = await getTenantPool(tenant.dbName);
-  
-  // Fetch exit record with employee details
-  const { rows } = await pool.query(`
-    SELECT er.*, e.full_name, e.first_name, e.last_name, e.emp_id, e.department, e.job_title, e.join_date
-    FROM exit_records er
-    INNER JOIN employees e ON e.id = er.employee_id
-    WHERE er.id = $1
-  `, [exitRecordId]);
-  
-  const record = rows[0];
-  if (!record) return null;
-  
-  const empNameStr = record.full_name || [record.first_name, record.last_name].filter(Boolean).join(' ') || 'Employee';
-  const tenantDb = tenant.dbName || 'default';
-  
-  // Ensure settlements folder exists for this tenant
-  const targetDir = path.resolve(env.UPLOAD.dir, 'settlements', tenantDb);
-  if (!fs.existsSync(targetDir)) {
-    fs.mkdirSync(targetDir, { recursive: true });
-  }
-  
-  const filename = `${exitRecordId}_settlement.pdf`;
-  const filePath = path.join(targetDir, filename);
-  const relativeUrl = `/uploads/settlements/${tenantDb}/${filename}`;
-  
-  const doc = new PDFDocument({ margin: 50, size: 'A4' });
-  const writeStream = fs.createWriteStream(filePath);
-  doc.pipe(writeStream);
-  
-  // Draw Professional Header
-  doc.fillColor('#0F766E').fontSize(20).text('Full & Final Settlement Statement', { align: 'center' });
-  doc.moveDown(1.5);
-  
-  // Employee details section
-  doc.fillColor('#1e293b').fontSize(12).text(`Employee ID: ${record.emp_id || '—'}`);
-  doc.text(`Employee Name: ${empNameStr}`);
-  doc.text(`Department: ${record.department || '—'}`);
-  doc.text(`Designation: ${record.job_title || '—'}`);
-  doc.text(`Last Working Day: ${record.last_working_day ? new Date(record.last_working_day).toLocaleDateString('en-GB') : '—'}`);
-  doc.moveDown(2);
-  
-  // Grid Table Headers
-  const tableTop = 200;
-  doc.fillColor('#0F766E').fontSize(12);
-  doc.text('Description', 50, tableTop);
-  doc.text('Amount', 400, tableTop, { align: 'right', width: 150 });
-  doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).strokeColor('#e2e8f0').stroke();
-  
-  // Grid Table Rows
-  let y = tableTop + 25;
-  doc.fillColor('#334155').fontSize(10);
-  
-  const rowsData = [
-    { desc: 'Unpaid Salary', amount: parseFloat(settlementData.unpaid_salary) || 0 },
-    { desc: 'Leave Encashment', amount: parseFloat(settlementData.leave_encashment) || 0 },
-    { desc: 'Gratuity Pay', amount: parseFloat(settlementData.gratuity) || 0 },
-    { desc: 'Less: Deductions', amount: -(parseFloat(settlementData.deductions) || 0), isDeduction: true }
-  ];
-  
-  for (const item of rowsData) {
-    doc.text(item.desc, 50, y);
-    doc.text(`${item.amount.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}`, 400, y, { align: 'right', width: 150 });
-    y += 20;
-  }
-  
-  doc.moveTo(50, y).lineTo(550, y).strokeColor('#0F766E').stroke();
-  y += 10;
-  
-  // Net Payable
-  const netPayable = parseFloat(settlementData.net_payable) || 0;
-  doc.fillColor('#0F766E').fontSize(12).font('Helvetica-Bold');
-  doc.text('Net Payable Amount', 50, y);
-  doc.text(`${netPayable.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}`, 400, y, { align: 'right', width: 150 });
-  
-  y += 40;
-  doc.font('Helvetica').fillColor('#64748b').fontSize(9);
-  doc.text(`Notes: ${settlementData.notes || 'No additional remarks.'}`, 50, y, { width: 500 });
-  
-  // Signatures
-  y += 80;
-  doc.moveTo(50, y).lineTo(200, y).strokeColor('#cbd5e1').stroke();
-  doc.moveTo(400, y).lineTo(550, y).strokeColor('#cbd5e1').stroke();
-  
-  y += 5;
-  doc.fillColor('#334155').fontSize(10);
-  doc.text('HR Manager Signature', 50, y);
-  doc.text('Employee Signature', 400, y);
-  
-  doc.end();
-  
-  // Wait for stream to write completely before committing database record
-  await new Promise((resolve, reject) => {
-    writeStream.on('finish', resolve);
-    writeStream.on('error', reject);
-  });
-  
-  // Insert or Update the F&F Slip metadata inside exit_documents
-  const docTitle = `Full & Final Settlement - ${empNameStr}`;
-  const { rows: existingDoc } = await pool.query(
-    `SELECT id FROM exit_documents WHERE exit_record_id = $1 AND document_type = 'Full & Final Statement'`,
-    [exitRecordId]
-  );
-  
-  if (existingDoc.length) {
-    await pool.query(
-      `UPDATE exit_documents
-       SET file_url = $1, file_name = $2, generated_at = NOW(), generated_by = $3
-       WHERE id = $4`,
-      [relativeUrl, filename, userId || null, existingDoc[0].id]
-    );
-  } else {
-    await pool.query(
-      `INSERT INTO exit_documents (exit_record_id, document_type, document_title, file_url, file_name, generated_at, generated_by)
-       VALUES ($1, 'Full & Final Statement', $2, $3, $4, NOW(), $5)`,
-      [exitRecordId, docTitle, relativeUrl, filename, userId || null]
-    );
-  }
-  
-  return relativeUrl;
-}
-
-/* ------------------------------------------------------------------ */
-/*  Resignation Withdrawal Workflow                                    */
-/* ------------------------------------------------------------------ */
-
-async function requestResignationWithdrawal(tenant, id, data, userId) {
-  const pool = await getTenantPool(tenant.dbName);
-  
-  const { rows } = await pool.query(
-    `SELECT er.*, e.id AS emp_id, e.first_name, e.last_name, e.full_name
-     FROM exit_records er
-     INNER JOIN employees e ON e.id = er.employee_id
-     WHERE er.id = $1`,
-    [id]
-  );
-  
-  const record = rows[0];
-  if (!record) throw ApiError.notFound('Exit record not found');
-  
-  // Guardrails: Prevents withdrawal once settlement begins or complete
-  if (['settlement', 'Completed', 'Rejected'].includes(record.status)) {
-    throw ApiError.badRequest('Resignation withdrawal is not allowed at this stage');
-  }
-
-  // Set withdrawal status as pending
-  await pool.query(
-    `UPDATE exit_records
-     SET is_withdrawal_requested = true,
-         withdrawal_reason = $1,
-         withdrawal_status = 'pending',
-         withdrawal_requested_at = NOW(),
-         updated_at = NOW()
-     WHERE id = $2`,
-    [data.withdrawal_reason.trim(), id]
-  );
-
-  await logAudit(pool, id, userId, 'withdrawal_requested', null, {
-    withdrawal_reason: data.withdrawal_reason.trim()
-  });
-
-  const empNameStr = empName(record);
-
-  // Notify HR/Admin in-app
-  try {
-    await sendSystemNotification(tenant, {
-      forAdmin: true,
-      title: 'Resignation Withdrawal Request',
-      message: `${empNameStr} has submitted a request to withdraw their resignation.`,
-      type: 'exit_management',
-      sendEmail: false
-    });
-  } catch (err) {
-    console.error('Failed to push withdrawal notification:', err);
-  }
-
-  // Real-time WebSocket event
-  const io = getIo();
-  if (io) {
-    io.to(`tenant:${tenant.dbName}`).emit('exit:workflow_updated', {
-      exitRecordId: id,
-      status: record.status,
-      is_withdrawal_requested: true,
-      withdrawal_status: 'pending'
-    });
-    io.to(`exit:${id}`).emit('exit:task_updated', {
-      is_withdrawal_requested: true,
-      withdrawal_status: 'pending'
-    });
-  }
-
-  return getExitRecord(tenant, id);
-}
-
-async function approveResignationWithdrawal(tenant, id, userId) {
-  const pool = await getTenantPool(tenant.dbName);
-  
-  const { rows } = await pool.query(
-    `SELECT er.*, e.id AS emp_id, e.first_name, e.last_name, e.full_name
-     FROM exit_records er
-     INNER JOIN employees e ON e.id = er.employee_id
-     WHERE er.id = $1`,
-    [id]
-  );
-  
-  const record = rows[0];
-  if (!record) throw ApiError.notFound('Exit record not found');
-  if (record.withdrawal_status !== 'pending') {
-    throw ApiError.badRequest('No pending withdrawal request found');
-  }
+  const exitType = data.exit_type === 'termination' ? 'termination' : 'resignation';
+  const workflow = await getDefaultWorkflowFor(pool, exitType);
+  if (!workflow) throw ApiError.badRequest('No active exit workflow is configured. Configure one under Settings > Exit Management.');
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const firstStage = await engine.getFirstStage(client, workflow.id);
+    if (!firstStage) throw ApiError.badRequest('The configured workflow has no stages');
 
-    // 1. Approve withdrawal and transition exit record status to Canceled/Rejected
-    await client.query(
-      `UPDATE exit_records
-       SET status = 'Rejected',
-           withdrawal_status = 'approved',
-           is_withdrawal_requested = false,
-           withdrawal_approved_by = $1,
-           withdrawal_approved_at = NOW(),
-           updated_at = NOW()
-       WHERE id = $2`,
-      [userId, id]
-    );
-
-    // 2. Reset Employee employment_status to Active
-    await client.query(
-      `UPDATE employees
-       SET employment_status = 'Active', updated_at = NOW()
-       WHERE id = $1`,
-      [record.emp_id]
-    );
-
-    // 3. Clear clearance tasks
-    await client.query(
-      `DELETE FROM clearance_tasks WHERE exit_record_id = $1`,
-      [id]
-    );
-
-    // 4. Log Audit
-    const performedByName = await getUserName(pool, userId);
-    await client.query(
-      `INSERT INTO exit_audit_logs (exit_request_id, performed_by, performed_by_name, action, before_value, after_value)
-       VALUES ($1, $2, $3, 'withdrawal_approved', $4, $5)`,
+    const { rows: reqRows } = await client.query(
+      `INSERT INTO exit_requests
+         (employee_id, exit_type, termination_type_id, workflow_id, status,
+          exit_reason, reason_detail, notice_date, resignation_date, last_working_day,
+          notice_period_days, is_voluntary, initiated_by, submitted_at)
+       VALUES ($1,$2,$3,$4,'SUBMITTED',$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+       RETURNING id`,
       [
-        id, userId, performedByName,
-        JSON.stringify({ withdrawal_status: 'pending', is_withdrawal_requested: true }),
-        JSON.stringify({ withdrawal_status: 'approved', is_withdrawal_requested: false, status: 'Rejected' })
-      ]
+        employeeId, exitType, data.termination_type_id || null, workflow.id,
+        data.exit_reason || null, data.reason_detail || null, data.notice_date || null,
+        data.resignation_date || null, data.last_working_day || null,
+        data.notice_period_days || null,
+        data.is_voluntary !== undefined ? data.is_voluntary : (exitType === 'resignation'),
+        exitUser.employeeId || null,
+      ],
     );
+    const requestId = reqRows[0].id;
+
+    // Enter stage 1 (sets IN_PROGRESS, pointers, PENDING slot, checklist seeding).
+    await engine.seedStageEntry(client, requestId, firstStage);
 
     await client.query('COMMIT');
 
-    // Notify employee in-app
+    emit(tenant, `tenant:${tenant.dbName}`, 'exit:request_created', { exitRequestId: Number(requestId) });
     try {
-      await sendSystemNotification(tenant, {
-        employeeId: record.emp_id,
-        forAdmin: false,
-        title: 'Resignation Withdrawal Approved',
-        message: 'Your resignation withdrawal request has been approved. Your employment status is now active.',
+      await notify().sendSystemNotification(tenant, {
+        forAdmin: true,
+        title: 'New Exit Request Submitted',
+        message: `${empName(empRows[0])} submitted a ${exitType} request.`,
         type: 'exit_management',
-        sendEmail: false
+        sendEmail: false,
       });
-    } catch (err) {
-      console.error('Failed to push withdrawal approval notification:', err);
-    }
+    } catch (_) { /* non-blocking */ }
 
-    // Real-time WebSocket event
-    const io = getIo();
-    if (io) {
-      io.to(`tenant:${tenant.dbName}`).emit('exit:workflow_updated', {
-        exitRecordId: id,
-        status: 'Rejected',
-        is_withdrawal_requested: false,
-        withdrawal_status: 'approved'
-      });
-      io.to(`exit:${id}`).emit('exit:task_updated', {
-        status: 'Rejected',
-        is_withdrawal_requested: false,
-        withdrawal_status: 'approved'
-      });
-    }
-
+    return getExitRequest(tenant, requestId, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
   } finally {
     client.release();
   }
-
-  return getExitRecord(tenant, id);
 }
 
-async function rejectResignationWithdrawal(tenant, id, rejectionReason, userId) {
+/* ------------------------------------------------------------------ */
+/*  List (visibility-gated) + Get one (derived stage state)          */
+/* ------------------------------------------------------------------ */
+
+async function listExitRequests(tenant, filters, exitUser) {
   const pool = await getTenantPool(tenant.dbName);
-  
+  const visibleIds = await resolver.listVisibleExitRequestIds(pool, exitUser, filters);
+  if (!visibleIds.length) {
+    return { records: [], pagination: { total: 0, page: 1, limit: Number(filters.limit) || 10, totalPages: 1 } };
+  }
+
+  const params = [visibleIds];
+  const conds = ['er.id = ANY($1::bigint[])'];
+  let i = 2;
+  if (filters.status && filters.status !== 'all') { params.push(filters.status); conds.push(`er.status = $${i++}`); }
+  if (filters.exit_type && filters.exit_type !== 'all') { params.push(filters.exit_type); conds.push(`er.exit_type = $${i++}`); }
+  if (filters.employee_id) { params.push(Number(filters.employee_id)); conds.push(`er.employee_id = $${i++}`); }
+  if (filters.search && filters.search.trim()) {
+    params.push(`%${filters.search.trim()}%`);
+    conds.push(`(e.full_name ILIKE $${i} OR COALESCE(er.exit_reason,'') ILIKE $${i})`); i++;
+  }
+
+  const page = Math.max(1, parseInt(filters.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(filters.limit, 10) || 10));
+  const offset = (page - 1) * limit;
+
+  const where = conds.join(' AND ');
+  const { rows: countRows } = await pool.query(
+    `SELECT COUNT(*)::int AS total FROM exit_requests er LEFT JOIN employees e ON e.id = er.employee_id WHERE ${where}`,
+    params,
+  );
+  const total = countRows[0].total;
+
+  params.push(limit, offset);
   const { rows } = await pool.query(
-    `SELECT er.*, e.id AS emp_id, e.first_name, e.last_name, e.full_name
-     FROM exit_records er
-     INNER JOIN employees e ON e.id = er.employee_id
-     WHERE er.id = $1`,
-    [id]
+    `SELECT er.id, er.employee_id, er.exit_type, er.status, er.workflow_id,
+            er.current_stage_id, er.current_owner_department_id, er.last_working_day,
+            er.exit_reason, er.created_at, er.submitted_at, er.stage_entered_at,
+            e.full_name, e.first_name, e.last_name, e.job_title, e.department,
+            s.name AS current_stage_name, s.stage_order AS current_stage_order,
+            d.name AS current_owner_department_name,
+            (SELECT COUNT(*)::int FROM exit_workflow_stages ws WHERE ws.workflow_id = er.workflow_id) AS total_stages
+     FROM exit_requests er
+     LEFT JOIN employees e ON e.id = er.employee_id
+     LEFT JOIN exit_workflow_stages s ON s.id = er.current_stage_id
+     LEFT JOIN departments d ON d.id = er.current_owner_department_id
+     WHERE ${where}
+     ORDER BY er.created_at DESC, er.id DESC
+     LIMIT $${i++} OFFSET $${i}`,
+    params,
   );
-  
-  const record = rows[0];
-  if (!record) throw ApiError.notFound('Exit record not found');
-  if (record.withdrawal_status !== 'pending') {
-    throw ApiError.badRequest('No pending withdrawal request found');
+
+  return {
+    records: rows.map((r) => ({ ...r, employee_name: empName(r) })),
+    pagination: { total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) },
+  };
+}
+
+/** Derive per-stage runtime state from current_stage_id + stage_order + exit_approvals. */
+async function buildStageStates(pool, request) {
+  const { rows: stages } = await pool.query(
+    `SELECT s.id, s.name, s.stage_order, s.approval_mode,
+            s.allow_future_visibility, s.allow_previous_edit,
+            d.name AS primary_department
+     FROM exit_workflow_stages s
+     LEFT JOIN LATERAL (
+       SELECT dd.name FROM exit_stage_departments sd
+       JOIN departments dd ON dd.id = sd.department_id
+       WHERE sd.stage_id = s.id ORDER BY sd.is_primary DESC, sd.id ASC LIMIT 1
+     ) d ON true
+     WHERE s.workflow_id = $1 ORDER BY s.stage_order ASC, s.id ASC`,
+    [request.workflow_id],
+  );
+  const { rows: acts } = await pool.query(
+    `SELECT stage_id, action FROM exit_approvals WHERE exit_request_id = $1`, [request.id],
+  );
+  const byStage = {};
+  for (const a of acts) {
+    (byStage[a.stage_id] = byStage[a.stage_id] || []).push(a.action);
   }
+  const curOrder = stages.find((s) => s.id === request.current_stage_id)?.stage_order ?? null;
 
-  await pool.query(
-    `UPDATE exit_records
-     SET withdrawal_status = 'rejected',
-         is_withdrawal_requested = false,
-         remarks = COALESCE(remarks, '') || '\nWithdrawal Rejected: ' || $1,
-         updated_at = NOW()
-     WHERE id = $2`,
-    [rejectionReason.trim(), id]
-  );
-
-  await logAudit(pool, id, userId, 'withdrawal_rejected', {
-    withdrawal_status: 'pending', is_withdrawal_requested: true
-  }, {
-    withdrawal_status: 'rejected', is_withdrawal_requested: false, rejection_reason: rejectionReason
+  return stages.map((s) => {
+    const actions = byStage[s.id] || [];
+    let state;
+    if (actions.includes('REJECT')) state = 'REJECTED';
+    else if (actions.includes('COMPLETE')) state = 'COMPLETED';
+    else if (s.id === request.current_stage_id) state = 'ACTIVE';
+    else if (curOrder != null && s.stage_order < curOrder) state = 'COMPLETED';
+    else state = 'PENDING';
+    return { ...s, state };
   });
+}
 
-  // Notify employee in-app
-  try {
-    await sendSystemNotification(tenant, {
-      employeeId: record.emp_id,
-      forAdmin: false,
-      title: 'Resignation Withdrawal Rejected',
-      message: `Your resignation withdrawal request has been rejected. Reason: ${rejectionReason}`,
-      type: 'exit_management',
-      sendEmail: false
-    });
-  } catch (err) {
-    console.error('Failed to push withdrawal rejection notification:', err);
+async function getExitRequest(tenant, id, exitUser) {
+  const pool = await getTenantPool(tenant.dbName);
+  const { rows } = await pool.query(
+    `SELECT er.*, e.full_name, e.first_name, e.last_name, e.work_email, e.job_title, e.department,
+            tt.name AS termination_type_name, w.name AS workflow_name
+     FROM exit_requests er
+     LEFT JOIN employees e ON e.id = er.employee_id
+     LEFT JOIN termination_types tt ON tt.id = er.termination_type_id
+     LEFT JOIN exit_workflows w ON w.id = er.workflow_id
+     WHERE er.id = $1`, [id],
+  );
+  const request = rows[0];
+  if (!request) throw ApiError.notFound('Exit request not found');
+
+  const [stages, approvals, checklist, attachments] = await Promise.all([
+    buildStageStates(pool, request),
+    pool.query(
+      `SELECT a.*, e.full_name AS actor_full_name, s.name AS stage_name
+       FROM exit_approvals a
+       LEFT JOIN employees e ON e.id = a.actor_id
+       LEFT JOIN exit_workflow_stages s ON s.id = a.stage_id
+       WHERE a.exit_request_id = $1 ORDER BY a.created_at ASC`, [id]),
+    pool.query(
+      `SELECT * FROM exit_request_checklist_items WHERE exit_request_id = $1 ORDER BY stage_id, id`, [id]),
+    pool.query(
+      `SELECT * FROM exit_request_attachments WHERE exit_request_id = $1 ORDER BY uploaded_at DESC`, [id]),
+  ]);
+
+  // Caller's capabilities on the CURRENT stage (from the resolver).
+  let myActions = [];
+  let visibility = 'hidden';
+  if (exitUser) {
+    const wfCtx = await resolver.loadWorkflowContext(pool, id);
+    const accessCtx = await resolver.resolveExitAccess(pool, exitUser, wfCtx);
+    myActions = [...resolver.permittedActionsFor(accessCtx)];
+    visibility = accessCtx.visibility;
   }
 
-  // Real-time WebSocket event
-  const io = getIo();
-  if (io) {
-    io.to(`tenant:${tenant.dbName}`).emit('exit:workflow_updated', {
-      exitRecordId: id,
-      status: record.status,
-      is_withdrawal_requested: false,
-      withdrawal_status: 'rejected'
-    });
-    io.to(`exit:${id}`).emit('exit:task_updated', {
-      is_withdrawal_requested: false,
-      withdrawal_status: 'rejected'
-    });
-  }
-
-  return getExitRecord(tenant, id);
+  return {
+    ...request,
+    employee_name: empName(request),
+    stages,
+    approvals: approvals.rows,
+    checklist_items: checklist.rows,
+    attachments: attachments.rows,
+    my_actions: myActions,
+    my_visibility: visibility,
+  };
 }
 
 /* ------------------------------------------------------------------ */
-/*  Exports                                                            */
+/*  Stage actions                                                     */
 /* ------------------------------------------------------------------ */
+
+async function loadRequestRow(client, id) {
+  const { rows } = await client.query(
+    `SELECT er.*, e.full_name, e.first_name, e.last_name, e.work_email
+     FROM exit_requests er LEFT JOIN employees e ON e.id = er.employee_id
+     WHERE er.id = $1 FOR UPDATE OF er`, [id],
+  );
+  return rows[0] || null;
+}
+
+async function recordAction(client, request, action, actor, comments) {
+  await client.query(
+    `INSERT INTO exit_approvals
+       (exit_request_id, stage_id, department_id, action, actor_id, actor_name, comments, acted_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
+    [request.id, request.current_stage_id, request.current_owner_department_id,
+     action, actor.employeeId || null, actor.actorName || null, comments || null],
+  );
+}
+
+async function approveStage(tenant, id, exitUser, comments) {
+  const pool = await getTenantPool(tenant.dbName);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const request = await loadRequestRow(client, id);
+    if (!request) throw ApiError.notFound('Exit request not found');
+    if (request.status !== 'IN_PROGRESS') throw ApiError.badRequest('This exit request is not active');
+    const stage = await engine.getStage(client, request.current_stage_id);
+    if (!stage) throw ApiError.badRequest('No active stage');
+
+    await recordAction(client, request, 'APPROVE', exitUser, comments);
+    const result = await engine.advanceStage(client, request, stage);
+    await client.query('COMMIT');
+
+    emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'approve' });
+    emit(tenant, `exit:${id}`, result.completed ? 'exit:request_completed' : 'exit:stage_advanced', { exitRequestId: Number(id) });
+    if (result.completed) {
+      try {
+        await notify().sendSystemNotification(tenant, {
+          employeeId: request.employee_id, forAdmin: false,
+          title: 'Exit Process Completed',
+          message: 'Your exit process has been completed.',
+          type: 'exit_management', sendEmail: false,
+        });
+      } catch (_) {}
+    }
+    return getExitRequest(tenant, id, exitUser);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function rejectStage(tenant, id, exitUser, reason) {
+  if (!reason || !reason.trim()) throw ApiError.badRequest('A rejection reason is required');
+  const pool = await getTenantPool(tenant.dbName);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const request = await loadRequestRow(client, id);
+    if (!request) throw ApiError.notFound('Exit request not found');
+    if (request.status !== 'IN_PROGRESS') throw ApiError.badRequest('This exit request is not active');
+
+    await recordAction(client, request, 'REJECT', exitUser, reason);
+    await engine.closePendingSlot(client, request.id, request.current_stage_id, 'REJECT', exitUser.employeeId);
+    await client.query(
+      `UPDATE exit_requests
+         SET status = 'REJECTED', rejection_reason = $1, current_stage_id = NULL,
+             current_owner_department_id = NULL, updated_at = NOW()
+       WHERE id = $2`, [reason, id],
+    );
+    await client.query('COMMIT');
+
+    emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'reject' });
+    try {
+      await notify().sendSystemNotification(tenant, {
+        employeeId: request.employee_id, forAdmin: false,
+        title: 'Exit Request Rejected',
+        message: `Your exit request was rejected. Reason: ${reason}`,
+        type: 'exit_management', sendEmail: false,
+      });
+    } catch (_) {}
+    return getExitRequest(tenant, id, exitUser);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function sendBackStage(tenant, id, exitUser, { target_stage_id, comments }) {
+  if (!comments || !comments.trim()) throw ApiError.badRequest('A comment is required when sending back');
+  const pool = await getTenantPool(tenant.dbName);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const request = await loadRequestRow(client, id);
+    if (!request) throw ApiError.notFound('Exit request not found');
+    if (request.status !== 'IN_PROGRESS') throw ApiError.badRequest('This exit request is not active');
+    const curStage = await engine.getStage(client, request.current_stage_id);
+
+    // target defaults to the immediately-previous stage
+    let target;
+    if (target_stage_id) {
+      target = await engine.getStage(client, target_stage_id);
+      if (!target || target.workflow_id !== request.workflow_id) throw ApiError.badRequest('Invalid target stage');
+      if (target.stage_order >= curStage.stage_order) throw ApiError.badRequest('Can only send back to an earlier stage');
+    } else {
+      target = await engine.getStageByOrder(client, request.workflow_id, curStage.stage_order - 1);
+      if (!target) throw ApiError.badRequest('No earlier stage to send back to');
+    }
+
+    await recordAction(client, request, 'SEND_BACK', exitUser, comments);
+    await engine.closePendingSlot(client, request.id, request.current_stage_id, 'SEND_BACK', exitUser.employeeId);
+    await engine.moveToStage(client, request, target);
+    await client.query('COMMIT');
+
+    emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'send_back' });
+    return getExitRequest(tenant, id, exitUser);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function reassignStage(tenant, id, exitUser, { department_id, comments }) {
+  const pool = await getTenantPool(tenant.dbName);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const request = await loadRequestRow(client, id);
+    if (!request) throw ApiError.notFound('Exit request not found');
+    if (request.status !== 'IN_PROGRESS') throw ApiError.badRequest('This exit request is not active');
+
+    // department must be an assigned department of the CURRENT stage
+    const { rows: ok } = await client.query(
+      `SELECT 1 FROM exit_stage_departments WHERE stage_id = $1 AND department_id = $2`,
+      [request.current_stage_id, department_id],
+    );
+    if (!ok.length) throw ApiError.badRequest('Target department is not assigned to the current stage');
+
+    await client.query(
+      `UPDATE exit_requests SET current_owner_department_id = $1, updated_at = NOW() WHERE id = $2`,
+      [department_id, id],
+    );
+    await recordAction(client, { ...request, current_owner_department_id: department_id }, 'REASSIGN', exitUser, comments);
+    await client.query('COMMIT');
+    emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'reassign' });
+    return getExitRequest(tenant, id, exitUser);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function escalateStage(tenant, id, exitUser, comments) {
+  const pool = await getTenantPool(tenant.dbName);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const request = await loadRequestRow(client, id);
+    if (!request) throw ApiError.notFound('Exit request not found');
+    if (request.status !== 'IN_PROGRESS') throw ApiError.badRequest('This exit request is not active');
+    const stage = await engine.getStage(client, request.current_stage_id);
+
+    if (stage.escalation_action === 'REASSIGN' && (stage.escalation_to_user_id || stage.escalation_to_role_id)) {
+      // best-effort: move ownership toward the escalation target's department if a user is set
+      if (stage.escalation_to_user_id) {
+        const { rows: ed } = await client.query(`SELECT department_id FROM employees WHERE id = $1`, [stage.escalation_to_user_id]);
+        if (ed[0]?.department_id) {
+          await client.query(`UPDATE exit_requests SET current_owner_department_id = $1, updated_at = NOW() WHERE id = $2`, [ed[0].department_id, id]);
+        }
+      }
+    }
+    await recordAction(client, request, 'ESCALATE', exitUser, comments || 'Manual escalation');
+    await client.query(
+      `UPDATE exit_approvals SET is_sla_breached = true, escalated_at = NOW()
+       WHERE exit_request_id = $1 AND stage_id = $2 AND action = 'PENDING'`,
+      [id, request.current_stage_id],
+    );
+    await client.query('COMMIT');
+    emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'escalate' });
+    return getExitRequest(tenant, id, exitUser);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function addComment(tenant, id, exitUser, comments) {
+  if (!comments || !comments.trim()) throw ApiError.badRequest('A comment is required');
+  const pool = await getTenantPool(tenant.dbName);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const request = await loadRequestRow(client, id);
+    if (!request) throw ApiError.notFound('Exit request not found');
+    await recordAction(client, request, 'COMMENT', exitUser, comments);
+    await client.query('COMMIT');
+    return getExitRequest(tenant, id, exitUser);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function withdrawExitRequest(tenant, id, exitUser, reason) {
+  const pool = await getTenantPool(tenant.dbName);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const request = await loadRequestRow(client, id);
+    if (!request) throw ApiError.notFound('Exit request not found');
+    if (!['SUBMITTED', 'IN_PROGRESS'].includes(request.status)) {
+      throw ApiError.badRequest('Only active exit requests can be withdrawn');
+    }
+    await recordAction(client, request, 'COMMENT', exitUser, `Withdrawal: ${reason || 'requested by employee'}`);
+    await client.query(
+      `UPDATE exit_requests
+         SET status = 'WITHDRAWN', withdrawal_status = 'approved', withdrawal_reason = $1,
+             withdrawal_requested_at = NOW(), current_stage_id = NULL,
+             current_owner_department_id = NULL, updated_at = NOW()
+       WHERE id = $2`, [reason || null, id],
+    );
+    await client.query(
+      `UPDATE employees SET employment_status = 'Active', updated_at = NOW()
+       WHERE id = $1 AND employment_status IN ('Notice Period','Resigned')`,
+      [request.employee_id],
+    );
+    await client.query('COMMIT');
+    emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'withdraw' });
+    return getExitRequest(tenant, id, exitUser);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function getAuditLog(tenant, id) {
+  const pool = await getTenantPool(tenant.dbName);
+  const { rows } = await pool.query(
+    `SELECT a.*, e.full_name AS actor_full_name, s.name AS stage_name
+     FROM exit_approvals a
+     LEFT JOIN employees e ON e.id = a.actor_id
+     LEFT JOIN exit_workflow_stages s ON s.id = a.stage_id
+     WHERE a.exit_request_id = $1 ORDER BY a.created_at DESC`, [id],
+  );
+  return rows;
+}
+
+async function getActiveTerminationTypes(tenant) {
+  const pool = await getTenantPool(tenant.dbName);
+  const { rows } = await pool.query(
+    `SELECT id, name, description FROM termination_types WHERE is_active = true ORDER BY sort_order ASC, name ASC`,
+  );
+  return rows;
+}
 
 module.exports = {
-  listExitRecords,
-  getExitStats,
-  getExitRecord,
-  createResignation,
-  createTermination,
-  updateExitRecord,
-  approveResignation,
-  rejectResignation,
-  updateExitStatus,
-  listClearanceTasks,
-  addClearanceTask,
-  updateClearanceTask,
-  listAssetReturns,
-  addAssetReturn,
-  updateAssetReturn,
-  listExitDocuments,
-  generateExitDocument,
-  getActiveTerminationTypes,
-  submitExitInterview,
-  getExitInterview,
-  processSettlement,
-  getSettlement,
+  getDefaultWorkflowFor,
+  submitExitRequest,
+  listExitRequests,
+  getExitRequest,
+  approveStage,
+  rejectStage,
+  sendBackStage,
+  reassignStage,
+  escalateStage,
+  addComment,
+  withdrawExitRequest,
   getAuditLog,
-  generateSettlementSlipPdf,
-  requestResignationWithdrawal,
-  approveResignationWithdrawal,
-  rejectResignationWithdrawal,
-  seedClearanceTasksForExit: seedClearanceTasks,
+  getActiveTerminationTypes,
 };

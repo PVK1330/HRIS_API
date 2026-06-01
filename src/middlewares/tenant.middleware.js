@@ -38,7 +38,12 @@ async function tenantResolver(req, _res, next) {
       tenantIdentifier = req.user.tenant_id;
     }
 
+    // Allow superadmin to pass without tenant context (they query all tenants)
     if (!tenantIdentifier) {
+      if (req.user?.role === 'superadmin') {
+        console.log('[TENANT RESOLVER] Superadmin request without specific tenant context - allowed to proceed');
+        return next();
+      }
       return next(new ApiError(401, 'Tenant context missing'));
     }
 

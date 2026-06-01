@@ -3,6 +3,7 @@
 const { getTenantPool } = require('../config/db');
 const ApiError = require('../utils/ApiError');
 const { runTenantMigrations } = require('../modules/tenant/tenant.service');
+const { sendMail } = require('../utils/mail');
 
 const _migrationCache = new Map();
 
@@ -52,11 +53,110 @@ async function createTicket(user, tenant, ticketData) {
     ticketData.priority,
     ticketData.description,
     ticketData.attachmentUrl || null,
-    ticketData.status || 'Open',
+    ticketData.status || 'Waiting',
   ];
 
   const { rows } = await pool.query(query, values);
-  return rows[0];
+  const ticketRecord = rows[0];
+
+  // Send email to superadmin about new ticket (non-blocking)
+  try {
+    const ticketId = `TKT-${String(ticketRecord.id).padStart(3, '0')}`;
+    const superadminEmail = process.env.SUPERADMIN_EMAIL;
+
+    if (superadminEmail) {
+      const emailHtml = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px; background-color: #f9fafb;">
+          <div style="background-color: #0F766E; color: white; padding: 20px; border-radius: 8px 8px 0 0; text-align: center;">
+            <h1 style="margin: 0;">New Support Ticket</h1>
+          </div>
+          <div style="padding: 20px; background-color: #ffffff; border-radius: 0 0 8px 8px;">
+            <p style="color: #374151; font-size: 16px; line-height: 1.6;">Hello Superadmin,</p>
+            <p style="color: #374151; font-size: 16px; line-height: 1.6;">A new support ticket has been created and requires your attention.</p>
+            
+            <h2 style="color: #1F2937; font-size: 18px; margin-top: 24px; margin-bottom: 12px;">Ticket Details</h2>
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+              <tr style="border-bottom: 1px solid #e5e7eb;">
+                <td style="padding: 12px; font-weight: bold; color: #1F2937; width: 40%;">Ticket ID:</td>
+                <td style="padding: 12px; color: #374151;">${ticketId}</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #e5e7eb;">
+                <td style="padding: 12px; font-weight: bold; color: #1F2937;">Admin Name:</td>
+                <td style="padding: 12px; color: #374151;">${ticketData.adminName || 'N/A'}</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #e5e7eb;">
+                <td style="padding: 12px; font-weight: bold; color: #1F2937;">Company/Tenant:</td>
+                <td style="padding: 12px; color: #374151;">${ticketData.tenantName || tenant.name}</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #e5e7eb;">
+                <td style="padding: 12px; font-weight: bold; color: #1F2937;">Subject:</td>
+                <td style="padding: 12px; color: #374151;">${ticketData.subject}</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #e5e7eb;">
+                <td style="padding: 12px; font-weight: bold; color: #1F2937;">Category:</td>
+                <td style="padding: 12px; color: #374151;">${ticketData.category}</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #e5e7eb;">
+                <td style="padding: 12px; font-weight: bold; color: #1F2937;">Priority:</td>
+                <td style="padding: 12px; color: #374151;"><span style="background-color: ${ticketData.priority === 'High' ? '#FEE2E2' : ticketData.priority === 'Medium' ? '#FEF3C7' : '#DBEAFE'}; padding: 4px 8px; border-radius: 4px; color: ${ticketData.priority === 'High' ? '#DC2626' : ticketData.priority === 'Medium' ? '#D97706' : '#2563EB'}; font-weight: bold;">${ticketData.priority}</span></td>
+              </tr>
+              <tr>
+                <td style="padding: 12px; font-weight: bold; color: #1F2937; vertical-align: top;">Description:</td>
+                <td style="padding: 12px; color: #374151;">${ticketData.description}</td>
+              </tr>
+            </table>
+            
+            <p style="color: #6B7280; font-size: 14px; margin-top: 20px; margin-bottom: 20px;">
+              <strong>Created At:</strong> ${ticketRecord.created_at ? new Date(ticketRecord.created_at).toLocaleString() : 'N/A'}
+            </p>
+            
+            <div style="background-color: #F3F4F6; padding: 16px; border-radius: 6px; margin: 20px 0;">
+              <p style="color: #374151; margin: 0; line-height: 1.6;">
+                Please login to the <strong>Superadmin Portal</strong> to review and respond to this ticket.
+              </p>
+            </div>
+            
+            <p style="color: #6B7280; font-size: 14px; text-align: center; margin-top: 24px;">
+              Regards,<br/>
+              <strong>HRMS Support System</strong>
+            </p>
+          </div>
+        </div>
+      `;
+
+      const emailText = `
+Hello Superadmin,
+
+A new support ticket has been created and requires your attention.
+
+Ticket Details:
+- Ticket ID: ${ticketId}
+- Admin Name: ${ticketData.adminName || 'N/A'}
+- Company/Tenant: ${ticketData.tenantName || tenant.name}
+- Subject: ${ticketData.subject}
+- Category: ${ticketData.category}
+- Priority: ${ticketData.priority}
+- Description: ${ticketData.description}
+- Created At: ${ticketRecord.created_at ? new Date(ticketRecord.created_at).toLocaleString() : 'N/A'}
+
+Please login to the Superadmin Portal to review and respond to this ticket.
+
+Regards,
+HRMS Support System
+      `;
+
+      await sendMail({
+        to: superadminEmail,
+        subject: `New Support Ticket Created - ${ticketId}`,
+        html: emailHtml,
+        text: emailText,
+      });
+    }
+  } catch (error) {
+    // Email sending should not break ticket creation
+  }
+
+  return ticketRecord;
 }
 
 async function listTickets(user) {
@@ -66,6 +166,7 @@ async function listTickets(user) {
   const { rows } = await pool.query(
     `SELECT id, admin_name, tenant_name, subject, category, priority, description, attachment_url, status, created_at, updated_at
      FROM support_tickets
+     WHERE admin_deleted = false
      ORDER BY created_at DESC`
   );
 
@@ -77,9 +178,9 @@ async function getTicketById(user, ticketId) {
   await ensureMigrated(user.db_name);
 
   const { rows } = await pool.query(
-    `SELECT id, admin_name, tenant_name, subject, category, priority, description, attachment_url, status, created_at, updated_at
+    `SELECT id, admin_name, tenant_name, subject, category, priority, description, attachment_url, status, created_at, updated_at, admin_deleted, superadmin_deleted
      FROM support_tickets
-     WHERE id = $1`,
+     WHERE id = $1 AND admin_deleted = false`,
     [ticketId],
   );
 
@@ -142,25 +243,108 @@ async function updateTicket(user, ticketId, ticketData) {
     UPDATE support_tickets
     SET ${allowedFields.join(', ')}, updated_at = CURRENT_TIMESTAMP
     WHERE id = $${idx}
-    RETURNING id, admin_name, tenant_name, subject, category, priority, description, attachment_url, status, created_at, updated_at
+    RETURNING id, admin_id, admin_name, tenant_name, subject, category, priority, description, attachment_url, status, created_at, updated_at
   `;
   values.push(ticketId);
 
   const { rows } = await pool.query(query, values);
   if (!rows.length) throw ApiError.notFound('Support ticket not found');
-  return rows[0];
+  
+  const updatedTicket = rows[0];
+
+  // Send email to admin about ticket update (non-blocking)
+  try {
+    const adminResult = await pool.query(
+      `SELECT id, name, email FROM users WHERE id = $1`,
+      [updatedTicket.admin_id]
+    );
+
+    const admin = adminResult.rows[0];
+
+    
+    
+
+    if (admin?.email) {
+      await sendMail({
+        to: admin.email,
+        subject: `Support Ticket Updated - TKT-${String(updatedTicket.id).padStart(3, '0')}`,
+        html: `
+          <h2>Support Ticket Updated</h2>
+          <p>Hello ${admin.name || updatedTicket.admin_name || "Admin"},</p>
+          <p>Your support ticket has been updated by Superadmin.</p>
+
+          <p><b>Ticket ID:</b> TKT-${String(updatedTicket.id).padStart(3, '0')}</p>
+          <p><b>Subject:</b> ${updatedTicket.subject || "-"}</p>
+          <p><b>Category:</b> ${updatedTicket.category || "-"}</p>
+          <p><b>Priority:</b> ${updatedTicket.priority || "-"}</p>
+          <p><b>Status:</b> ${updatedTicket.status || "-"}</p>
+          <p><b>Superadmin Response:</b> ${updatedTicket.description || "-"}</p>
+          <p><b>Updated At:</b> ${new Date(updatedTicket.updated_at).toLocaleString()}</p>
+
+          <p>Please login to Admin Portal to view complete ticket details.</p>
+          <p>Regards,<br/>HRMS Support Team</p>
+        `
+      });
+
+      
+    } else {
+      
+    }
+  } catch (emailError) {
+    console.error("Admin update email failed:", emailError.message);
+  }
+
+  return updatedTicket;
 }
 
 async function deleteTicket(user, ticketId) {
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
 
-  const { rowCount } = await pool.query(
-    `DELETE FROM support_tickets WHERE id = $1`,
-    [ticketId],
+  // Soft delete for admin - mark admin_deleted flag
+  const { rows } = await pool.query(
+    `UPDATE support_tickets 
+     SET admin_deleted = true, admin_deleted_at = CURRENT_TIMESTAMP
+     WHERE id = $1 AND admin_id = $2
+     RETURNING *`,
+    [ticketId, user.id],
   );
-  if (!rowCount) throw ApiError.notFound('Support ticket not found');
+
+  if (!rows.length) throw ApiError.notFound('Support ticket not found');
+
+  const ticket = rows[0];
+
+  
+  
+
+  // Check if both sides deleted - then hard delete
+  if (ticket.admin_deleted && ticket.superadmin_deleted) {
+    await hardDeleteTicket(pool, ticketId);
+  }
+
   return true;
+}
+
+async function hardDeleteTicket(pool, ticketId) {
+  try {
+    // Delete ticket replies/conversation history
+    await pool.query('DELETE FROM support_ticket_replies WHERE ticket_id = $1', [ticketId]);
+
+    // Delete notifications related to ticket
+    await pool.query('DELETE FROM notifications WHERE ticket_id = $1', [ticketId]);
+
+    // Delete ticket attachments (if table exists)
+    try {
+      await pool.query('DELETE FROM support_ticket_attachments WHERE ticket_id = $1', [ticketId]);
+    } catch (err) {
+      // Table might not exist
+    }
+
+    // Hard delete the ticket
+    await pool.query('DELETE FROM support_tickets WHERE id = $1', [ticketId]);
+  } catch (error) {
+    throw error;
+  }
 }
 
 module.exports = {

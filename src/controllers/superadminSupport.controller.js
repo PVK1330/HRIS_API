@@ -34,6 +34,8 @@ async function listAllTickets(req, res) {
       superadminSupportService.getTicketsCount(filter),
     ]);
 
+    
+
     // Transform tickets
     const transformedTickets = tickets.map(transformTicket);
 
@@ -48,7 +50,7 @@ async function listAllTickets(req, res) {
       },
     });
   } catch (error) {
-    console.error('Error listing tickets:', error);
+    console.error('[SUPERADMIN SUPPORT] Error listing tickets:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch support tickets',
@@ -96,9 +98,10 @@ async function getTicketDetails(req, res) {
       });
     }
 
+    const transformed = transformTicket(ticket)
     res.json({
       success: true,
-      data: transformTicket(ticket),
+      data: transformed,
     });
   } catch (error) {
     console.error('Error fetching ticket details:', error);
@@ -247,13 +250,13 @@ async function addReply(req, res) {
 async function updateTicket(req, res) {
   try {
     const { id } = req.params;
-    const { status, assignedTo, superAdminDescription, internalNotes } = req.body;
+    const { status, message, assignedTo, internalNotes } = req.body;
     const superadminId = req.user?.id;
 
-    if (!status && !assignedTo && !superAdminDescription) {
+    if (!status && !message && !assignedTo) {
       return res.status(400).json({
         success: false,
-        message: 'At least one of status, assignedTo, or superAdminDescription is required',
+        message: 'At least one of status, message, or assignedTo is required',
       });
     }
 
@@ -265,18 +268,25 @@ async function updateTicket(req, res) {
       });
     }
 
-    let updatedTicket = null;
-
-    if (status || assignedTo || superAdminDescription) {
-      updatedTicket = await superadminSupportService.updateTicket(id, { status, assignedTo, superAdminDescription });
+    const shouldSaveMessage = message && message.trim();
+    if ((status || shouldSaveMessage) && !shouldSaveMessage) {
+      return res.status(400).json({
+        success: false,
+        message: 'Response message is required when changing status or adding a reply',
+      });
     }
 
-    // If super admin provided a description, save it as a reply/message in ticket history
-    if (superAdminDescription) {
+    const payload = { status, assignedTo };
+    if (status || assignedTo) {
+      await superadminSupportService.updateTicket(id, payload);
+    }
+
+    if (shouldSaveMessage) {
       if (!superadminId) {
         return res.status(401).json({ success: false, message: 'Unauthorized: Superadmin ID required' });
       }
-      await superadminSupportService.addReply(id, superadminId, superAdminDescription, internalNotes || null);
+      
+      await superadminSupportService.addReply(id, superadminId, message.trim(), internalNotes || null);
     }
 
     const refreshedTicket = await superadminSupportService.getTicketById(id);
@@ -296,8 +306,8 @@ async function updateTicket(req, res) {
     try {
       const tenant = { dbName: refreshedTicket.dbName };
       const title = 'Support Ticket Updated';
-      const message = `Your ticket ${refreshedTicket.subject} status changed to ${refreshedTicket.status}`;
-      await pushNotification(tenant, { employeeId: refreshedTicket.admin_id, forAdmin: false, title, message, type: 'SUPPORT_TICKET_UPDATED', ticketId: refreshedTicket.id });
+      const messageNotification = `Your ticket ${refreshedTicket.subject} status changed to ${refreshedTicket.status}`;
+      await pushNotification(tenant, { employeeId: refreshedTicket.admin_id, forAdmin: false, title, message: messageNotification, type: 'SUPPORT_TICKET_UPDATED', ticketId: refreshedTicket.id });
     } catch (err) {
       console.error('Failed to push support ticket updated notification (superadmin):', err);
     }
@@ -343,9 +353,40 @@ async function deleteTicket(req, res) {
 /**
  * Transform database ticket row to API response format
  */
+function buildConversation(ticket) {
+  const conversation = [
+    {
+      id: ticket.id,
+      ticketId: ticket.id,
+      senderRole: 'admin',
+      senderName: ticket.admin_name || 'Admin',
+      message: ticket.description || '',
+      status: ticket.status,
+      createdAt: ticket.created_at,
+    },
+  ]
+
+  const replies = ticket.replies || []
+  replies.forEach((reply) => {
+    conversation.push({
+      id: reply.id,
+      ticketId: reply.ticket_id,
+      senderRole: 'superadmin',
+      senderName: 'Super Admin',
+      message: reply.message,
+      status: ticket.status,
+      createdAt: reply.created_at,
+    })
+  })
+
+  return conversation
+}
+
 function transformTicket(ticket) {
+  const conversation = buildConversation(ticket)
   return {
     id: ticket.id,
+    ticketId: `TKT-${String(ticket.id).padStart(3, '0')}`,
     adminId: ticket.admin_id,
     adminName: ticket.admin_name,
     tenantId: ticket.tenant_id,
@@ -362,7 +403,8 @@ function transformTicket(ticket) {
     closedAt: ticket.closed_at,
     replyCount: ticket.reply_count || 0,
     replies: (ticket.replies || []).map(transformReply),
-    messages: (ticket.replies || []).map(transformReply),
+    messages: conversation,
+    conversation,
   };
 }
 

@@ -5,9 +5,41 @@ const supportService = require('../services/support.service');
 const { pushNotification } = require('../modules/notifications/notifications.service');
 const socket = require('../socket');
 
+function buildConversation(row) {
+  const status = row.status || 'Waiting'
+  const conversation = [
+    {
+      id: row.id,
+      ticketId: row.id,
+      senderRole: 'admin',
+      senderName: row.admin_name || 'Admin',
+      message: row.description || '',
+      status,
+      createdAt: row.created_at,
+    },
+  ]
+
+  const replies = row.replies || row.messages || []
+  replies.forEach((reply) => {
+    conversation.push({
+      id: reply.id,
+      ticketId: reply.ticket_id || row.id,
+      senderRole: 'superadmin',
+      senderName: 'Super Admin',
+      message: reply.message || reply.text || '',
+      status,
+      createdAt: reply.created_at || reply.createdAt,
+    })
+  })
+
+  return conversation
+}
+
 function transformTicket(row) {
+  const conversation = buildConversation(row)
   return {
     id: row.id,
+    ticketId: `TKT-${String(row.id).padStart(3, '0')}`,
     adminName: row.admin_name,
     tenantName: row.tenant_name,
     subject: row.subject,
@@ -18,15 +50,8 @@ function transformTicket(row) {
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    messages: (row.replies || []).map((reply) => ({
-      id: reply.id,
-      ticketId: reply.ticket_id,
-      superadminId: reply.superadmin_id,
-      text: reply.message,
-      internalNotes: reply.internal_notes,
-      createdAt: reply.created_at,
-      sender: 'Support',
-    })),
+    conversation,
+    messages: conversation,
   };
 }
 
@@ -62,20 +87,38 @@ async function createTicket(req, res, next) {
       category: category.trim(),
       priority: priority.trim(),
       description: description.trim(),
-      status: status && status.trim() ? status.trim() : 'Open',
+      status: status && status.trim() ? status.trim() : 'Waiting',
       attachmentUrl,
     });
 
-    // Notify Super Admins about new ticket
+    
+
+    // Send notification to Superadmin using existing notification system
+    // forAdmin=true sends to all admin-style users (superadmin/support_admin/billing_admin)
     try {
-      const title = 'New Support Ticket';
-      const message = `${ticket.admin_name} created a new support ticket: ${ticket.subject}`;
-      await pushNotification(req.tenant, { forAdmin: true, title, message, type: 'SUPPORT_TICKET_CREATED', ticketId: ticket.id });
+      
+
+      const title = 'New Support Ticket Created';
+      const message = `${ticket.admin_name || adminName || 'Admin'} created support ticket: ${ticket.subject}`;
+      const notificationPayload = {
+        forAdmin: true,
+        title,
+        message,
+        type: 'support_ticket',
+        ticketId: ticket.id,
+      };
+
+      
+
+      const notification = await pushNotification(req.tenant, notificationPayload);
+
+      
     } catch (err) {
-      console.error('Failed to push support ticket created notification:', err);
+      console.error('[TICKET NOTIFICATION] Failed to send support ticket notification:', err);
+      // Don't fail the response, notification is optional
     }
 
-    // Emit socket event for real-time UI
+    // Emit socket event for real-time UI updates
     try {
       socket.emitTicketCreated(ticket);
     } catch (err) {
@@ -95,6 +138,7 @@ async function createTicket(req, res, next) {
 async function listTickets(req, res, next) {
   try {
     const rows = await supportService.listTickets(req.user);
+    
     return res.json({
       success: true,
       data: rows.map(transformTicket),
@@ -107,7 +151,8 @@ async function listTickets(req, res, next) {
 async function getTicketById(req, res, next) {
   try {
     const ticket = await supportService.getTicketById(req.user, req.params.id);
-    return res.json({ success: true, data: transformTicket(ticket) });
+    const transformed = transformTicket(ticket)
+    return res.json({ success: true, data: transformed });
   } catch (err) {
     return next(err);
   }
@@ -133,16 +178,25 @@ async function updateTicket(req, res, next) {
 
     const ticket = await supportService.updateTicket(req.user, req.params.id, payload);
 
-    // Notify the Admin who created the ticket about updates from Super Admin
+    // Send notification to the Admin who created this ticket
+    // forAdmin=false with employeeId sends to the specific admin
     try {
       const title = 'Support Ticket Updated';
-      const message = `Your ticket ${ticket.subject} status changed to ${ticket.status}`;
-      await pushNotification(req.tenant, { employeeId: ticket.admin_id, forAdmin: false, title, message, type: 'SUPPORT_TICKET_UPDATED', ticketId: ticket.id });
+      const message = `Your support ticket "${ticket.subject}" status changed to ${ticket.status}`;
+      await pushNotification(req.tenant, { 
+        employeeId: ticket.admin_id, 
+        forAdmin: false, 
+        title, 
+        message, 
+        type: 'support_ticket', 
+        ticketId: ticket.id 
+      });
     } catch (err) {
-      console.error('Failed to push support ticket updated notification:', err);
+      console.error('Failed to send ticket update notification:', err);
+      // Don't fail the response, notification is optional
     }
 
-    // Emit socket event for real-time UI
+    // Emit socket event for real-time UI updates
     try {
       socket.emitTicketUpdate(ticket);
     } catch (err) {

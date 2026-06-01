@@ -9,21 +9,35 @@ async function create(pool, { employeeId, forAdmin, title, message, type, ticket
   return rows[0];
 }
 
+async function normalizeRole(role) {
+  return String(role || '').toLowerCase().replace(/[_\s]/g, '');
+}
+
 async function listForUser(pool, user) {
-  const isHrAdmin = user.role === 'hr_admin' || user.role === 'admin';
+  const role = await normalizeRole(user.role || user.panel || '');
+  const isAdminRole = ['admin', 'hradmin', 'superadmin', 'supportadmin', 'billingadmin'].includes(role);
+  
+  
+
   let adminCond = '';
-  if (isHrAdmin) {
+  if (isAdminRole) {
     adminCond = 'OR for_admin = true';
   }
   
-  const { rows } = await pool.query(`
+  const query = `
     SELECT * FROM notifications
     WHERE employee_id = $1 
        OR employee_id IN (SELECT id FROM employees WHERE work_email = $2)
        ${adminCond}
     ORDER BY created_at DESC
     LIMIT 100
-  `, [user.id, user.email || '']);
+  `;
+
+  
+
+  const { rows } = await pool.query(query, [user.id, user.email || '']);
+  
+  
   
   return rows.map(r => ({
     id: r.id,
@@ -33,8 +47,12 @@ async function listForUser(pool, user) {
     message: r.message,
     type: r.type,
     ticketId: r.ticket_id || null,
+    relatedId: r.ticket_id || null,
+    role: r.for_admin ? 'superadmin' : 'employee',
+    read: Boolean(r.is_read),
     isRead: Boolean(r.is_read),
     createdAt: r.created_at,
+    created_at: r.created_at,
     time: r.created_at ? new Date(r.created_at).toLocaleDateString() + ' ' + new Date(r.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''
   }));
 }
@@ -50,9 +68,10 @@ async function markAsRead(pool, id, user) {
 }
 
 async function markAllAsRead(pool, user) {
-  const isHrAdmin = user.role === 'hr_admin' || user.role === 'admin';
+  const role = String(user.role || user.panel || '').toLowerCase().replace(/_/g, '');
+  const isAdminRole = ['admin', 'hradmin', 'superadmin', 'supportadmin', 'billingadmin'].includes(role);
   let adminCond = '';
-  if (isHrAdmin) {
+  if (isAdminRole) {
     adminCond = 'OR for_admin = true';
   }
   await pool.query(`

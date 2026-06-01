@@ -1,4 +1,5 @@
 const { pool, getTenantPool } = require('../config/db');
+const { sendMail } = require('../utils/mail');
 
 /**
  * Superadmin Support Service
@@ -81,7 +82,7 @@ async function getAllTickets(filter = {}, pagination = { limit: 10, offset: 0 })
         COUNT(str.id) as reply_count
       FROM support_tickets st
       LEFT JOIN support_ticket_replies str ON st.id = str.ticket_id
-      WHERE 1=1 ${filterClause}
+      WHERE 1=1 AND st.superadmin_deleted = false ${filterClause}
       GROUP BY st.id
       ORDER BY st.created_at DESC
     `;
@@ -92,14 +93,13 @@ async function getAllTickets(filter = {}, pagination = { limit: 10, offset: 0 })
         const result = await tenantPool.query(ticketQuery, params);
         allRows.push(...result.rows.map((row) => ({ ...row, tenant_db: tenant.db_name })));
       } catch (err) {
-        console.error(`Failed to fetch support tickets for tenant ${tenant.db_name}:`, err.message);
+        // Silent fail to continue with other tenants
       }
     }));
 
     const sortedRows = allRows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     return sortedRows.slice(pagination.offset, pagination.offset + pagination.limit);
   } catch (error) {
-    console.error('Error fetching all support tickets:', error);
     throw error;
   }
 }
@@ -116,7 +116,7 @@ async function getTicketsCount(filter = {}) {
     const countQuery = `
       SELECT COUNT(*) as total
       FROM support_tickets st
-      WHERE 1=1 ${filterClause}
+      WHERE st.superadmin_deleted = false ${filterClause}
     `;
 
     const counts = await Promise.all(tenants.map(async (tenant) => {
@@ -125,14 +125,12 @@ async function getTicketsCount(filter = {}) {
         const result = await tenantPool.query(countQuery, params);
         return parseInt(result.rows[0].total, 10) || 0;
       } catch (err) {
-        console.error(`Failed to count support tickets for tenant ${tenant.db_name}:`, err.message);
         return 0;
       }
     }));
 
     return counts.reduce((sum, current) => sum + current, 0);
   } catch (error) {
-    console.error('Error getting support tickets count:', error);
     throw error;
   }
 }
@@ -155,11 +153,11 @@ async function getTicketStats() {
             COUNT(CASE WHEN status = 'Resolved' THEN 1 END) as resolved,
             COUNT(CASE WHEN status = 'Closed' THEN 1 END) as closed
           FROM support_tickets
+          WHERE superadmin_deleted = false
         `;
         const result = await tenantPool.query(query);
         return result.rows[0] || {};
       } catch (err) {
-        console.error(`Failed to fetch ticket stats for tenant ${tenant.db_name}:`, err.message);
         return { total: 0, open: 0, in_progress: 0, resolved: 0, closed: 0 };
       }
     }));
@@ -175,7 +173,6 @@ async function getTicketStats() {
       { total: 0, open: 0, inProgress: 0, resolved: 0, closed: 0 }
     );
   } catch (error) {
-    console.error('Error getting ticket stats:', error);
     throw error;
   }
 }
@@ -210,7 +207,7 @@ async function getTicketById(ticketId) {
             st.resolved_at,
             st.closed_at
           FROM support_tickets st
-          WHERE st.id = $1
+          WHERE st.id = $1 AND st.superadmin_deleted = false
           LIMIT 1
         `;
 
@@ -239,13 +236,12 @@ async function getTicketById(ticketId) {
           replies: repliesResult.rows || [],
         };
       } catch (err) {
-        console.error(`Failed to fetch ticket ${ticketId} from tenant ${tenant.db_name}:`, err.message);
+        // Continue to next tenant
       }
     }
 
     return null;
   } catch (error) {
-    console.error('Error fetching ticket by ID:', error);
     throw error;
   }
 }
@@ -289,13 +285,12 @@ async function updateTicketStatus(ticketId, newStatus) {
           return result.rows[0];
         }
       } catch (err) {
-        console.error(`Failed to update ticket status for tenant ${tenant.db_name}:`, err.message);
+        // Continue with next tenant
       }
     }
 
     throw new Error('Support ticket not found');
   } catch (error) {
-    console.error('Error updating ticket status:', error);
     throw error;
   }
 }
@@ -335,9 +330,132 @@ async function addReply(ticketId, superadminId, message, internalNotes = null) {
       [ticketId]
     );
 
-    return result.rows[0];
+    const reply = result.rows[0];
+
+    // Send email to admin about superadmin response (non-blocking)
+    try {
+      const ticketIdFormatted = `TKT-${String(ticketId).padStart(3, '0')}`;
+      
+      // Try to get admin email from ticket or query if available
+      let adminEmail = ticket.admin_email;
+      if (!adminEmail && ticket.admin_id && ticket.dbName) {
+        try {
+          const adminResult = await tenantPool.query(
+            `SELECT email, work_email FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+            [ticket.admin_id]
+          );
+          if (adminResult.rows[0]) {
+            adminEmail = adminResult.rows[0].work_email || adminResult.rows[0].email;
+          }
+        } catch (err) {
+          // Silent
+        }
+      }
+
+      if (adminEmail) {
+        const emailHtml = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px; background-color: #f9fafb;">
+            <div style="background-color: #0F766E; color: white; padding: 20px; border-radius: 8px 8px 0 0; text-align: center;">
+              <h1 style="margin: 0;">Ticket Updated</h1>
+            </div>
+            <div style="padding: 20px; background-color: #ffffff; border-radius: 0 0 8px 8px;">
+              <p style="color: #374151; font-size: 16px; line-height: 1.6;">Hello ${ticket.admin_name || 'Admin'},</p>
+              <p style="color: #374151; font-size: 16px; line-height: 1.6;">Your support ticket has been updated by the Superadmin.</p>
+              
+              <h2 style="color: #1F2937; font-size: 18px; margin-top: 24px; margin-bottom: 12px;">Ticket Details</h2>
+              <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px; font-weight: bold; color: #1F2937; width: 40%;">Ticket ID:</td>
+                  <td style="padding: 12px; color: #374151;">${ticketIdFormatted}</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px; font-weight: bold; color: #1F2937;">Subject:</td>
+                  <td style="padding: 12px; color: #374151;">${ticket.subject}</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px; font-weight: bold; color: #1F2937;">Category:</td>
+                  <td style="padding: 12px; color: #374151;">${ticket.category}</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px; font-weight: bold; color: #1F2937;">Priority:</td>
+                  <td style="padding: 12px; color: #374151;"><span style="background-color: ${ticket.priority === 'High' ? '#FEE2E2' : ticket.priority === 'Medium' ? '#FEF3C7' : '#DBEAFE'}; padding: 4px 8px; border-radius: 4px; color: ${ticket.priority === 'High' ? '#DC2626' : ticket.priority === 'Medium' ? '#D97706' : '#2563EB'}; font-weight: bold;">${ticket.priority}</span></td>
+                </tr>
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px; font-weight: bold; color: #1F2937;">Current Status:</td>
+                  <td style="padding: 12px; color: #374151;">${ticket.status}</td>
+                </tr>
+              </table>
+              
+              <h2 style="color: #1F2937; font-size: 18px; margin-top: 24px; margin-bottom: 12px;">Superadmin Response</h2>
+              <div style="background-color: #F3F4F6; padding: 16px; border-radius: 6px; margin: 20px 0;">
+                <p style="color: #374151; margin: 0; line-height: 1.6; white-space: pre-wrap;">${message.trim()}</p>
+              </div>
+              
+              <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                  <td style="padding: 12px; font-weight: bold; color: #1F2937; width: 40%;">Created At:</td>
+                  <td style="padding: 12px; color: #374151;">${ticket.created_at ? new Date(ticket.created_at).toLocaleString() : 'N/A'}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 12px; font-weight: bold; color: #1F2937;">Updated At:</td>
+                  <td style="padding: 12px; color: #374151;">${ticket.updated_at ? new Date(ticket.updated_at).toLocaleString() : 'N/A'}</td>
+                </tr>
+              </table>
+              
+              <div style="background-color: #F3F4F6; padding: 16px; border-radius: 6px; margin: 20px 0;">
+                <p style="color: #374151; margin: 0; line-height: 1.6;">
+                  Please login to the <strong>HRMS Portal</strong> to view complete ticket details and conversation history.
+                </p>
+              </div>
+              
+              <p style="color: #6B7280; font-size: 14px; text-align: center; margin-top: 24px;">
+                Regards,<br/>
+                <strong>HRMS Support Team</strong>
+              </p>
+            </div>
+          </div>
+        `;
+
+        const emailText = `
+Hello ${ticket.admin_name || 'Admin'},
+
+Your support ticket has been updated by the Superadmin.
+
+Ticket Details:
+- Ticket ID: ${ticketIdFormatted}
+- Subject: ${ticket.subject}
+- Category: ${ticket.category}
+- Priority: ${ticket.priority}
+- Current Status: ${ticket.status}
+
+Superadmin Response:
+${message.trim()}
+
+- Created At: ${ticket.created_at ? new Date(ticket.created_at).toLocaleString() : 'N/A'}
+- Updated At: ${ticket.updated_at ? new Date(ticket.updated_at).toLocaleString() : 'N/A'}
+
+Please login to the HRMS Portal to view complete ticket details and conversation history.
+
+Regards,
+HRMS Support Team
+        `;
+
+        await sendMail({
+          to: adminEmail,
+          subject: `Support Ticket Updated - ${ticketIdFormatted}`,
+          html: emailHtml,
+          text: emailText,
+        });
+
+      } else {
+        // No admin email available
+      }
+    } catch (error) {
+      // Email sending should not break reply creation
+    }
+
+    return reply;
   } catch (error) {
-    console.error('Error adding reply:', error);
     throw error;
   }
 }
@@ -352,6 +470,8 @@ async function updateTicket(ticketId, updates = {}) {
     }
 
     const tenants = await getAllTenants();
+    let updatedTicket = null;
+    
     for (const tenant of tenants) {
       try {
         const tenantPool = getTenantPool(tenant.db_name);
@@ -394,10 +514,156 @@ async function updateTicket(ticketId, updates = {}) {
 
         const result = await tenantPool.query(query, [...params, ticketId]);
         if (result.rows.length) {
-          return result.rows[0];
+          updatedTicket = { ...result.rows[0], dbName: tenant.db_name };
+          
+          // Send email to admin about status/description update (non-blocking)
+          try {
+            
+            
+            
+            
+            const ticketIdFormatted = `TKT-${String(ticketId).padStart(3, '0')}`;
+            
+            // Get admin_id from updated ticket
+            const adminId = updatedTicket?.admin_id;
+            
+            
+            if (adminId && tenant.db_name) {
+              // Fetch admin from users table using admin_id
+              let adminResult = await tenantPool.query(
+                `SELECT id, name, email, work_email FROM users WHERE id = $1 LIMIT 1`,
+                [adminId]
+              );
+              
+              let admin = adminResult.rows[0];
+              
+              // If not found in users, try employees table
+              if (!admin) {
+                adminResult = await tenantPool.query(
+                  `SELECT id, name, email, work_email FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+                  [adminId]
+                );
+                admin = adminResult.rows[0];
+              }
+              
+              
+              
+              
+              if (admin?.email) {
+                const adminEmail = admin.email || admin.work_email;
+                const adminName = admin.name;
+                
+                
+
+                const emailHtml = `
+                  <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px; background-color: #f9fafb;">
+                    <div style="background-color: #0F766E; color: white; padding: 20px; border-radius: 8px 8px 0 0; text-align: center;">
+                      <h1 style="margin: 0;">Support Ticket Updated</h1>
+                    </div>
+                    <div style="padding: 20px; background-color: #ffffff; border-radius: 0 0 8px 8px;">
+                      <p style="color: #374151; font-size: 16px; line-height: 1.6;">Hello ${adminName || updatedTicket.admin_name || 'Admin'},</p>
+                      <p style="color: #374151; font-size: 16px; line-height: 1.6;">Your support ticket has been updated by the Superadmin.</p>
+                      
+                      <h2 style="color: #1F2937; font-size: 18px; margin-top: 24px; margin-bottom: 12px;">Ticket Details</h2>
+                      <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+                        <tr style="border-bottom: 1px solid #e5e7eb;">
+                          <td style="padding: 12px; font-weight: bold; color: #1F2937; width: 40%;">Ticket ID:</td>
+                          <td style="padding: 12px; color: #374151;">${ticketIdFormatted}</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid #e5e7eb;">
+                          <td style="padding: 12px; font-weight: bold; color: #1F2937;">Subject:</td>
+                          <td style="padding: 12px; color: #374151;">${updatedTicket.subject}</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid #e5e7eb;">
+                          <td style="padding: 12px; font-weight: bold; color: #1F2937;">Category:</td>
+                          <td style="padding: 12px; color: #374151;">${updatedTicket.category}</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid #e5e7eb;">
+                          <td style="padding: 12px; font-weight: bold; color: #1F2937;">Priority:</td>
+                          <td style="padding: 12px; color: #374151;"><span style="background-color: ${updatedTicket.priority === 'High' ? '#FEE2E2' : updatedTicket.priority === 'Medium' ? '#FEF3C7' : '#DBEAFE'}; padding: 4px 8px; border-radius: 4px; color: ${updatedTicket.priority === 'High' ? '#DC2626' : updatedTicket.priority === 'Medium' ? '#D97706' : '#2563EB'}; font-weight: bold;">${updatedTicket.priority}</span></td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid #e5e7eb;">
+                          <td style="padding: 12px; font-weight: bold; color: #1F2937;">Current Status:</td>
+                          <td style="padding: 12px; color: #374151;"><strong>${updatedTicket.status}</strong></td>
+                        </tr>
+                      </table>
+                      
+                      ${superAdminDescription ? `
+                      <h2 style="color: #1F2937; font-size: 18px; margin-top: 24px; margin-bottom: 12px;">Superadmin Response</h2>
+                      <div style="background-color: #F3F4F6; padding: 16px; border-radius: 6px; margin: 20px 0;">
+                        <p style="color: #374151; margin: 0; line-height: 1.6; white-space: pre-wrap;">${superAdminDescription}</p>
+                      </div>
+                      ` : ''}
+                      
+                      <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+                        <tr style="border-bottom: 1px solid #e5e7eb;">
+                          <td style="padding: 12px; font-weight: bold; color: #1F2937; width: 40%;">Created At:</td>
+                          <td style="padding: 12px; color: #374151;">${updatedTicket.created_at ? new Date(updatedTicket.created_at).toLocaleString() : 'N/A'}</td>
+                        </tr>
+                        <tr>
+                          <td style="padding: 12px; font-weight: bold; color: #1F2937;">Updated At:</td>
+                          <td style="padding: 12px; color: #374151;">${updatedTicket.updated_at ? new Date(updatedTicket.updated_at).toLocaleString() : 'N/A'}</td>
+                        </tr>
+                      </table>
+                      
+                      <div style="background-color: #F3F4F6; padding: 16px; border-radius: 6px; margin: 20px 0;">
+                        <p style="color: #374151; margin: 0; line-height: 1.6;">
+                          Please login to the <strong>HRMS Portal</strong> to view complete ticket details and conversation history.
+                        </p>
+                      </div>
+                      
+                      <p style="color: #6B7280; font-size: 14px; text-align: center; margin-top: 24px;">
+                        Regards,<br/>
+                        <strong>HRMS Support Team</strong>
+                      </p>
+                    </div>
+                  </div>
+                `;
+
+                const emailText = `
+Hello ${adminName || updatedTicket.admin_name || 'Admin'},
+
+Your support ticket has been updated by the Superadmin.
+
+Ticket Details:
+- Ticket ID: ${ticketIdFormatted}
+- Subject: ${updatedTicket.subject}
+- Category: ${updatedTicket.category}
+- Priority: ${updatedTicket.priority}
+- Current Status: ${updatedTicket.status}
+
+${superAdminDescription ? `Superadmin Response:\n${superAdminDescription}\n` : ''}
+
+- Created At: ${updatedTicket.created_at ? new Date(updatedTicket.created_at).toLocaleString() : 'N/A'}
+- Updated At: ${updatedTicket.updated_at ? new Date(updatedTicket.updated_at).toLocaleString() : 'N/A'}
+
+Please login to the HRMS Portal to view complete ticket details and conversation history.
+
+Regards,
+HRMS Support Team
+                `;
+
+                await sendMail({
+                  to: adminEmail,
+                  subject: `Support Ticket Updated - ${ticketIdFormatted}`,
+                  html: emailHtml,
+                  text: emailText,
+                });
+                
+                
+              } else {
+                
+              }
+            }
+          } catch (emailError) {
+            
+            // Email sending should not break ticket update
+          }
+          
+          return updatedTicket;
         }
       } catch (err) {
-        console.error(`Failed to update ticket for tenant ${tenant.db_name}:`, err.message);
+        // Continue with next tenant
       }
     }
 
@@ -420,21 +686,50 @@ async function deleteTicket(ticketId) {
       try {
         const tenantPool = getTenantPool(tenant.db_name);
 
-        // Delete replies first (tenant-level)
-        await tenantPool.query('DELETE FROM support_ticket_replies WHERE ticket_id = $1', [ticketId]);
+        // Soft delete for superadmin - only mark superadmin_deleted
+        const delResult = await tenantPool.query(
+          `UPDATE support_tickets 
+           SET superadmin_deleted = true, superadmin_deleted_at = CURRENT_TIMESTAMP
+           WHERE id = $1
+           RETURNING *`,
+          [ticketId]
+        );
 
-        const delResult = await tenantPool.query('DELETE FROM support_tickets WHERE id = $1 RETURNING *', [ticketId]);
         if (delResult.rows.length) {
-          return delResult.rows[0];
+          const ticket = delResult.rows[0];
+
+          // Check if both sides deleted - then hard delete
+          if (ticket.admin_deleted && ticket.superadmin_deleted) {
+            await hardDeleteTicketCompletely(tenantPool, ticketId);
+          }
+
+          return ticket;
         }
       } catch (err) {
-        console.error(`Failed to delete ticket for tenant ${tenant.db_name}:`, err.message);
+        // Continue with next tenant
       }
     }
 
     return null;
   } catch (error) {
-    console.error('Error deleting ticket:', error);
+    throw error;
+  }
+}
+
+async function hardDeleteTicketCompletely(pool, ticketId) {
+  try {
+    // Delete ticket replies/conversation history
+    await pool.query('DELETE FROM support_ticket_replies WHERE ticket_id = $1', [ticketId]);
+
+    // Delete notifications related to ticket
+    await pool.query('DELETE FROM notifications WHERE ticket_id = $1', [ticketId]);
+
+    // Delete ticket attachments (if stored separately)
+    await pool.query('DELETE FROM support_ticket_attachments WHERE ticket_id = $1', [ticketId]);
+
+    // Hard delete the ticket
+    await pool.query('DELETE FROM support_tickets WHERE id = $1', [ticketId]);
+  } catch (error) {
     throw error;
   }
 }
@@ -462,7 +757,6 @@ async function getRepliesByTicketId(ticketId) {
     const result = await pool.query(query, [ticketId]);
     return result.rows;
   } catch (error) {
-    console.error('Error fetching replies:', error);
     throw error;
   }
 }

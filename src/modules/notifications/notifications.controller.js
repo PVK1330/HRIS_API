@@ -5,22 +5,27 @@ const ApiResponse = require('../../utils/ApiResponse');
 const service = require('./notifications.service');
 
 const list = asyncHandler(async (req, res) => {
-  const data = await service.listNotifications(req.user);
+  
+
+  const data = await service.listNotifications(req.user, req.tenant);
+  
+  
+
   return ApiResponse.ok(res, data, 'Notifications retrieved successfully');
 });
 
 const markRead = asyncHandler(async (req, res) => {
-  const data = await service.readNotification(req.user, req.params.id);
+  const data = await service.readNotification(req.user, req.params.id, req.tenant);
   return ApiResponse.ok(res, data, 'Notification marked as read');
 });
 
 const markAllRead = asyncHandler(async (req, res) => {
-  await service.readAllNotifications(req.user);
+  await service.readAllNotifications(req.user, req.tenant);
   return ApiResponse.ok(res, null, 'All notifications marked as read');
 });
 
 const remove = asyncHandler(async (req, res) => {
-  await service.deleteNotification(req.user, req.params.id);
+  await service.deleteNotification(req.user, req.params.id, req.tenant);
   return ApiResponse.ok(res, null, 'Notification removed');
 });
 

@@ -1,7 +1,7 @@
 'use strict';
 
 const repo = require('./notifications.repository');
-const { getTenantPool } = require('../../config/db');
+const { getTenantPool, superAdminPool } = require('../../config/db');
 const { runTenantMigrations } = require('../tenant/tenant.service');
 const { sendMail } = require('../../utils/mail');
 
@@ -14,9 +14,10 @@ async function ensureMigrated(dbName) {
 }
 
 async function pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId }) {
-  if (!tenant?.dbName) return null;
-  await ensureMigrated(tenant.dbName);
-  const pool = await getTenantPool(tenant.dbName);
+  const dbName = tenant?.dbName || tenant?.db_name;
+  if (!dbName) return null;
+  await ensureMigrated(dbName);
+  const pool = await getTenantPool(dbName);
   return repo.create(pool, { employeeId, forAdmin, title, message, type, ticketId });
 }
 
@@ -80,31 +81,106 @@ async function sendSystemNotification(tenant, { employeeId, forAdmin, title, mes
   return notificationRecord;
 }
 
-async function listNotifications(user) {
-  if (!user?.db_name) return [];
-  await ensureMigrated(user.db_name);
-  const pool = await getTenantPool(user.db_name);
-  return repo.listForUser(pool, user);
+async function listNotifications(user, tenant = null) {
+  const dbName = user?.db_name || tenant?.dbName || tenant?.db_name;
+  const isSuperadmin = user?.role === 'superadmin';
+  
+  
+  
+  // Superadmin without tenant context: fetch from ALL tenants
+  if (isSuperadmin && !dbName) {
+    try {
+      
+      
+      // Get all tenant databases
+      const { rows: tenants } = await superAdminPool.query(
+        `SELECT id, db_name FROM public.tenants WHERE status = 'active' ORDER BY created_at DESC`
+      );
+      
+      
+      
+      if (!tenants.length) {
+        
+        return [];
+      }
+      
+      // Fetch notifications from all tenant databases
+      let allNotifications = [];
+      
+      for (const tenantRecord of tenants) {
+        try {
+          await ensureMigrated(tenantRecord.db_name);
+          const pool = await getTenantPool(tenantRecord.db_name);
+          const notifications = await repo.listForUser(pool, user);
+          
+          
+          
+          // Add tenant info to each notification
+          const notificationsWithTenant = notifications.map(n => ({
+            ...n,
+            _tenantId: tenantRecord.id,
+            _tenantDbName: tenantRecord.db_name,
+          }));
+          
+          allNotifications = allNotifications.concat(notificationsWithTenant);
+        } catch (err) {
+          console.error('[NOTIFICATIONS SERVICE] Error fetching from tenant:', {
+            tenantId: tenantRecord.id,
+            dbName: tenantRecord.db_name,
+            error: err.message,
+          });
+          // Continue with other tenants
+        }
+      }
+      
+      // Sort by created_at descending (newest first)
+      allNotifications.sort((a, b) => new Date(b.created_at || b.createdAt) - new Date(a.created_at || a.createdAt));
+      
+      
+      
+      return allNotifications;
+    } catch (err) {
+      console.error('[NOTIFICATIONS SERVICE] Error fetching superadmin notifications from all tenants:', err);
+      return [];
+    }
+  }
+  
+  // Regular user or user with tenant context
+  if (!dbName) {
+    
+    return [];
+  }
+  
+  await ensureMigrated(dbName);
+  const pool = await getTenantPool(dbName);
+  const notifications = await repo.listForUser(pool, user);
+  
+  
+  
+  return notifications;
 }
 
-async function readNotification(user, id) {
-  if (!user?.db_name) return null;
-  await ensureMigrated(user.db_name);
-  const pool = await getTenantPool(user.db_name);
+async function readNotification(user, id, tenant = null) {
+  const dbName = user?.db_name || tenant?.dbName || tenant?.db_name;
+  if (!dbName) return null;
+  await ensureMigrated(dbName);
+  const pool = await getTenantPool(dbName);
   return repo.markAsRead(pool, id, user);
 }
 
-async function readAllNotifications(user) {
-  if (!user?.db_name) return true;
-  await ensureMigrated(user.db_name);
-  const pool = await getTenantPool(user.db_name);
+async function readAllNotifications(user, tenant = null) {
+  const dbName = user?.db_name || tenant?.dbName || tenant?.db_name;
+  if (!dbName) return true;
+  await ensureMigrated(dbName);
+  const pool = await getTenantPool(dbName);
   return repo.markAllAsRead(pool, user);
 }
 
-async function deleteNotification(user, id) {
-  if (!user?.db_name) return true;
-  await ensureMigrated(user.db_name);
-  const pool = await getTenantPool(user.db_name);
+async function deleteNotification(user, id, tenant = null) {
+  const dbName = user?.db_name || tenant?.dbName || tenant?.db_name;
+  if (!dbName) return true;
+  await ensureMigrated(dbName);
+  const pool = await getTenantPool(dbName);
   return repo.remove(pool, id);
 }
 

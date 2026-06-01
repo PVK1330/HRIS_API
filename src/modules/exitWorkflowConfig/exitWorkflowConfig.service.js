@@ -229,6 +229,22 @@ async function deleteWorkflow(tenant, workflowId) {
   return { id: Number(workflowId), is_active: false };
 }
 
+/** Lookup data the workflow builder needs (departments / roles / employees), gated by the
+ *  same config permission so the builder does not depend on departments.manage / rbac perms. */
+async function getBuilderOptions(tenant) {
+  const pool = await getTenantPool(tenant.dbName);
+  const [depts, roles, emps] = await Promise.all([
+    pool.query(`SELECT id, name, code FROM departments WHERE is_active = true ORDER BY name`),
+    pool.query(`SELECT id, name FROM rbac_roles ORDER BY name`),
+    pool.query(
+      `SELECT id, full_name, work_email, job_title
+       FROM employees WHERE deleted_at IS NULL AND portal_enabled = true
+       ORDER BY full_name LIMIT 500`,
+    ),
+  ]);
+  return { departments: depts.rows, roles: roles.rows, employees: emps.rows };
+}
+
 module.exports = {
   createWorkflow,
   listWorkflows,
@@ -236,4 +252,5 @@ module.exports = {
   updateWorkflow,
   setDefaultWorkflow,
   deleteWorkflow,
+  getBuilderOptions,
 };

@@ -13,6 +13,7 @@ const router = Router();
 // Workflow configuration is ORG-ADMIN only (authorizeExitAccess action:'config').
 router.use(authenticate, tenantResolver, loadUserContext, authorizeExitAccess({ action: 'config' }));
 
+router.get('/options', ctrl.options)
 router.get('/', ctrl.list);
 router.post('/', validateWithJoi(v.createWorkflowBody, 'body'), ctrl.create);
 router.get('/:workflowId', validateWithJoi(v.workflowIdParam, 'params'), ctrl.getOne);

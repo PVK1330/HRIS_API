@@ -13,6 +13,7 @@
 
 const ApiError = require('../../utils/ApiError');
 const { getTenantPool } = require('../../config/db');
+const { P, expandPermissionKeys, permissionSatisfied } = require('../../constants/permissions');
 const resolver = require('./exitAccessResolver.service');
 
 /* ------------------------------------------------------------------ */
@@ -50,12 +51,29 @@ async function loadUserContext(req, _res, next) {
     // only the tenant Org Admin gets the read-all + mutate-any override.
     const isOrgExitAdmin = user.role === 'admin' || user.role === 'superadmin';
 
+    // Workflow-CONFIG capability is broader than the stage-override admin: the tenant Org Admin
+    // OR anyone who manages settings (holds 'system-settings', e.g. HR Admin) may configure
+    // exit workflows. This is separate from isOrgExitAdmin (which governs stage-ownership override).
+    let canConfigureExit = isOrgExitAdmin;
+    if (!canConfigureExit && rbacRoleId) {
+      try {
+        const rbacRepo = require('../rbac/rbac.repository');
+        const keys = await rbacRepo.permissionKeysForRole(pool, rbacRoleId);
+        const expanded = expandPermissionKeys(keys);
+        canConfigureExit = permissionSatisfied(expanded, 'system-settings')
+          || permissionSatisfied(expanded, P.EXIT_MANAGE) && permissionSatisfied(expanded, 'departments.manage');
+      } catch (_) {
+        canConfigureExit = false; // fail-closed
+      }
+    }
+
     req.exitUser = {
       userId: user.id,
       employeeId,
       departmentId,
       rbacRoleId,
       isOrgExitAdmin,
+      canConfigureExit,
     };
     return next();
   } catch (err) {
@@ -109,10 +127,10 @@ function authorizeExitAccess({ action } = {}) {
   return function exitAccessGuard(req, _res, next) {
     if (!req.exitUser) return next(ApiError.unauthorized('Authentication required'));
 
-    // Org-admin-only workflow configuration routes.
+    // Workflow configuration routes — admins or settings managers (system-settings).
     if (action === 'config') {
-      if (!req.exitUser.isOrgExitAdmin) {
-        return next(ApiError.forbidden('Exit workflow configuration requires administrator access'));
+      if (!req.exitUser.canConfigureExit) {
+        return next(ApiError.forbidden('Exit workflow configuration requires administrator or settings-manager access'));
       }
       return next();
     }

@@ -175,9 +175,15 @@ async function listExitRequests(tenant, filters, exitUser) {
 /** Derive per-stage runtime state from current_stage_id + stage_order + exit_approvals. */
 async function buildStageStates(pool, request) {
   const { rows: stages } = await pool.query(
-    `SELECT s.id, s.name, s.stage_order, s.approval_mode,
+    `SELECT s.id, s.name, s.stage_order, s.approval_mode, s.sla_hours,
             s.allow_future_visibility, s.allow_previous_edit,
-            d.name AS primary_department
+            d.name AS primary_department,
+            ARRAY(SELECT r.name FROM exit_stage_roles sr JOIN rbac_roles r ON r.id = sr.role_id
+                  WHERE sr.stage_id = s.id ORDER BY r.name) AS owner_roles,
+            ARRAY(SELECT dd.name FROM exit_stage_departments sd JOIN departments dd ON dd.id = sd.department_id
+                  WHERE sd.stage_id = s.id ORDER BY dd.name) AS owner_departments,
+            ARRAY(SELECT e.full_name FROM exit_stage_users su JOIN employees e ON e.id = su.employee_id
+                  WHERE su.stage_id = s.id) AS owner_users
      FROM exit_workflow_stages s
      LEFT JOIN LATERAL (
        SELECT dd.name FROM exit_stage_departments sd

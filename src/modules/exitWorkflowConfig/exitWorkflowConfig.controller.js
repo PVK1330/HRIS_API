@@ -34,4 +34,9 @@ const remove = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, 'Workflow deactivated');
 });
 
-module.exports = { list, getOne, create, update, setDefault, remove };
+const options = asyncHandler(async (req, res) => {
+  const data = await service.getBuilderOptions(req.tenant);
+  return ApiResponse.ok(res, data, 'Builder options retrieved');
+});
+
+module.exports = { list, getOne, create, update, setDefault, remove, options };

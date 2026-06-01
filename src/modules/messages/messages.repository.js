@@ -61,6 +61,8 @@ async function getMessages(pool, conversationId, { limit = 50, before } = {}) {
 
   const { rows } = await pool.query(
     `SELECT m.id, m.conversation_id, m.sender_id, m.body, m.is_read,
+            COALESCE(m.message_type, 'text') AS message_type,
+            m.attachment_url, m.attachment_name, m.attachment_mime, m.attachment_size,
             TO_CHAR(m.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at,
             COALESCE(e.full_name, 'User') AS sender_name
      FROM messages m
@@ -73,22 +75,45 @@ async function getMessages(pool, conversationId, { limit = 50, before } = {}) {
   return rows;
 }
 
-async function insertMessage(pool, { conversationId, senderId, body }) {
+async function insertMessage(pool, {
+  conversationId,
+  senderId,
+  body,
+  messageType = 'text',
+  attachmentUrl = null,
+  attachmentName = null,
+  attachmentMime = null,
+  attachmentSize = null,
+}) {
+  const text = String(body || '').trim();
   const { rows } = await pool.query(
-    `INSERT INTO messages (conversation_id, sender_id, body)
-     VALUES ($1, $2, $3)
+    `INSERT INTO messages (
+       conversation_id, sender_id, body, message_type,
+       attachment_url, attachment_name, attachment_mime, attachment_size
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING id, conversation_id, sender_id, body, is_read,
+               COALESCE(message_type, 'text') AS message_type,
+               attachment_url, attachment_name, attachment_mime, attachment_size,
                TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at`,
-    [conversationId, senderId, body]
+    [
+      conversationId,
+      senderId,
+      text,
+      messageType,
+      attachmentUrl,
+      attachmentName,
+      attachmentMime,
+      attachmentSize,
+    ],
   );
   const msg = rows[0];
 
-  // Update conversation's last_message snapshot
+  const preview = text || (attachmentName ? `📎 ${attachmentName}` : 'Attachment');
   await pool.query(
     `UPDATE conversations
      SET last_message = $1, last_message_at = $2
      WHERE id = $3`,
-    [body.length > 60 ? body.slice(0, 60) + '…' : body, msg.created_at, conversationId]
+    [preview.length > 60 ? `${preview.slice(0, 60)}…` : preview, msg.created_at, conversationId],
   );
 
   return msg;
@@ -101,6 +126,16 @@ async function markRead(pool, conversationId, readerId) {
      WHERE conversation_id = $1 AND sender_id <> $2 AND is_read = false`,
     [conversationId, readerId]
   );
+}
+
+async function getConversationParticipants(pool, conversationId) {
+  const { rows } = await pool.query(
+    `SELECT participant_a, participant_b
+     FROM conversations
+     WHERE id = $1`,
+    [conversationId],
+  );
+  return rows[0] || null;
 }
 
 async function getUnreadCount(pool, employeeId) {
@@ -116,11 +151,45 @@ async function getUnreadCount(pool, employeeId) {
   return rows[0].total;
 }
 
+/** All org employees as message contacts (no HR directory data-scope filter). */
+async function listMessageContacts(pool, employeeId, { search = '', limit = 10000 } = {}) {
+  const params = [employeeId];
+  let searchSql = '';
+  if (search && String(search).trim()) {
+    params.push(`%${String(search).trim()}%`);
+    const n = params.length;
+    searchSql = `AND (
+      e.full_name ILIKE $${n}
+      OR e.job_title ILIKE $${n}
+      OR e.work_email ILIKE $${n}
+      OR e.department ILIKE $${n}
+      OR e.emp_id ILIKE $${n}
+    )`;
+  }
+  const cap = Math.min(10000, Math.max(1, parseInt(limit, 10) || 10000));
+  params.push(cap);
+
+  const { rows } = await pool.query(
+    `SELECT e.id, e.full_name, e.job_title, e.work_email, e.profile_image_url,
+            e.emp_id, e.department, e.employment_status
+     FROM employees e
+     WHERE e.deleted_at IS NULL
+       AND e.id <> $1
+       ${searchSql}
+     ORDER BY e.full_name ASC
+     LIMIT $${params.length}`,
+    params,
+  );
+  return rows;
+}
+
 module.exports = {
   getOrCreateConversation,
+  getConversationParticipants,
   listConversations,
   getMessages,
   insertMessage,
   markRead,
   getUnreadCount,
+  listMessageContacts,
 };

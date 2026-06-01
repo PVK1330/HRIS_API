@@ -16,6 +16,43 @@ const router = Router();
 
 router.use(authenticate, tenantResolver, loadAuthContext);
 
+/* Exit workflow config: pipeline stages + department approval sequence */
+router.get(
+  '/exit-workflow-config',
+  requirePermission(P.EXIT_MANAGE),
+  ctrl.getWorkflowConfig,
+);
+router.put(
+  '/exit-workflow-config',
+  requirePermission(P.EXIT_MANAGE),
+  validateWithJoi(v.saveExitWorkflowConfigBody, 'body'),
+  ctrl.saveWorkflowConfig,
+);
+
+router.get(
+  '/pipeline-stages',
+  requirePermission(P.EXIT_MANAGE),
+  ctrl.getPipelineStages,
+);
+router.put(
+  '/pipeline-stages',
+  requirePermission(P.EXIT_MANAGE),
+  validateWithJoi(v.savePipelineStagesBody, 'body'),
+  ctrl.savePipelineStages,
+);
+
+router.get(
+  '/department-workflow-template',
+  requirePermission(P.EXIT_MANAGE),
+  ctrl.getOrgWorkflow,
+);
+router.put(
+  '/department-workflow-template',
+  requirePermission(P.EXIT_MANAGE),
+  validateWithJoi(v.saveOrgWorkflowBody, 'body'),
+  ctrl.saveOrgWorkflow,
+);
+
 /* Clearance Task Templates (must come before /:id to avoid param capture) */
 router.get('/clearance-templates/list', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.listingQuery, 'query'), ctrl.listClearance);
 router.get('/clearance-templates/:id', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.getClearance);

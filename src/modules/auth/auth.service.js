@@ -515,6 +515,7 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
     {
       id: emp.id,
       email: emp.work_email,
+      name: emp.full_name,
       role: 'employee',
       tenant_id: tenant.id,
       db_name: tenant.db_name,
@@ -566,11 +567,23 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
       const roleId = roleRows[0]?.id || null;
 
       // Provision a shadow employee record for the admin
+      const nextEmpId = await require('../employees/employees.repository').getNextEmpId(tenantPool);
       const { rows: newEmp } = await tenantPool.query(
-        `INSERT INTO employees (full_name, work_email, username, portal_enabled, rbac_role_id, employment_status)
-         VALUES ($1, $2, $3, true, $4, 'Active')
+        `INSERT INTO employees (
+           emp_id, full_name, work_email, username, portal_enabled, rbac_role_id,
+           employment_status, job_title, department, employment_type, join_date
+         ) VALUES ($1, $2, $3, $4, true, $5, 'Active', $6, $7, $8, CURRENT_DATE)
          RETURNING id`,
-        [adminUser.name || 'Organization Admin', adminUser.email, adminUser.email.split('@')[0], roleId]
+        [
+          nextEmpId,
+          adminUser.name || 'Organization Admin',
+          adminUser.email,
+          adminUser.email.split('@')[0],
+          roleId,
+          'Organization Admin',
+          'General',
+          'Full-time',
+        ],
       );
       employeeId = newEmp[0]?.id || null;
       logger.info(`[auth] auto-provisioned employee record id ${employeeId} for admin user ${adminUser.email}`);
@@ -583,6 +596,7 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
     {
       id: adminUser.id,
       email: adminUser.email,
+      name: adminUser.name,
       role: 'admin',
       tenant_id: tenant.id,
       db_name: tenant.db_name,

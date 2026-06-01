@@ -16,7 +16,7 @@ const mailer = require('./onboarding.mailer');
 const workflowRepo = require('./onboarding.workflow.repository');
 const { WORKFLOW_STATUS, WORKFLOW_STATUS_LABELS } = require('./onboarding.workflow');
 const { generateOfferLetterPdf } = require('./offerPdf.generator');
-const { resolveCandidatePortalBase, buildCandidateUrls } = require('./candidatePortalUrl');
+const { resolveCandidatePortalContext, buildCandidateUrls } = require('./candidatePortalUrl');
 
 const _migrationCache = new Map();
 async function ensureMigrated(dbName) {
@@ -387,16 +387,29 @@ async function sendOfferLetter(
     notes: 'System-generated offer letter',
   });
 
-  const { token } = await workflowRepo.issueOnboardingToken(pool, employeeId);
+  let token = String(emp.onboarding_token || '').trim();
+  const expiresAt = emp.onboarding_token_expires_at
+    ? new Date(emp.onboarding_token_expires_at)
+    : null;
+  const tokenStillValid =
+    token && expiresAt && !Number.isNaN(expiresAt.getTime()) && expiresAt > new Date();
+
+  if (!tokenStillValid) {
+    ({ token } = await workflowRepo.issueOnboardingToken(pool, employeeId));
+  }
+
   await workflowRepo.patchOnboardingFields(pool, employeeId, {
     onboarding_step: 1,
     onboarding_workflow_status: WORKFLOW_STATUS.OFFER_SENT,
     onboarding_approval_status: 'Pending',
     offer_letter_document_id: docRow.id,
+    ...(tokenStillValid
+      ? {}
+      : { onboarding_token: token }),
   });
 
-  const base = await resolveCandidatePortalBase(user.tenant_id);
-  const urls = buildCandidateUrls(base, token);
+  const { base, tenantSlug } = await resolveCandidatePortalContext(user.tenant_id);
+  const urls = buildCandidateUrls(base, token, tenantSlug);
   const attachments = [
     { filename: pdf.fileName, path: pdf.filePath },
   ];

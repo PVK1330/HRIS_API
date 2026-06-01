@@ -5,15 +5,17 @@ const { body, param, query } = require('express-validator');
 const validate = require('../../middlewares/validate.middleware');
 const {
   authenticate,
-  loadAuthContext,
-  requirePermission,
+  requireRole,
 } = require('../../middlewares/auth.middleware');
-const { P } = require('../../constants/permissions');
+const { messageFileMiddleware } = require('./messages.upload');
 const ctrl = require('./messages.controller');
 
 const router = Router();
-router.use(authenticate, loadAuthContext);
-router.use(requirePermission(P.MESSAGES_VIEW));
+
+/* Messages are available to all tenant workspace users — no RBAC permission gate */
+router.use(authenticate, requireRole('admin', 'employee', 'hr_admin', 'hr_executive', 'manager'));
+
+router.get('/contacts', ctrl.listContacts);
 
 router.get('/unread', ctrl.unreadCount);
 
@@ -33,5 +35,16 @@ router.post('/conversations/:id/messages', [
   param('id').isInt({ min: 1 }),
   body('body').notEmpty().isString().trim().isLength({ max: 4000 }),
 ], validate, ctrl.sendMessage);
+
+router.post(
+  '/conversations/:id/messages/upload',
+  [
+    param('id').isInt({ min: 1 }),
+    body('body').optional().isString().trim().isLength({ max: 4000 }),
+  ],
+  validate,
+  messageFileMiddleware,
+  ctrl.sendMessageAttachment,
+);
 
 module.exports = router;

@@ -45,6 +45,7 @@ function authenticate(req, _res, next) {
     req.user = {
       id: decoded.id,
       email: decoded.email,
+      name: decoded.name || null,
       role: decoded.role,
       rbacRoleId: decoded.rbacRoleId || null,
       tenant_id: decoded.tenant_id || null,

@@ -55,6 +55,13 @@ async function bootstrap() {
       logger.error('Failed to start exit SLA escalation cron', e);
     }
 
+    try {
+      const { startAnnouncementScheduleCron } = require('./jobs/announcementSchedule.job');
+      startAnnouncementScheduleCron();
+    } catch (e) {
+      logger.error('Failed to start announcement schedule cron', e);
+    }
+
     logger.info(`Socket.io attached on /socket.io`);
   });
 

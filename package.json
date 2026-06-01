@@ -12,6 +12,9 @@
     "seed:superadmin": "node src/scripts/seedSuperAdmin.js",
     "seed:tenants": "node src/scripts/seedTenants.js",
     "seed:manager": "node src/scripts/seedManagerUser.js",
+    "seed:demo": "node src/scripts/seedDemoCorp.js",
+    "seed:demo:workflow": "node src/scripts/seedDemoCorpWorkflow.js",
+    "seed:demo:roles": "node src/scripts/seedDemoCorpRoles.js",
     "db:reset": "node src/scripts/resetDb.js",
     "db:setup": "npm run db:reset && npm run migrate && npm run seed:superadmin && npm run seed:tenants"
   },

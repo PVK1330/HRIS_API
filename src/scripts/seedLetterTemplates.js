@@ -73,7 +73,7 @@ const INDUSTRY_TEMPLATES = [
     body: `
       <p>Date: {{today_date}}</p>
       <p><strong>To Whom It May Concern</strong></p>
-      <p>This letter is to certify that <strong>{{employee_name}}</strong> was employed with our organisation from <strong>{{join_date}}</strong> to <strong>{{last_working_day}}</strong>, serving as <strong>{{job_title}}</strong> in the <strong>{{department}}</strong> Department.</p>
+      <p>This letter is to certify that <strong>{{employee_name}}</strong> was employed with our organisation from <strong>{{joining_date}}</strong> to <strong>{{last_working_day}}</strong>, serving as <strong>{{job_title}}</strong> in the <strong>{{department}}</strong> Department.</p>
       <p>During the period of their employment, {{employee_name}} demonstrated professionalism and commitment to their responsibilities. We confirm that their conduct and performance were satisfactory throughout their tenure.</p>
       <p>This letter is issued at the request of the individual named herein for whatever lawful purpose it may serve.</p>
       <p>Yours sincerely,<br><strong>Human Resources Department</strong></p>
@@ -92,6 +92,60 @@ const INDUSTRY_TEMPLATES = [
       <p>You are reminded of your obligations regarding the return of all company property, confidentiality of information, and any post-termination restrictions set out in your contract of employment.</p>
       <p>Your final salary payment, including any accrued holiday entitlement, will be processed in accordance with the Company's standard payroll procedures and applicable employment legislation.</p>
       <p>Yours sincerely,<br><strong>Human Resources Department</strong></p>
+    `
+  },
+  {
+    name: 'No Objection Certificate',
+    type: 'Certificate',
+    category: 'Exit',
+    description: 'NOC confirming employee cleared all obligations.',
+    body: `
+      <h2 style="text-align:center;color:#0F766E;">No Objection Certificate</h2>
+      <p>Date: {{today_date}}</p>
+      <p>To Whom It May Concern,</p>
+      <p>This is to certify that <strong>{{employee_name}}</strong> (Employee ID: {{employee_id}}), {{job_title}} in the {{department}} department at {{company_name}}, has completed all exit formalities as of {{last_working_day}}.</p>
+      <p>We have no objection to {{employee_name}} joining any other organisation.</p>
+      <p>Yours sincerely,<br><strong>Human Resources Department</strong></p>
+    `
+  },
+  {
+    name: 'Full & Final Settlement',
+    type: 'Letter',
+    category: 'Exit',
+    description: 'Full and final settlement statement.',
+    body: `
+      <h2 style="text-align:center;color:#0F766E;">Full &amp; Final Settlement</h2>
+      <p>Date: {{today_date}}</p>
+      <p>Dear <strong>{{employee_name}}</strong>,</p>
+      <p>Settlement summary for your separation from {{company_name}} (last working day: {{last_working_day}}).</p>
+      <p>Unpaid Salary: {{unpaid_salary}} | Leave Encashment: {{leave_encashment}} | Gratuity: {{gratuity}} | Deductions: {{deductions}} | <strong>Net Payable: {{net_payable}}</strong></p>
+      <p>Yours sincerely,<br><strong>Finance &amp; HR Department</strong></p>
+    `
+  },
+  {
+    name: 'Recommendation Letter',
+    type: 'Letter',
+    category: 'Exit',
+    description: 'Professional recommendation for exiting employee.',
+    body: `
+      <h2 style="text-align:center;color:#0F766E;">Recommendation Letter</h2>
+      <p>Date: {{today_date}}</p>
+      <p><strong>To Whom It May Concern</strong></p>
+      <p>I recommend <strong>{{employee_name}}</strong>, {{job_title}} in {{department}} at {{company_name}}, employed from {{joining_date}} to {{last_working_day}}.</p>
+      <p>Yours sincerely,<br><strong>Human Resources Department</strong></p>
+    `
+  },
+  {
+    name: 'Final Payslip',
+    type: 'Report',
+    category: 'Exit',
+    description: 'Final payslip at exit.',
+    body: `
+      <h2 style="text-align:center;color:#0F766E;">Final Payslip</h2>
+      <p>Date: {{today_date}}</p>
+      <p>Employee: <strong>{{employee_name}}</strong> ({{employee_id}}) | {{job_title}} | {{department}}</p>
+      <p>Joining: {{joining_date}} | Last Working Day: {{last_working_day}} | Net Payable: {{net_payable}}</p>
+      <p>Yours sincerely,<br><strong>Payroll Department</strong></p>
     `
   },
   {

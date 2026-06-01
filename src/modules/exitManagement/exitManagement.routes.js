@@ -1,213 +1,72 @@
 'use strict';
 
 const { Router } = require('express');
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
+
 const { validateWithJoi } = require('../../middlewares/joiValidate.middleware');
-const {
-  authenticate,
-  loadAuthContext,
-  requirePermission,
-} = require('../../middlewares/auth.middleware');
-const { P } = require('../../constants/permissions');
+const { authenticate } = require('../../middlewares/auth.middleware');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
+const env = require('../../config/env');
+const {
+  loadUserContext,
+  loadWorkflowContext,
+  resolveExitAccess,
+  authorizeExitAccess,
+} = require('./exitAuth.middleware');
 const ctrl = require('./exitManagement.controller');
 const v = require('./exitManagement.validator');
 
 const router = Router();
 
-router.use(authenticate, tenantResolver, loadAuthContext);
+// Base chain: authenticate + resolve tenant + build req.exitUser (NO scope engine).
+router.use(authenticate, tenantResolver, loadUserContext);
 
-/* ---- Exit Records ---- */
+/* Per-request access chain (loads request + current stage, resolves caller capabilities). */
+const reqChain = [validateWithJoi(v.idParam, 'params'), loadWorkflowContext, resolveExitAccess];
 
-router.get('/', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.listingQuery, 'query'), ctrl.list);
+/* ---- Dashboard + lookups (no :id) ---- */
+router.get('/dashboard/widgets', ctrl.widgets);
+router.get('/termination-types', ctrl.terminationTypes);
 
-router.get('/stats', requirePermission(P.EXIT_MANAGE), ctrl.stats);
+/* ---- Exit requests ---- */
+router.get('/', validateWithJoi(v.listingQuery, 'query'), ctrl.list);
+router.post('/', authorizeExitAccess({ action: 'create' }), validateWithJoi(v.createRequestBody, 'body'), ctrl.create);
 
-router.get('/termination-types', requirePermission(P.EXIT_MANAGE), ctrl.terminationTypesDropdown);
+router.get('/:id', ...reqChain, authorizeExitAccess({ action: 'view' }), ctrl.getOne);
+router.get('/:id/audit-log', ...reqChain, authorizeExitAccess({ action: 'view' }), ctrl.auditLog);
 
-router.get('/:id', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.getOne);
+/* ---- Current-stage actions ---- */
+router.put('/:id/approve', ...reqChain, authorizeExitAccess({ action: 'approve' }), validateWithJoi(v.approveBody, 'body'), ctrl.approve);
+router.put('/:id/reject', ...reqChain, authorizeExitAccess({ action: 'reject' }), validateWithJoi(v.rejectBody, 'body'), ctrl.reject);
+router.put('/:id/send-back', ...reqChain, authorizeExitAccess({ action: 'send_back' }), validateWithJoi(v.sendBackBody, 'body'), ctrl.sendBack);
+router.put('/:id/escalate', ...reqChain, authorizeExitAccess({ action: 'escalate' }), validateWithJoi(v.escalateBody, 'body'), ctrl.escalate);
+router.put('/:id/reassign', ...reqChain, authorizeExitAccess({ action: 'reassign' }), validateWithJoi(v.reassignBody, 'body'), ctrl.reassign);
+router.post('/:id/comment', ...reqChain, authorizeExitAccess({ action: 'comment' }), validateWithJoi(v.commentBody, 'body'), ctrl.comment);
+router.post('/:id/withdraw', ...reqChain, authorizeExitAccess({ action: 'view' }), validateWithJoi(v.withdrawBody, 'body'), ctrl.withdraw);
 
-router.post(
-  '/resignation',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.createResignationBody, 'body'),
-  ctrl.createResignation,
-);
+/* ---- Stage-attached checklist actions ---- */
+router.get('/:id/stages/:stageId/checklist', validateWithJoi(v.stageParams, 'params'), loadWorkflowContext, resolveExitAccess, authorizeExitAccess({ action: 'view' }), ctrl.listChecklist);
+router.post('/:id/stages/:stageId/checklist', validateWithJoi(v.stageParams, 'params'), loadWorkflowContext, resolveExitAccess, authorizeExitAccess({ action: 'complete_checklist' }), validateWithJoi(v.createChecklistBody, 'body'), ctrl.addChecklist);
+router.put('/:id/stages/:stageId/checklist/:itemId', validateWithJoi(v.checklistItemParams, 'params'), loadWorkflowContext, resolveExitAccess, authorizeExitAccess({ action: 'complete_checklist' }), validateWithJoi(v.updateChecklistBody, 'body'), ctrl.updateChecklist);
 
-router.post(
-  '/termination',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.createTerminationBody, 'body'),
-  ctrl.createTermination,
-);
-
-router.put(
-  '/:id',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.idParam, 'params'),
-  validateWithJoi(v.updateExitBody, 'body'),
-  ctrl.update,
-);
-
-router.put(
-  '/:id/approve',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.idParam, 'params'),
-  ctrl.approve,
-);
-
-router.put(
-  '/:id/reject',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.idParam, 'params'),
-  validateWithJoi(v.rejectBody, 'body'),
-  ctrl.reject,
-);
-
-router.put(
-  '/:id/status',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.idParam, 'params'),
-  validateWithJoi(v.updateStatusBody, 'body'),
-  ctrl.updateStatus,
-);
-
-/* ---- Clearance Tasks ---- */
-
-router.get('/:id/clearance', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.listClearance);
-
-router.post(
-  '/:id/clearance',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.idParam, 'params'),
-  validateWithJoi(v.createClearanceTaskBody, 'body'),
-  ctrl.addClearance,
-);
-
-router.put(
-  '/:id/clearance/:taskId',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.taskIdParam, 'params'),
-  validateWithJoi(v.updateClearanceTaskBody, 'body'),
-  ctrl.updateClearance,
-);
-
-/* ---- Asset Returns ---- */
-
-router.get('/:id/assets', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.listAssets);
-
-router.post(
-  '/:id/assets',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.idParam, 'params'),
-  validateWithJoi(v.createAssetReturnBody, 'body'),
-  ctrl.addAsset,
-);
-
-router.put(
-  '/:id/assets/:assetId',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.assetIdParam, 'params'),
-  validateWithJoi(v.updateAssetReturnBody, 'body'),
-  ctrl.updateAsset,
-);
-
-/* ---- Exit Documents ---- */
-
-router.get('/:id/documents', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.listDocuments);
-
-router.post(
-  '/:id/documents/generate',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.idParam, 'params'),
-  validateWithJoi(v.generateDocumentBody, 'body'),
-  ctrl.generateDocument,
-);
-
-/* ---- Exit Interviews ---- */
-
-router.get('/:id/interview', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.getInterview);
-
-router.post(
-  '/interviews',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.submitInterviewBody, 'body'),
-  ctrl.submitInterview,
-);
-
-/* ---- Final Settlements ---- */
-
-router.get('/:id/settlement', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.getSettlement);
-
-router.post(
-  '/settlements',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.processSettlementBody, 'body'),
-  ctrl.submitSettlement,
-);
-
-/* ---- Resignation Withdrawal ---- */
-
-router.post(
-  '/:id/withdraw',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.idParam, 'params'),
-  validateWithJoi(v.submitWithdrawalBody, 'body'),
-  ctrl.withdrawResignation,
-);
-
-router.put(
-  '/:id/withdraw/approve',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.idParam, 'params'),
-  ctrl.approveWithdrawal,
-);
-
-router.put(
-  '/:id/withdraw/reject',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.idParam, 'params'),
-  validateWithJoi(v.rejectWithdrawalBody, 'body'),
-  ctrl.rejectWithdrawal,
-);
-
-/* ---- Clearance Documents Upload ---- */
-
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const env = require('../../config/env');
-
+/* ---- Attachments ---- */
 const storage = multer.diskStorage({
-  destination(req, file, cb) {
-    const tenantDb = req.tenant?.dbName || 'default';
-    const dir = path.resolve(env.UPLOAD.dir, 'clearance-documents', tenantDb);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+  destination(req, _file, cb) {
+    const dir = path.resolve(env.UPLOAD.dir, 'exit-stage-attachments', req.tenant?.dbName || 'default');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     cb(null, dir);
   },
-  filename(req, file, cb) {
+  filename(_req, file, cb) {
     const ext = path.extname(file.originalname);
-    const basename = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9]/g, '_');
-    cb(null, `${Date.now()}-${basename}${ext}`);
-  }
+    const base = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9]/g, '_');
+    cb(null, `${Date.now()}-${base}${ext}`);
+  },
 });
+const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
 
-const upload = multer({
-  storage,
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
-});
-
-router.post(
-  '/:id/clearance/:taskId/upload',
-  requirePermission(P.EXIT_MANAGE),
-  validateWithJoi(v.taskIdParam, 'params'),
-  upload.single('file'),
-  ctrl.uploadClearanceProof,
-);
-
-/* ---- Audit Logs ---- */
-
-router.get('/:id/audit-log', requirePermission(P.EXIT_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.getAuditLog);
+router.get('/:id/attachments', ...reqChain, authorizeExitAccess({ action: 'view' }), ctrl.listAttachments);
+router.post('/:id/stages/:stageId/attachments', validateWithJoi(v.stageParams, 'params'), loadWorkflowContext, resolveExitAccess, authorizeExitAccess({ action: 'upload' }), upload.single('file'), ctrl.uploadAttachment);
 
 module.exports = router;

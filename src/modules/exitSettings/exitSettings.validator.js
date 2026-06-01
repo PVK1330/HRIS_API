@@ -51,6 +51,48 @@ const updateClearanceBody = Joi.object({
   sla_hours: Joi.number().integer().min(0).optional(),
 });
 
+const pipelineStageItem = Joi.object({
+  stage_key: Joi.string().trim().max(50).required(),
+  label: Joi.string().trim().min(1).max(100).required(),
+  step_order: Joi.number().integer().min(1).optional(),
+  is_active: Joi.boolean().optional(),
+  department_id: Joi.number().integer().positive().allow(null).optional(),
+  department_ids: Joi.array().items(Joi.number().integer().positive()).optional(),
+});
+
+const saveOrgWorkflowBody = Joi.object({
+  steps: Joi.array()
+    .items(
+      Joi.object({
+        department_id: Joi.number().integer().positive().required(),
+        step_order: Joi.number().integer().min(1).optional(),
+        is_mandatory: Joi.boolean().default(true),
+        remarks: Joi.string().trim().max(2000).allow('', null).optional(),
+      }),
+    )
+    .min(1)
+    .required(),
+});
+
+const savePipelineStagesBody = Joi.object({
+  stages: Joi.array().items(pipelineStageItem).min(1).required(),
+});
+
+const saveExitWorkflowConfigBody = Joi.object({
+  pipeline_stages: Joi.array().items(pipelineStageItem).min(1).optional(),
+  department_steps: Joi.array()
+    .items(
+      Joi.object({
+        department_id: Joi.number().integer().positive().required(),
+        step_order: Joi.number().integer().min(1).optional(),
+        is_mandatory: Joi.boolean().default(true),
+        remarks: Joi.string().trim().max(2000).allow('', null).optional(),
+      }),
+    )
+    .min(1)
+    .optional(),
+});
+
 module.exports = {
   idParam,
   listingQuery,
@@ -58,4 +100,7 @@ module.exports = {
   updateBody,
   createClearanceBody,
   updateClearanceBody,
+  saveOrgWorkflowBody,
+  savePipelineStagesBody,
+  saveExitWorkflowConfigBody,
 };

@@ -39,25 +39,27 @@ function buildOriginFromSlug(slug, { withLoginPath = false } = {}) {
   return withLoginPath ? `${origin.replace(/\/$/, '')}/login` : origin;
 }
 
+async function resolveTenantPortalSlug(tenantId) {
+  if (!tenantId) return null;
+  try {
+    const { rows } = await superAdminPool.query(
+      'SELECT schema_name, name FROM public.tenants WHERE id = $1 LIMIT 1',
+      [tenantId],
+    );
+    if (!rows.length) return null;
+    return rows[0].schema_name || slugifyTenantName(rows[0].name);
+  } catch {
+    return null;
+  }
+}
+
 async function resolvePortalOrigin(tenantIdOrUser, { withLoginPath = false } = {}) {
   const tenantId =
     typeof tenantIdOrUser === 'object'
       ? tenantIdOrUser?.tenant_id
       : tenantIdOrUser;
 
-  let slug = null;
-  if (tenantId) {
-    try {
-      const { rows } = await superAdminPool.query(
-        'SELECT name FROM public.tenants WHERE id = $1 LIMIT 1',
-        [tenantId],
-      );
-      if (rows[0]?.name) slug = slugifyTenantName(rows[0].name);
-    } catch {
-      /* use base URL */
-    }
-  }
-
+  const slug = await resolveTenantPortalSlug(tenantId);
   return buildOriginFromSlug(slug, { withLoginPath });
 }
 
@@ -76,5 +78,6 @@ module.exports = {
   resolvePortalLoginUrl,
   resolvePortalOrigin,
   resolvePortalLoginUrlFromTenantName,
+  resolveTenantPortalSlug,
   buildOriginFromSlug,
 };

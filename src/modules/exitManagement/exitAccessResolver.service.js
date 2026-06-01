@@ -215,6 +215,14 @@ function permittedActionsFor(accessCtx) {
   if (mutable && accessCtx.completedPrevStage && wfCtx.allowPreviousEdit) {
     actions.add('comment'); // limited write-back; never approve/reject of current stage
   }
+  // Generating + emailing official exit documents (relieving / experience / settlement letters)
+  // is an HR/admin action — allowed to the org exit admin, the current-stage owner, or anyone
+  // who acted on an earlier stage (e.g. HR issuing a relieving letter after completion). It is
+  // intentionally NOT gated on status, so documents can be issued once the exit is COMPLETED.
+  if (accessCtx.canRead
+      && (accessCtx.isOrgExitAdmin || accessCtx.ownsCurrentStage || accessCtx.completedPrevStage)) {
+    actions.add('generate_documents');
+  }
   return actions;
 }
 

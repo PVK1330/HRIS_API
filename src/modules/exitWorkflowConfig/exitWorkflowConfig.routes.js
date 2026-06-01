@@ -14,6 +14,14 @@ const router = Router();
 router.use(authenticate, tenantResolver, loadUserContext, authorizeExitAccess({ action: 'config' }));
 
 router.get('/options', ctrl.options)
+
+// Clearance-item catalog — registered before /:workflowId so the literal path is not
+// captured as a workflow id.
+router.get('/clearance-items', ctrl.listClearanceItems);
+router.post('/clearance-items', validateWithJoi(v.createClearanceItemBody, 'body'), ctrl.createClearanceItem);
+router.put('/clearance-items/:itemId', validateWithJoi(v.clearanceItemIdParam, 'params'), validateWithJoi(v.updateClearanceItemBody, 'body'), ctrl.updateClearanceItem);
+router.delete('/clearance-items/:itemId', validateWithJoi(v.clearanceItemIdParam, 'params'), ctrl.removeClearanceItem);
+
 router.get('/', ctrl.list);
 router.post('/', validateWithJoi(v.createWorkflowBody, 'body'), ctrl.create);
 router.get('/:workflowId', validateWithJoi(v.workflowIdParam, 'params'), ctrl.getOne);

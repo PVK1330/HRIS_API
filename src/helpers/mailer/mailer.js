@@ -97,14 +97,21 @@ class Mailer {
     const email = await settingsService.getSettingsByGroup('email');
     const company = await settingsService.getSettingsByGroup('company');
 
+    // Prefer org-admin SMTP (Settings → Email); otherwise fall back to the .env defaults.
+    // Mirrors utils/mail.js: supports EMAIL_* and MAIL_* var names, and defaults the host to
+    // Gmail when only a username/password is provided in .env (common for dev/Gmail app passwords).
+    const envUser = process.env.EMAIL_USER || process.env.MAIL_USER || '';
+    const envPass = process.env.EMAIL_PASS || process.env.MAIL_PASS || '';
+    const envHost = process.env.EMAIL_HOST || process.env.MAIL_HOST
+      || (envUser ? 'smtp.gmail.com' : '');
     const cfg = {
-      host:       email.smtpHost     || process.env.EMAIL_HOST     || '',
-      port: Number(email.smtpPort    || process.env.EMAIL_PORT     || 587),
-      username:   email.smtpUsername || process.env.EMAIL_USER     || '',
-      password:   email.smtpPassword || process.env.EMAIL_PASS     || '',
-      encryption: email.smtpEncryption || process.env.EMAIL_ENCRYPTION || 'tls',
-      fromEmail:  email.systemEmail  || process.env.EMAIL_USER     || '',
-      fromName:   email.systemFromName || process.env.APP_NAME     || 'SaaS App',
+      host:       email.smtpHost     || envHost,
+      port: Number(email.smtpPort    || process.env.EMAIL_PORT || process.env.MAIL_PORT || 587),
+      username:   email.smtpUsername || envUser,
+      password:   email.smtpPassword || envPass,
+      encryption: email.smtpEncryption || process.env.EMAIL_ENCRYPTION || process.env.MAIL_ENCRYPTION || 'tls',
+      fromEmail:  email.systemEmail  || process.env.EMAIL_FROM_ADDRESS || process.env.MAIL_FROM || envUser,
+      fromName:   email.systemFromName || process.env.EMAIL_FROM_NAME || process.env.MAIL_FROM_NAME || process.env.APP_NAME || 'SaaS App',
       appName:    company.companyName || process.env.APP_NAME      || 'SaaS App',
     };
 
@@ -197,7 +204,7 @@ class Mailer {
    * Send an email with arbitrary HTML (no template lookup, but still wrapped in
    * the base layout for a consistent look). Used for the "send test email" flow.
    */
-  async sendRaw({ to, subject, html }) {
+  async sendRaw({ to, subject, html, attachments }) {
     if (!to) throw new ApiError(400, 'Recipient `to` is required');
     if (!subject) throw new ApiError(400, '`subject` is required');
     if (!html) throw new ApiError(400, '`html` is required');
@@ -211,6 +218,8 @@ class Mailer {
         to,
         subject,
         html: wrapped,
+        // Optional nodemailer attachments: [{ filename, content: <Buffer> }, ...]
+        ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
       });
       logger.info(`[mailer] sent to=${to} subject="${subject}" messageId=${info.messageId}`);
       return { success: true, messageId: info.messageId };

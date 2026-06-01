@@ -71,6 +71,67 @@ async function updateChecklistItem(tenant, requestId, stageId, itemId, data, act
   return rows[0];
 }
 
+/* ------------------------------------------------------------------ */
+/*  Asset clearance — surface the exiting employee's assigned assets    */
+/*  so an ASSET_RETURN clearance stage shows real items to return.      */
+/* ------------------------------------------------------------------ */
+
+async function getRequestEmployeeId(pool, requestId) {
+  const { rows } = await pool.query(
+    `SELECT employee_id FROM exit_requests WHERE id = $1`, [requestId],
+  );
+  if (!rows.length) throw ApiError.notFound('Exit request not found');
+  return rows[0].employee_id;
+}
+
+/** Every asset currently/previously assigned to the exiting employee. Outstanding
+ *  ('Issued') first so the clearance owner sees what is still to be collected. */
+async function listEmployeeAssets(tenant, requestId) {
+  const pool = await getTenantPool(tenant.dbName);
+  const employeeId = await getRequestEmployeeId(pool, requestId);
+  const { rows } = await pool.query(
+    `SELECT id, asset_tag, asset_name, category, serial_number, condition, status,
+            assigned_date, returned_date, notes
+     FROM employee_assets
+     WHERE employee_id = $1
+     ORDER BY (status = 'Issued') DESC, category, asset_name`,
+    [employeeId],
+  );
+  const outstanding = rows.filter((r) => r.status === 'Issued').length;
+  return { assets: rows, outstanding, total: rows.length };
+}
+
+/** Mark one of the employee's assets returned (clearance action). Guarded by the route's
+ *  authorizeExitAccess({action:'complete_checklist'}) — the caller owns the current stage. */
+async function markAssetReturned(tenant, requestId, assetId, data, actor) {
+  const pool = await getTenantPool(tenant.dbName);
+  const employeeId = await getRequestEmployeeId(pool, requestId);
+
+  const { rows: existing } = await pool.query(
+    `SELECT * FROM employee_assets WHERE id = $1 AND employee_id = $2`,
+    [assetId, employeeId],
+  );
+  if (!existing.length) throw ApiError.notFound('Asset not found for this employee');
+
+  // status: 'Returned' (default) — but allow recording 'Lost'/'Damaged', or reverting to 'Issued'.
+  const status = ['Issued', 'Returned', 'Lost', 'Damaged'].includes(data.status)
+    ? data.status : 'Returned';
+
+  const { rows } = await pool.query(
+    `UPDATE employee_assets
+       SET status = $1,
+           returned_date = ${status === 'Issued' ? 'NULL' : 'CURRENT_DATE'},
+           condition = COALESCE($2, condition),
+           notes = COALESCE($3, notes),
+           updated_at = NOW()
+     WHERE id = $4 AND employee_id = $5
+     RETURNING id, asset_tag, asset_name, category, serial_number, condition, status,
+               assigned_date, returned_date, notes`,
+    [status, data.condition || null, data.notes || null, assetId, employeeId],
+  );
+  return rows[0];
+}
+
 async function addAttachment(tenant, requestId, stageId, file, meta, actor) {
   const pool = await getTenantPool(tenant.dbName);
   if (!file) throw ApiError.badRequest('No file uploaded');
@@ -99,6 +160,8 @@ module.exports = {
   listChecklist,
   addChecklistItem,
   updateChecklistItem,
+  listEmployeeAssets,
+  markAssetReturned,
   addAttachment,
   listAttachments,
 };

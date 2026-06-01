@@ -6,6 +6,8 @@ const ApiError = require('../../utils/ApiError');
 const service = require('./exitManagement.service');
 const dashboard = require('./exitDashboard.service');
 const stageActions = require('./exitStageActions.service');
+const exitDocuments = require('./exitDocuments.service');
+const exitEvents = require('./exitEvents.service');
 
 /** Build the actor context the service expects (employeeId + display name). */
 function actor(req) {
@@ -96,6 +98,57 @@ const updateChecklist = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, item, 'Checklist item updated');
 });
 
+const listAssets = asyncHandler(async (req, res) => {
+  const data = await stageActions.listEmployeeAssets(req.tenant, req.params.id);
+  return ApiResponse.ok(res, data, 'Employee assets retrieved');
+});
+
+const returnAsset = asyncHandler(async (req, res) => {
+  const asset = await stageActions.markAssetReturned(
+    req.tenant, req.params.id, req.params.assetId, req.body, actor(req),
+  );
+  return ApiResponse.ok(res, asset, 'Asset updated');
+});
+
+/* ---- Exit tasks ---- */
+
+const myTasks = asyncHandler(async (req, res) => {
+  const data = await exitEvents.listMyTasks(req.tenant, req.exitUser.employeeId, { status: req.query.status });
+  return ApiResponse.ok(res, data, 'My exit tasks retrieved');
+});
+
+const requestTasks = asyncHandler(async (req, res) => {
+  const data = await exitEvents.listRequestTasks(req.tenant, req.params.id);
+  return ApiResponse.ok(res, data, 'Exit request tasks retrieved');
+});
+
+const completeTask = asyncHandler(async (req, res) => {
+  const data = await exitEvents.completeTask(req.tenant, req.params.taskId, req.exitUser);
+  return ApiResponse.ok(res, data, 'Task completed');
+});
+
+/* ---- Exit documents (letters) ---- */
+
+const listDocumentTemplates = asyncHandler(async (req, res) => {
+  const data = await exitDocuments.listTemplates(req.tenant);
+  return ApiResponse.ok(res, data, 'Exit document templates retrieved');
+});
+
+const listExitDocuments = asyncHandler(async (req, res) => {
+  const data = await exitDocuments.listGenerated(req.tenant, req.params.id);
+  return ApiResponse.ok(res, data, 'Generated documents retrieved');
+});
+
+const generateDocuments = asyncHandler(async (req, res) => {
+  const data = await exitDocuments.generate(req.tenant, req.params.id, req.body, actor(req));
+  return ApiResponse.created(res, data, 'Exit documents generated');
+});
+
+const downloadDocument = asyncHandler(async (req, res) => {
+  const { absPath, fileName } = await exitDocuments.getDownload(req.tenant, req.params.id, req.params.attachmentId);
+  return res.download(absPath, fileName);
+});
+
 const listAttachments = asyncHandler(async (req, res) => {
   const items = await stageActions.listAttachments(req.tenant, req.params.id);
   return ApiResponse.ok(res, items, 'Attachments retrieved');
@@ -112,5 +165,7 @@ const uploadAttachment = asyncHandler(async (req, res) => {
 module.exports = {
   list, getOne, create, approve, reject, sendBack, escalate, reassign, comment, withdraw,
   auditLog, terminationTypes, widgets,
-  listChecklist, addChecklist, updateChecklist, listAttachments, uploadAttachment,
+  listChecklist, addChecklist, updateChecklist, listAssets, returnAsset, listAttachments, uploadAttachment,
+  listDocumentTemplates, listExitDocuments, generateDocuments, downloadDocument,
+  myTasks, requestTasks, completeTask,
 };

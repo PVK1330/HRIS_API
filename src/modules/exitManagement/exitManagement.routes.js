@@ -30,6 +30,10 @@ const reqChain = [validateWithJoi(v.idParam, 'params'), loadWorkflowContext, res
 router.get('/dashboard/widgets', ctrl.widgets);
 router.get('/termination-types', ctrl.terminationTypes);
 
+/* ---- Personal exit tasks (assigned to the caller) — registered before /:id ---- */
+router.get('/tasks/mine', ctrl.myTasks);
+router.put('/tasks/:taskId/complete', validateWithJoi(v.taskIdParam, 'params'), ctrl.completeTask);
+
 /* ---- Exit requests ---- */
 router.get('/', validateWithJoi(v.listingQuery, 'query'), ctrl.list);
 router.post('/', authorizeExitAccess({ action: 'create' }), validateWithJoi(v.createRequestBody, 'body'), ctrl.create);
@@ -50,6 +54,19 @@ router.post('/:id/withdraw', ...reqChain, authorizeExitAccess({ action: 'view' }
 router.get('/:id/stages/:stageId/checklist', validateWithJoi(v.stageParams, 'params'), loadWorkflowContext, resolveExitAccess, authorizeExitAccess({ action: 'view' }), ctrl.listChecklist);
 router.post('/:id/stages/:stageId/checklist', validateWithJoi(v.stageParams, 'params'), loadWorkflowContext, resolveExitAccess, authorizeExitAccess({ action: 'complete_checklist' }), validateWithJoi(v.createChecklistBody, 'body'), ctrl.addChecklist);
 router.put('/:id/stages/:stageId/checklist/:itemId', validateWithJoi(v.checklistItemParams, 'params'), loadWorkflowContext, resolveExitAccess, authorizeExitAccess({ action: 'complete_checklist' }), validateWithJoi(v.updateChecklistBody, 'body'), ctrl.updateChecklist);
+
+/* ---- Tasks for a specific request ---- */
+router.get('/:id/tasks', ...reqChain, authorizeExitAccess({ action: 'view' }), ctrl.requestTasks);
+
+/* ---- Exit documents (relieving / experience / settlement letters) ---- */
+router.get('/:id/documents/templates', ...reqChain, authorizeExitAccess({ action: 'view' }), ctrl.listDocumentTemplates);
+router.get('/:id/documents', ...reqChain, authorizeExitAccess({ action: 'view' }), ctrl.listExitDocuments);
+router.get('/:id/documents/:attachmentId/download', validateWithJoi(v.documentParams, 'params'), loadWorkflowContext, resolveExitAccess, authorizeExitAccess({ action: 'view' }), ctrl.downloadDocument);
+router.post('/:id/documents/generate', ...reqChain, authorizeExitAccess({ action: 'generate_documents' }), validateWithJoi(v.generateDocumentsBody, 'body'), ctrl.generateDocuments);
+
+/* ---- Asset clearance (exiting employee's assigned assets) ---- */
+router.get('/:id/assets', ...reqChain, authorizeExitAccess({ action: 'view' }), ctrl.listAssets);
+router.put('/:id/assets/:assetId/return', validateWithJoi(v.assetParams, 'params'), loadWorkflowContext, resolveExitAccess, authorizeExitAccess({ action: 'complete_checklist' }), validateWithJoi(v.returnAssetBody, 'body'), ctrl.returnAsset);
 
 /* ---- Attachments ---- */
 const storage = multer.diskStorage({

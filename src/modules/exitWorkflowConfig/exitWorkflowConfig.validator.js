@@ -53,10 +53,40 @@ const updateWorkflowBody = Joi.object({
   exit_type: Joi.string().valid('resignation', 'termination').allow(null).optional(),
   is_active: Joi.boolean().optional(),
   is_default: Joi.boolean().optional(),
+  // Optional full stage rewrite. The service only honours this while the workflow is unused
+  // (no exit requests yet); otherwise it returns a 400 telling the caller to clone instead.
+  stages: Joi.array().items(stage).min(1).max(6).optional(),
+});
+
+const clearanceItemIdParam = Joi.object({
+  itemId: Joi.number().integer().positive().required(),
+});
+
+const ITEM_TYPES = ['TASK', 'ASSET_RETURN', 'INTERVIEW', 'SETTLEMENT', 'DOCUMENT'];
+
+const createClearanceItemBody = Joi.object({
+  name: Joi.string().trim().min(1).max(200).required(),
+  description: Joi.string().trim().max(2000).allow('', null).optional(),
+  item_type: Joi.string().valid(...ITEM_TYPES).default('TASK'),
+  default_mandatory: Joi.boolean().default(true),
+  is_active: Joi.boolean().default(true),
+  sort_order: Joi.number().integer().min(0).optional(),
+});
+
+const updateClearanceItemBody = Joi.object({
+  name: Joi.string().trim().min(1).max(200).optional(),
+  description: Joi.string().trim().max(2000).allow('', null).optional(),
+  item_type: Joi.string().valid(...ITEM_TYPES).optional(),
+  default_mandatory: Joi.boolean().optional(),
+  is_active: Joi.boolean().optional(),
+  sort_order: Joi.number().integer().min(0).optional(),
 });
 
 module.exports = {
   workflowIdParam,
   createWorkflowBody,
   updateWorkflowBody,
+  clearanceItemIdParam,
+  createClearanceItemBody,
+  updateClearanceItemBody,
 };

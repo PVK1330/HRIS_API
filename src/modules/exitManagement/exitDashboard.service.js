@@ -30,6 +30,8 @@ async function getDashboardWidgets(tenant, exitUser) {
                AND ea.action IN ('APPROVE','REJECT','SEND_BACK','COMPLETE'))
     OR EXISTS (SELECT 1 FROM exit_approvals ed JOIN exit_stage_departments sdd ON sdd.stage_id = ed.stage_id
                WHERE ed.exit_request_id = er.id AND sdd.department_id = $2)
+    OR EXISTS (SELECT 1 FROM exit_approvals er2 JOIN exit_stage_roles srr ON srr.stage_id = er2.stage_id
+               WHERE er2.exit_request_id = er.id AND srr.role_id = $3)
   )`;
   const params = [empId, deptId, roleId, admin];
 

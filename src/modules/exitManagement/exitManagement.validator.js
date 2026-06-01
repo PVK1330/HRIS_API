@@ -17,6 +17,41 @@ const checklistItemParams = Joi.object({
   itemId: Joi.number().integer().positive().required(),
 });
 
+const assetParams = Joi.object({
+  id: Joi.number().integer().positive().required(),
+  assetId: Joi.number().integer().positive().required(),
+});
+
+const returnAssetBody = Joi.object({
+  status: Joi.string().valid('Issued', 'Returned', 'Lost', 'Damaged').default('Returned'),
+  condition: Joi.string().valid('Excellent', 'Good', 'Fair', 'Poor').optional(),
+  notes: Joi.string().trim().max(2000).allow('', null).optional(),
+});
+
+const documentParams = Joi.object({
+  id: Joi.number().integer().positive().required(),
+  attachmentId: Joi.number().integer().positive().required(),
+});
+
+const moneyish = Joi.alternatives(Joi.number(), Joi.string().allow('')).optional();
+const generateDocumentsBody = Joi.object({
+  template_ids: Joi.array().items(Joi.number().integer().positive()).min(1).required(),
+  send_email: Joi.boolean().default(true),
+  // Optional settlement figures (payroll is not auto-wired) — fill the {{unpaid_salary}},
+  // {{leave_encashment}}, {{gratuity}}, {{deductions}}, {{net_payable}} tags in F&F letters.
+  settlement: Joi.object({
+    unpaid_salary: moneyish,
+    leave_encashment: moneyish,
+    gratuity: moneyish,
+    deductions: moneyish,
+    net_payable: moneyish,
+  }).optional(),
+});
+
+const taskIdParam = Joi.object({
+  taskId: Joi.number().integer().positive().required(),
+});
+
 const listingQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(10),
@@ -94,6 +129,11 @@ module.exports = {
   idParam,
   stageParams,
   checklistItemParams,
+  assetParams,
+  returnAssetBody,
+  documentParams,
+  generateDocumentsBody,
+  taskIdParam,
   listingQuery,
   createRequestBody,
   approveBody,

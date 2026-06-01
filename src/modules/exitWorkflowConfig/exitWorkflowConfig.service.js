@@ -154,6 +154,13 @@ async function getWorkflow(tenant, workflowId) {
   if (!wfRows.length) throw ApiError.notFound('Workflow not found');
   const workflow = wfRows[0];
 
+  // How many exit requests have used this workflow. >0 means its stages are locked from edits
+  // (stage rows back live approval history) — the UI shows them read-only and offers cloning.
+  const { rows: usage } = await pool.query(
+    `SELECT COUNT(*)::int AS total FROM exit_requests WHERE workflow_id = $1`, [workflowId],
+  );
+  workflow.request_count = usage[0].total;
+
   const { rows: stages } = await pool.query(
     `SELECT * FROM exit_workflow_stages WHERE workflow_id = $1 ORDER BY stage_order ASC, id ASC`,
     [workflowId],
@@ -187,25 +194,77 @@ async function getWorkflow(tenant, workflowId) {
 
 async function updateWorkflow(tenant, workflowId, dto) {
   const pool = await getTenantPool(tenant.dbName);
+
+  // Did the caller send a stage structure to rewrite? (vs. a top-level-only patch)
+  const editingStages = Array.isArray(dto.stages);
+
+  // Stage rows are referenced by exit_approvals / exit_request_checklist_items (ON DELETE
+  // CASCADE) and exit_requests.current_stage_id (ON DELETE SET NULL). Rewriting stages on a
+  // workflow that already has requests would destroy approval history and orphan in-flight
+  // requests — so structural edits are only allowed while the workflow is unused. Clone instead.
+  if (editingStages) {
+    const stages = dto.stages;
+    if (!stages.length) throw ApiError.badRequest('A workflow needs at least one stage');
+    if (stages.length > 6) throw ApiError.badRequest('A workflow may have at most 6 stages');
+    stages.forEach(validateStage);
+
+    const { rows: used } = await pool.query(
+      `SELECT 1 FROM exit_requests WHERE workflow_id = $1 LIMIT 1`, [workflowId],
+    );
+    if (used.length) {
+      throw ApiError.badRequest(
+        'This workflow already has exit requests; its stages cannot be changed. '
+        + 'Edit its name/default flag, or create a new workflow for the revised stages.',
+      );
+    }
+  }
+
   const fields = [];
   const params = [];
   let n = 1;
   for (const f of ['name', 'description', 'exit_type', 'is_active', 'is_default']) {
     if (dto[f] !== undefined) { params.push(dto[f]); fields.push(`${f} = $${n++}`); }
   }
-  if (!fields.length) return getWorkflow(tenant, workflowId);
-  fields.push('updated_at = NOW()');
-  params.push(workflowId);
-  const { rowCount } = await pool.query(
-    `UPDATE exit_workflows SET ${fields.join(', ')} WHERE id = $${n}`, params,
-  );
-  if (!rowCount) throw ApiError.notFound('Workflow not found');
-  if (dto.is_default) {
-    await pool.query(
-      `UPDATE exit_workflows SET is_default = false WHERE id <> $1`, [workflowId],
-    );
-    await pool.query(`UPDATE exit_workflows SET is_default = true WHERE id = $1`, [workflowId]);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    if (fields.length) {
+      fields.push('updated_at = NOW()');
+      params.push(workflowId);
+      const { rowCount } = await client.query(
+        `UPDATE exit_workflows SET ${fields.join(', ')} WHERE id = $${n}`, params,
+      );
+      if (!rowCount) throw ApiError.notFound('Workflow not found');
+    } else {
+      const { rowCount } = await client.query(`SELECT 1 FROM exit_workflows WHERE id = $1`, [workflowId]);
+      if (!rowCount) throw ApiError.notFound('Workflow not found');
+    }
+
+    if (dto.is_default) {
+      await client.query(`UPDATE exit_workflows SET is_default = false WHERE id <> $1`, [workflowId]);
+      await client.query(`UPDATE exit_workflows SET is_default = true WHERE id = $1`, [workflowId]);
+    }
+
+    if (editingStages) {
+      // Safe to replace wholesale — guarded above to an unused workflow. Children (departments,
+      // roles, users, checklist templates) cascade-delete with the stage rows.
+      await client.query(`DELETE FROM exit_workflow_stages WHERE workflow_id = $1`, [workflowId]);
+      const sorted = [...dto.stages].sort((a, b) => (a.stage_order || 0) - (b.stage_order || 0));
+      for (let i = 0; i < sorted.length; i += 1) {
+        await insertStage(client, workflowId, sorted[i], i + 1);
+      }
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
   }
+
   return getWorkflow(tenant, workflowId);
 }
 
@@ -229,8 +288,9 @@ async function deleteWorkflow(tenant, workflowId) {
   return { id: Number(workflowId), is_active: false };
 }
 
-/** Lookup data the workflow builder needs (departments / roles / employees), gated by the
- *  same config permission so the builder does not depend on departments.manage / rbac perms. */
+/** Lookup data the workflow builder needs (departments / roles / employees + the clearance-item
+ *  catalog), gated by the same config permission so the builder does not depend on
+ *  departments.manage / rbac perms. */
 async function getBuilderOptions(tenant) {
   const pool = await getTenantPool(tenant.dbName);
   const [depts, roles, emps] = await Promise.all([
@@ -242,7 +302,77 @@ async function getBuilderOptions(tenant) {
        ORDER BY full_name LIMIT 500`,
     ),
   ]);
-  return { departments: depts.rows, roles: roles.rows, employees: emps.rows };
+  // Tolerate tenants that have not yet run migration 082 — the builder must keep working.
+  let clearanceItems = [];
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, description, item_type, default_mandatory
+       FROM exit_clearance_items WHERE is_active = true ORDER BY sort_order, name`,
+    );
+    clearanceItems = rows;
+  } catch (_) { clearanceItems = []; }
+  return {
+    departments: depts.rows, roles: roles.rows, employees: emps.rows,
+    clearance_items: clearanceItems,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Clearance-item catalog (reusable checklist templates)             */
+/* ------------------------------------------------------------------ */
+
+async function listClearanceItems(tenant, { activeOnly } = {}) {
+  const pool = await getTenantPool(tenant.dbName);
+  const { rows } = await pool.query(
+    `SELECT id, name, description, item_type, default_mandatory, is_active, sort_order
+     FROM exit_clearance_items
+     ${activeOnly ? 'WHERE is_active = true' : ''}
+     ORDER BY sort_order, name`,
+  );
+  return rows;
+}
+
+async function createClearanceItem(tenant, dto, actor) {
+  const pool = await getTenantPool(tenant.dbName);
+  if (!dto.name || !String(dto.name).trim()) throw ApiError.badRequest('Name is required');
+  const { rows } = await pool.query(
+    `INSERT INTO exit_clearance_items (name, description, item_type, default_mandatory, is_active, sort_order, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [String(dto.name).trim(), dto.description || null, dto.item_type || 'TASK',
+     dto.default_mandatory !== false, dto.is_active !== false, dto.sort_order ?? 0,
+     actor?.employeeId || null],
+  );
+  return rows[0];
+}
+
+async function updateClearanceItem(tenant, itemId, dto) {
+  const pool = await getTenantPool(tenant.dbName);
+  const fields = [];
+  const params = [];
+  let n = 1;
+  for (const f of ['name', 'description', 'item_type', 'default_mandatory', 'is_active', 'sort_order']) {
+    if (dto[f] !== undefined) { params.push(dto[f]); fields.push(`${f} = $${n++}`); }
+  }
+  if (!fields.length) {
+    const { rows } = await pool.query(`SELECT * FROM exit_clearance_items WHERE id = $1`, [itemId]);
+    if (!rows.length) throw ApiError.notFound('Clearance item not found');
+    return rows[0];
+  }
+  fields.push('updated_at = NOW()');
+  params.push(itemId);
+  const { rows } = await pool.query(
+    `UPDATE exit_clearance_items SET ${fields.join(', ')} WHERE id = $${n} RETURNING *`, params,
+  );
+  if (!rows.length) throw ApiError.notFound('Clearance item not found');
+  return rows[0];
+}
+
+async function deleteClearanceItem(tenant, itemId) {
+  const pool = await getTenantPool(tenant.dbName);
+  // Hard delete is safe: stages copy the label/type at build time, there is no FK back here.
+  const { rowCount } = await pool.query(`DELETE FROM exit_clearance_items WHERE id = $1`, [itemId]);
+  if (!rowCount) throw ApiError.notFound('Clearance item not found');
+  return { id: Number(itemId), deleted: true };
 }
 
 module.exports = {
@@ -253,4 +383,8 @@ module.exports = {
   setDefaultWorkflow,
   deleteWorkflow,
   getBuilderOptions,
+  listClearanceItems,
+  createClearanceItem,
+  updateClearanceItem,
+  deleteClearanceItem,
 };

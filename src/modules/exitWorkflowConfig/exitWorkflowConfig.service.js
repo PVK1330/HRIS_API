@@ -276,16 +276,19 @@ async function deleteWorkflow(tenant, workflowId) {
   const pool = await getTenantPool(tenant.dbName);
   const { rows: inUse } = await pool.query(
     `SELECT 1 FROM exit_requests
-     WHERE workflow_id = $1 AND status IN ('SUBMITTED','IN_PROGRESS') LIMIT 1`,
+     WHERE workflow_id = $1 LIMIT 1`,
     [workflowId],
   );
-  if (inUse.length) throw ApiError.badRequest('Cannot delete a workflow with in-flight exit requests; deactivate it instead');
+  if (inUse.length) {
+    throw ApiError.badRequest('Cannot delete a workflow that has already been used by exit requests. You can edit it to deactivate it instead.');
+  }
+  
   const { rowCount } = await pool.query(
-    `UPDATE exit_workflows SET is_active = false, is_default = false, updated_at = NOW() WHERE id = $1`,
+    `DELETE FROM exit_workflows WHERE id = $1`,
     [workflowId],
   );
   if (!rowCount) throw ApiError.notFound('Workflow not found');
-  return { id: Number(workflowId), is_active: false };
+  return { id: Number(workflowId), deleted: true };
 }
 
 /** Lookup data the workflow builder needs (departments / roles / employees + the clearance-item

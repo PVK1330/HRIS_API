@@ -26,12 +26,12 @@ async function getCompanyName() {
   } catch (_) { return 'Organization'; }
 }
 
-async function sendTemplate(to, templateSlug, variables) {
+async function sendTemplate(to, templateSlug, variables, attachments = []) {
   if (!to) return;
   try {
     const { Mailer } = require('../../helpers/mailer/mailer');
     const mailer = await Mailer.getInstance();
-    await mailer.send({ to, templateSlug, variables });
+    await mailer.send({ to, templateSlug, variables, attachments });
   } catch (_) { /* template missing / SMTP not configured — non-blocking */ }
 }
 
@@ -210,11 +210,49 @@ async function onCompleted(tenant, requestId) {
     const company = await getCompanyName();
     const empName = fullName(req);
     await closeRequestTasks(pool, requestId);
+
+    let attachments = [];
+    try {
+      const exitDocuments = require('./exitDocuments.service');
+      let docs = await exitDocuments.listGenerated(tenant, requestId);
+      
+      if (docs.length === 0) {
+        const templates = await exitDocuments.listTemplates(tenant);
+        if (templates.length > 0) {
+          const res = await exitDocuments.generate(tenant, requestId, {
+            template_ids: templates.map(t => t.id),
+            send_email: false
+          }, { actorName: 'System' });
+          docs = res.documents || [];
+          attachments = docs.map(d => ({
+            filename: d.file_name,
+            content: d.buffer
+          }));
+        }
+      } else {
+        const fs = require('fs');
+        const path = require('path');
+        const env = require('../../config/env');
+        for (const doc of docs) {
+          const rel = String(doc.file_url).replace(/^\/uploads\//, '');
+          const absPath = path.resolve(env.UPLOAD.dir, rel);
+          if (fs.existsSync(absPath)) {
+            attachments.push({
+              filename: doc.file_name,
+              content: fs.readFileSync(absPath)
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[onCompleted] Auto-generation of documents failed:', err);
+    }
+
     await pushSafe(tenant, {
       employeeId: req.employee_id, type: 'exit_management',
       title: 'Exit process completed', message: 'Your exit process has been completed.',
     });
-    await sendTemplate(req.work_email, 'exit_request_completed', { employee_name: empName, company_name: company });
+    await sendTemplate(req.work_email, 'exit_request_completed', { employee_name: empName, company_name: company }, attachments);
     await pushSafe(tenant, {
       forAdmin: true, type: 'exit_management',
       title: 'Exit completed', message: `${empName}'s exit process is complete.`,

@@ -65,7 +65,7 @@ class Mailer {
       encryption: (smtpConfig && smtpConfig.encryption) || 'tls',
       fromEmail: (smtpConfig && smtpConfig.fromEmail) || '',
       fromName: (smtpConfig && smtpConfig.fromName) || '',
-      appName: (smtpConfig && smtpConfig.appName) || 'SaaS App',
+      appName: (smtpConfig && smtpConfig.appName) || 'HRIS System',
     };
     this._transporter = null;
   }
@@ -105,14 +105,14 @@ class Mailer {
     const envHost = process.env.EMAIL_HOST || process.env.MAIL_HOST
       || (envUser ? 'smtp.gmail.com' : '');
     const cfg = {
-      host:       email.smtpHost     || envHost,
-      port: Number(email.smtpPort    || process.env.EMAIL_PORT || process.env.MAIL_PORT || 587),
-      username:   email.smtpUsername || envUser,
-      password:   email.smtpPassword || envPass,
+      host: email.smtpHost || envHost,
+      port: Number(email.smtpPort || process.env.EMAIL_PORT || process.env.MAIL_PORT || 587),
+      username: email.smtpUsername || envUser,
+      password: email.smtpPassword || envPass,
       encryption: email.smtpEncryption || process.env.EMAIL_ENCRYPTION || process.env.MAIL_ENCRYPTION || 'tls',
-      fromEmail:  email.systemEmail  || process.env.EMAIL_FROM_ADDRESS || process.env.MAIL_FROM || envUser,
-      fromName:   email.systemFromName || process.env.EMAIL_FROM_NAME || process.env.MAIL_FROM_NAME || process.env.APP_NAME || 'SaaS App',
-      appName:    company.companyName || process.env.APP_NAME      || 'SaaS App',
+      fromEmail: email.systemEmail || process.env.EMAIL_FROM_ADDRESS || process.env.MAIL_FROM || envUser,
+      fromName: email.systemFromName || process.env.EMAIL_FROM_NAME || process.env.MAIL_FROM_NAME || process.env.APP_NAME || 'HRIS System',
+      appName: company.companyName || process.env.APP_NAME || 'HRIS System',
     };
 
     // Cache key based on every connection-relevant value, so a settings
@@ -159,7 +159,7 @@ class Mailer {
   }
 
   _fromHeader() {
-    const name = this.config.fromName || this.config.appName || 'SaaS App';
+    const name = this.config.fromName || this.config.appName || 'HRIS System';
     const email = this.config.fromEmail || this.config.username;
     if (!email) {
       throw new ApiError(
@@ -173,9 +173,9 @@ class Mailer {
   /**
    * Send an email using a DB-stored template (by slug).
    *
-   * @param {{ to:string, subject?:string, templateSlug:string, variables?:object }} args
+   * @param {{ to:string, subject?:string, templateSlug:string, variables?:object, attachments?:Array }} args
    */
-  async send({ to, subject, templateSlug, variables = {} }) {
+  async send({ to, subject, templateSlug, variables = {}, attachments = [] }) {
     if (!to) throw new ApiError(400, 'Recipient `to` is required');
     if (!templateSlug) throw new ApiError(400, '`templateSlug` is required');
 
@@ -194,10 +194,10 @@ class Mailer {
     };
 
     const renderedSubject = templateEngine.render(subject || tpl.subject, mergedVars);
-    const renderedBody    = templateEngine.render(tpl.body, mergedVars);
-    const html            = this._wrapInLayout(renderedBody, mergedVars);
+    const renderedBody = templateEngine.render(tpl.body, mergedVars);
+    const html = this._wrapInLayout(renderedBody, mergedVars);
 
-    return this.sendRaw({ to, subject: renderedSubject, html });
+    return this.sendRaw({ to, subject: renderedSubject, html, attachments });
   }
 
   /**

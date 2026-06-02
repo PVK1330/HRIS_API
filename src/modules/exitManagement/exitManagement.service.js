@@ -108,23 +108,8 @@ async function submitExitRequest(tenant, data, exitUser) {
     await client.query('COMMIT');
 
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:request_created', { exitRequestId: Number(requestId) });
-<<<<<<< HEAD
-    try {
-      // Send notification to the employee about their exit request submission
-      await notify().sendSystemNotification(tenant, {
-        employeeId: employeeId,
-        recipientId: employeeId,
-        recipientRole: 'employee',
-        title: 'Exit Request Submitted',
-        message: `Your ${exitType} request has been submitted. It will be processed according to company policy.`,
-        type: 'exit_management',
-        sendEmail: false,
-      });
-    } catch (_) { /* non-blocking */ }
-=======
     // Notifications + template emails + stage-1 task assignment (best-effort, post-commit).
     events().onSubmitted(tenant, requestId).catch(() => {});
->>>>>>> 109cbc3bb86b12a612ad2b72a21eea64d8afd0f7
 
     return getExitRequest(tenant, requestId, exitUser);
   } catch (err) {
@@ -325,25 +310,8 @@ async function approveStage(tenant, id, exitUser, comments) {
 
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'approve' });
     emit(tenant, `exit:${id}`, result.completed ? 'exit:request_completed' : 'exit:stage_advanced', { exitRequestId: Number(id) });
-<<<<<<< HEAD
-    if (result.completed) {
-      try {
-        // Send notification only to the employee, not admins
-        await notify().sendSystemNotification(tenant, {
-          employeeId: request.employee_id,
-          recipientId: request.employee_id,
-          recipientRole: 'employee',
-          title: 'Exit Process Completed',
-          message: 'Your exit process has been completed.',
-          type: 'exit_management', 
-          sendEmail: false,
-        });
-      } catch (_) {}
-    }
-=======
     // Completed → notify subject; otherwise notify + assign the newly-active stage's owners.
     events().onApproved(tenant, Number(id), !!result.completed).catch(() => {});
->>>>>>> 109cbc3bb86b12a612ad2b72a21eea64d8afd0f7
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -374,22 +342,7 @@ async function rejectStage(tenant, id, exitUser, reason) {
     await client.query('COMMIT');
 
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'reject' });
-<<<<<<< HEAD
-    try {
-      // Send notification only to the employee, not admins
-      await notify().sendSystemNotification(tenant, {
-        employeeId: request.employee_id,
-        recipientId: request.employee_id,
-        recipientRole: 'employee',
-        title: 'Exit Request Rejected',
-        message: `Your exit request was rejected. Reason: ${reason}`,
-        type: 'exit_management', 
-        sendEmail: false,
-      });
-    } catch (_) {}
-=======
     events().onRejected(tenant, Number(id), reason).catch(() => {});
->>>>>>> 109cbc3bb86b12a612ad2b72a21eea64d8afd0f7
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');

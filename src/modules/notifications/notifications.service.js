@@ -14,26 +14,13 @@ async function ensureMigrated(dbName) {
   return p;
 }
 
-<<<<<<< HEAD
-async function pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId }) {
-=======
-async function pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId, entityType, entityId, redirectUrl }) {
->>>>>>> 109cbc3bb86b12a612ad2b72a21eea64d8afd0f7
+async function pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId, entityType, entityId, redirectUrl }) {
   const dbName = tenant?.dbName || tenant?.db_name;
   if (!dbName) return null;
   await ensureMigrated(dbName);
   const pool = await getTenantPool(dbName);
-<<<<<<< HEAD
-  return repo.create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId });
-}
-
-async function sendSystemNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, emailMessage, type, sendEmail = true, emailSubject = null }) {
-  // 1. Instantly deliver central in-app push notification
-  let notificationRecord = null;
-    try {
-      notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId: null });
-=======
-  const notificationRecord = await repo.create(pool, { employeeId, forAdmin, title, message, type, ticketId, entityType, entityId, redirectUrl });
+  
+  const notificationRecord = await repo.create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId, entityType, entityId, redirectUrl });
   
   try {
     const io = getIo();
@@ -51,12 +38,11 @@ async function sendSystemNotification(tenant, { employeeId, forAdmin, recipientI
   return notificationRecord;
 }
 
-async function sendSystemNotification(tenant, { employeeId, forAdmin, title, message, emailMessage, type, sendEmail = true, emailSubject = null, entityType, entityId, redirectUrl }) {
+async function sendSystemNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, emailMessage, type, sendEmail = true, emailSubject = null, entityType, entityId, redirectUrl }) {
   // 1. Instantly deliver central in-app push notification
   let notificationRecord = null;
   try {
-    notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId: null, entityType, entityId, redirectUrl });
->>>>>>> 109cbc3bb86b12a612ad2b72a21eea64d8afd0f7
+    notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId: null, entityType, entityId, redirectUrl });
   } catch (err) {
     console.error('Failed to log push notification centrally:', err);
   }

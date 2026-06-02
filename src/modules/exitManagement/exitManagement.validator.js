@@ -52,6 +52,10 @@ const taskIdParam = Joi.object({
   taskId: Joi.number().integer().positive().required(),
 });
 
+const taskDelayReasonBody = Joi.object({
+  reason: Joi.string().trim().min(3).max(2000).required(),
+});
+
 const listingQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(10),
@@ -134,6 +138,7 @@ module.exports = {
   documentParams,
   generateDocumentsBody,
   taskIdParam,
+  taskDelayReasonBody,
   listingQuery,
   createRequestBody,
   approveBody,

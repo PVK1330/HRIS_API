@@ -62,6 +62,20 @@ async function bootstrap() {
       logger.error('Failed to start announcement schedule cron', e);
     }
 
+    try {
+      const { startTaskRemindersCron } = require('./jobs/tasksReminder.job');
+      startTaskRemindersCron();
+    } catch (e) {
+      logger.error('Failed to start task reminders cron', e);
+    }
+
+    try {
+      const { startExitTaskReminderCron } = require('./jobs/exitTaskReminder.job');
+      startExitTaskReminderCron();
+    } catch (e) {
+      logger.error('Failed to start exit task reminder cron', e);
+    }
+
     logger.info(`Socket.io attached on /socket.io`);
   });
 

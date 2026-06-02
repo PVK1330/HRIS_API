@@ -1,0 +1,5 @@
+-- Migration: Add reminder tracking to tasks
+ALTER TABLE tasks ADD COLUMN reminded_3d BOOLEAN DEFAULT FALSE;
+ALTER TABLE tasks ADD COLUMN reminded_1d BOOLEAN DEFAULT FALSE;
+ALTER TABLE tasks ADD COLUMN reminded_due BOOLEAN DEFAULT FALSE;
+ALTER TABLE tasks ADD COLUMN reminded_overdue BOOLEAN DEFAULT FALSE;

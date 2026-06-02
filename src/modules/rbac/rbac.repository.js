@@ -65,7 +65,7 @@ function buildFeatureCodeKeySet(enabledRows) {
     message_center: ['messages'],
     messages: ['messages'],
     projects: [],
-    task_management: [],
+    task_management: ['tasks'],
   };
 
   const codeSet = new Set(

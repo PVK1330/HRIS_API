@@ -67,6 +67,14 @@ async function submitExitRequest(tenant, data, exitUser) {
   if (active.length) throw ApiError.conflict('An active exit request already exists for this employee');
 
   const exitType = data.exit_type === 'termination' ? 'termination' : 'resignation';
+  
+  if (exitType === 'termination') {
+    // Restrict termination to explicitly permitted roles.
+    if (!exitUser.isOrgExitAdmin && !exitUser.canTerminateExit) {
+      throw ApiError.forbidden('Missing required permission: exit.terminate');
+    }
+  }
+
   const workflow = await getDefaultWorkflowFor(pool, exitType);
   if (!workflow) throw ApiError.badRequest('No active exit workflow is configured. Configure one under Settings > Exit Management.');
 

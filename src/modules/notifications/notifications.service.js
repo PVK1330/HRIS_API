@@ -4,6 +4,7 @@ const repo = require('./notifications.repository');
 const { getTenantPool, superAdminPool } = require('../../config/db');
 const { runTenantMigrations } = require('../tenant/tenant.service');
 const { sendMail } = require('../../utils/mail');
+const { getIo } = require('../../socket');
 
 const _migrationCache = new Map();
 async function ensureMigrated(dbName) {
@@ -13,19 +14,34 @@ async function ensureMigrated(dbName) {
   return p;
 }
 
-async function pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId }) {
+async function pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId, entityType, entityId, redirectUrl }) {
   const dbName = tenant?.dbName || tenant?.db_name;
   if (!dbName) return null;
   await ensureMigrated(dbName);
   const pool = await getTenantPool(dbName);
-  return repo.create(pool, { employeeId, forAdmin, title, message, type, ticketId });
+  const notificationRecord = await repo.create(pool, { employeeId, forAdmin, title, message, type, ticketId, entityType, entityId, redirectUrl });
+  
+  try {
+    const io = getIo();
+    if (io && notificationRecord) {
+      if (employeeId) {
+        io.to(`user:${employeeId}`).emit('new_notification', notificationRecord);
+      } else if (forAdmin) {
+        io.to(`tenant:${dbName}`).emit('new_notification', notificationRecord); // Broadcast to admins
+      }
+    }
+  } catch (err) {
+    console.error('Failed to emit push notification centrally:', err);
+  }
+  
+  return notificationRecord;
 }
 
-async function sendSystemNotification(tenant, { employeeId, forAdmin, title, message, emailMessage, type, sendEmail = true, emailSubject = null }) {
+async function sendSystemNotification(tenant, { employeeId, forAdmin, title, message, emailMessage, type, sendEmail = true, emailSubject = null, entityType, entityId, redirectUrl }) {
   // 1. Instantly deliver central in-app push notification
   let notificationRecord = null;
-    try {
-      notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId: null });
+  try {
+    notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId: null, entityType, entityId, redirectUrl });
   } catch (err) {
     console.error('Failed to log push notification centrally:', err);
   }

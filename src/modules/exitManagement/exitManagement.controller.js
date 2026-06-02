@@ -127,6 +127,16 @@ const completeTask = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, 'Task completed');
 });
 
+const setTaskDelayReason = asyncHandler(async (req, res) => {
+  const data = await exitEvents.setTaskDelayReason(
+    req.tenant,
+    req.params.taskId,
+    req.exitUser,
+    req.body.reason,
+  );
+  return ApiResponse.ok(res, data, 'Task delay reason saved');
+});
+
 /* ---- Exit documents (letters) ---- */
 
 const listDocumentTemplates = asyncHandler(async (req, res) => {
@@ -167,5 +177,5 @@ module.exports = {
   auditLog, terminationTypes, widgets,
   listChecklist, addChecklist, updateChecklist, listAssets, returnAsset, listAttachments, uploadAttachment,
   listDocumentTemplates, listExitDocuments, generateDocuments, downloadDocument,
-  myTasks, requestTasks, completeTask,
+  myTasks, requestTasks, completeTask, setTaskDelayReason,
 };

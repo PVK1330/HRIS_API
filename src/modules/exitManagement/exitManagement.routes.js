@@ -33,6 +33,7 @@ router.get('/termination-types', ctrl.terminationTypes);
 /* ---- Personal exit tasks (assigned to the caller) — registered before /:id ---- */
 router.get('/tasks/mine', ctrl.myTasks);
 router.put('/tasks/:taskId/complete', validateWithJoi(v.taskIdParam, 'params'), ctrl.completeTask);
+router.put('/tasks/:taskId/delay-reason', validateWithJoi(v.taskIdParam, 'params'), validateWithJoi(v.taskDelayReasonBody, 'body'), ctrl.setTaskDelayReason);
 
 /* ---- Exit requests ---- */
 router.get('/', validateWithJoi(v.listingQuery, 'query'), ctrl.list);

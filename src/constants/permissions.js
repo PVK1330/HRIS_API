@@ -25,8 +25,10 @@ const P = {
   VISA_MANAGE: 'visa.manage',
   MESSAGES_VIEW: 'messages.view',
   ASSETS_VIEW: 'assets.view',
+  TASKS_MANAGE: 'tasks',
   EXIT_VIEW: 'exit.view',
   EXIT_MANAGE: 'exit.manage',
+  EXIT_TERMINATE: 'exit.terminate',
 };
 
 /** Legacy rbac_permissions.key → action slug(s) that satisfy the check */
@@ -50,6 +52,7 @@ const LEGACY_KEY_TO_ACTIONS = {
   'letter-templates': ['letter-templates'],
   'system-settings': ['system-settings'],
   'exit-management': [P.EXIT_VIEW, P.EXIT_MANAGE],
+  tasks: [P.TASKS_MANAGE],
 };
 
 /** Action slug → legacy keys (for login allowedModules / sidebar) */
@@ -73,6 +76,7 @@ const ACTION_TO_LEGACY_KEYS = {
   [P.VISA_MANAGE]: ['visa-nationality'],
   [P.MESSAGES_VIEW]: ['messages'],
   [P.ASSETS_VIEW]: ['assets'],
+  [P.TASKS_MANAGE]: ['tasks'],
   [P.EXIT_VIEW]: ['exit-management'],
   [P.EXIT_MANAGE]: ['exit-management'],
 };

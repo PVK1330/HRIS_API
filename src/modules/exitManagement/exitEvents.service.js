@@ -41,7 +41,10 @@ async function sendTemplate(to, templateSlug, variables, attachments = []) {
 }
 
 async function pushSafe(tenant, payload) {
-  try { await notify().pushNotification(tenant, payload); } catch (_) { /* non-blocking */ }
+  try { 
+    // Use sendSystemNotification but disable its built-in email since we handle emails manually in this file
+    await notify().sendSystemNotification(tenant, { ...payload, sendEmail: false }); 
+  } catch (_) { /* non-blocking */ }
 }
 
 async function loadReq(pool, requestId) {
@@ -117,11 +120,12 @@ async function setPendingAssignee(pool, requestId, stageId, employeeId) {
 }
 
 async function createStageTasks(pool, requestId, stageId, stageName, recipients) {
+  const defaultDueAtSql = `NOW() + INTERVAL '7 days'`;
   for (const r of recipients) {
     if (!r.employee_id) continue;
     await pool.query(
-      `INSERT INTO exit_tasks (exit_request_id, stage_id, assigned_to, title, status)
-       SELECT $1, $2, $3, $4, 'PENDING'
+      `INSERT INTO exit_tasks (exit_request_id, stage_id, assigned_to, title, status, due_at)
+       SELECT $1, $2, $3, $4, 'PENDING', ${defaultDueAtSql}
        WHERE NOT EXISTS (
          SELECT 1 FROM exit_tasks
          WHERE exit_request_id = $1 AND stage_id = $2 AND assigned_to = $3 AND status = 'PENDING'
@@ -149,7 +153,7 @@ async function onStageEntered(tenant, requestId) {
     const pool = await getTenantPool(tenant.dbName);
     const req = await loadReq(pool, requestId);
     if (!req || !req.current_stage_id) return;
-    const company = await getCompanyName();
+    const company = await getCompany(tenant);
     const empName = fullName(req);
 
     const { recipients, primaryAssignee } = await resolveResponsibles(pool, req.current_stage_id);
@@ -161,16 +165,22 @@ async function onStageEntered(tenant, requestId) {
         employeeId: r.employee_id, type: 'exit_management',
         title: 'Exit task assigned to you',
         message: `An exit request for ${empName} needs your action at the "${req.stage_name}" stage.`,
+        entityType: 'exit_request',
+        entityId: requestId,
+        redirectUrl: `/admin/exit-management/${requestId}`
       });
       await sendTemplate(r.work_email, 'exit_stage_pending', {
         recipient_name: r.full_name || 'Colleague', employee_name: empName,
-        job_title: req.job_title || '', stage_name: req.stage_name || '', company_name: company,
+        job_title: req.job_title || '', stage_name: req.stage_name || '', company_name: company.companyName,
       });
     }
     await pushSafe(tenant, {
       forAdmin: true, type: 'exit_management',
       title: 'Exit stage advanced',
       message: `${empName}'s exit request reached the "${req.stage_name}" stage.`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`
     });
   } catch (_) { /* non-blocking */ }
 }
@@ -183,21 +193,27 @@ async function onSubmitted(tenant, requestId) {
     const pool = await getTenantPool(tenant.dbName);
     const req = await loadReq(pool, requestId);
     if (!req) return;
-    const company = await getCompanyName();
+    const company = await getCompany(tenant);
     const empName = fullName(req);
 
     await pushSafe(tenant, {
       forAdmin: true, type: 'exit_management',
       title: 'New exit request submitted',
       message: `${empName} submitted a ${req.exit_type} request.`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`
     });
     await pushSafe(tenant, {
       employeeId: req.employee_id, type: 'exit_management',
       title: 'Exit request submitted',
       message: `Your ${req.exit_type} request has been submitted and is now in progress.`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`
     });
     await sendTemplate(req.work_email, 'exit_request_submitted', {
-      employee_name: empName, exit_type: req.exit_type || 'exit', company_name: company,
+      employee_name: empName, exit_type: req.exit_type || 'exit', company_name: company.companyName,
     });
   } catch (_) { /* non-blocking */ }
 }
@@ -256,6 +272,9 @@ async function onCompleted(tenant, requestId) {
     await pushSafe(tenant, {
       employeeId: req.employee_id, type: 'exit_management',
       title: 'Exit process completed', message: 'Your exit process has been completed.',
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`
     });
     await sendTemplate(req.work_email, 'exit_request_completed', { 
       employee_name: empName, 
@@ -266,6 +285,9 @@ async function onCompleted(tenant, requestId) {
     await pushSafe(tenant, {
       forAdmin: true, type: 'exit_management',
       title: 'Exit completed', message: `${empName}'s exit process is complete.`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`
     });
   } catch (_) { /* non-blocking */ }
 }
@@ -282,6 +304,9 @@ async function onRejected(tenant, requestId, reason) {
     await pushSafe(tenant, {
       employeeId: req.employee_id, type: 'exit_management',
       title: 'Exit request rejected', message: `Your exit request was rejected.${reasonText}`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`
     });
     await sendTemplate(req.work_email, 'exit_request_rejected', {
       employee_name: empName,
@@ -293,6 +318,9 @@ async function onRejected(tenant, requestId, reason) {
     await pushSafe(tenant, {
       forAdmin: true, type: 'exit_management',
       title: 'Exit request rejected', message: `${empName}'s exit request was rejected.`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`
     });
   } catch (_) { /* non-blocking */ }
 }
@@ -306,6 +334,9 @@ async function onWithdrawn(tenant, requestId) {
     await pushSafe(tenant, {
       forAdmin: true, type: 'exit_management',
       title: 'Exit request withdrawn', message: `${fullName(req)}'s exit request was withdrawn.`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`
     });
   } catch (_) { /* non-blocking */ }
 }
@@ -318,7 +349,7 @@ async function onReassigned(tenant, requestId) {
     const req = await loadReq(pool, requestId);
     if (!req || !req.current_stage_id) return;
     const empName = fullName(req);
-    const company = await getCompanyName();
+    const company = await getCompany(tenant);
     const { rows } = await pool.query(
       `SELECT d.manager_id, e.full_name, e.work_email
        FROM exit_requests er
@@ -341,15 +372,21 @@ async function onReassigned(tenant, requestId) {
         employeeId: head.manager_id, type: 'exit_management',
         title: 'Exit reassigned to you',
         message: `An exit request for ${empName} at the "${req.stage_name}" stage has been reassigned to your department.`,
+        entityType: 'exit_request',
+        entityId: requestId,
+        redirectUrl: `/admin/exit-management/${requestId}`
       });
       await sendTemplate(head.work_email, 'exit_stage_pending', {
         recipient_name: head.full_name || 'Colleague', employee_name: empName,
-        job_title: req.job_title || '', stage_name: req.stage_name || '', company_name: company,
+        job_title: req.job_title || '', stage_name: req.stage_name || '', company_name: company.companyName,
       });
     }
     await pushSafe(tenant, {
       forAdmin: true, type: 'exit_management',
       title: 'Exit stage reassigned', message: `${empName}'s exit ("${req.stage_name}") was reassigned.`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`
     });
   } catch (_) { /* non-blocking */ }
 }
@@ -366,11 +403,17 @@ async function onEscalated(tenant, requestId, escalationToUserId) {
         employeeId: escalationToUserId, type: 'exit_management',
         title: 'Exit stage escalated to you',
         message: `An exit stage ("${req.stage_name}") for ${empName} has been escalated to you.`,
+        entityType: 'exit_request',
+        entityId: requestId,
+        redirectUrl: `/admin/exit-management/${requestId}`
       });
     }
     await pushSafe(tenant, {
       forAdmin: true, type: 'exit_management',
       title: 'Exit stage escalated', message: `${empName}'s exit ("${req.stage_name}") was escalated.`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`
     });
   } catch (_) { /* non-blocking */ }
 }
@@ -386,6 +429,9 @@ async function onDocumentsSent(tenant, requestId, emailed) {
       title: 'Exit documents issued',
       message: emailed ? 'Your exit documents have been generated and emailed to you.'
         : 'Your exit documents have been generated.',
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`
     });
   } catch (_) { /* non-blocking */ }
 }
@@ -401,7 +447,16 @@ async function listMyTasks(tenant, employeeId, { status = 'PENDING' } = {}) {
   let where = 't.assigned_to = $1';
   if (status && status !== 'all') { params.push(status); where += ` AND t.status = $${params.length}`; }
   const { rows } = await pool.query(
-    `SELECT t.id, t.exit_request_id, t.stage_id, t.title, t.status, t.created_at, t.completed_at,
+    `SELECT t.id, t.exit_request_id, t.stage_id, t.title, t.status, t.created_at, t.completed_at, t.due_at,
+            t.delay_reason, t.delay_reason_at, t.delay_reason_by,
+            CASE
+              WHEN t.status = 'COMPLETED' THEN 'COMPLETED'
+              WHEN t.status = 'CLOSED' THEN 'CLOSED'
+              WHEN t.due_at IS NULL THEN 'PENDING'
+              WHEN t.due_at < NOW() THEN 'OVERDUE'
+              WHEN t.due_at < NOW() + INTERVAL '2 days' THEN 'DUE_SOON'
+              ELSE 'PENDING'
+            END AS task_state,
             er.exit_type, er.status AS request_status,
             e.full_name AS employee_name, s.name AS stage_name
      FROM exit_tasks t
@@ -418,7 +473,16 @@ async function listMyTasks(tenant, employeeId, { status = 'PENDING' } = {}) {
 async function listRequestTasks(tenant, requestId) {
   const pool = await getTenantPool(tenant.dbName);
   const { rows } = await pool.query(
-    `SELECT t.id, t.stage_id, t.title, t.status, t.assigned_to, t.created_at, t.completed_at,
+    `SELECT t.id, t.stage_id, t.title, t.status, t.assigned_to, t.created_at, t.completed_at, t.due_at,
+            t.delay_reason, t.delay_reason_at, t.delay_reason_by,
+            CASE
+              WHEN t.status = 'COMPLETED' THEN 'COMPLETED'
+              WHEN t.status = 'CLOSED' THEN 'CLOSED'
+              WHEN t.due_at IS NULL THEN 'PENDING'
+              WHEN t.due_at < NOW() THEN 'OVERDUE'
+              WHEN t.due_at < NOW() + INTERVAL '2 days' THEN 'DUE_SOON'
+              ELSE 'PENDING'
+            END AS task_state,
             a.full_name AS assigned_to_name, s.name AS stage_name
      FROM exit_tasks t
      LEFT JOIN employees a ON a.id = t.assigned_to
@@ -448,8 +512,33 @@ async function completeTask(tenant, taskId, exitUser) {
   return upd[0];
 }
 
+async function setTaskDelayReason(tenant, taskId, exitUser, reason) {
+  const pool = await getTenantPool(tenant.dbName);
+  const { rows } = await pool.query(`SELECT * FROM exit_tasks WHERE id = $1`, [taskId]);
+  const task = rows[0];
+  const ApiError = require('../../utils/ApiError');
+  if (!task) throw ApiError.notFound('Task not found');
+  if (task.status !== 'PENDING') {
+    throw ApiError.badRequest('Delay reason can be added only for pending tasks');
+  }
+  const text = String(reason || '').trim();
+  if (!text) throw ApiError.badRequest('Delay reason is required');
+  const isOwner = exitUser.employeeId && Number(task.assigned_to) === Number(exitUser.employeeId);
+  if (!isOwner && !exitUser.isOrgExitAdmin) {
+    throw ApiError.forbidden('You can only add delay reason for tasks assigned to you');
+  }
+  const { rows: upd } = await pool.query(
+    `UPDATE exit_tasks
+     SET delay_reason = $2, delay_reason_at = NOW(), delay_reason_by = $3
+     WHERE id = $1
+     RETURNING *`,
+    [taskId, text, exitUser.employeeId || null],
+  );
+  return upd[0];
+}
+
 module.exports = {
   onSubmitted, onApproved, onCompleted, onRejected, onWithdrawn, onStageEntered,
   onReassigned, onEscalated, onDocumentsSent,
-  listMyTasks, listRequestTasks, completeTask,
+  listMyTasks, listRequestTasks, completeTask, setTaskDelayReason,
 };

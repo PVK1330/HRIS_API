@@ -55,6 +55,7 @@ async function loadUserContext(req, _res, next) {
     // OR anyone who manages settings (holds 'system-settings', e.g. HR Admin) may configure
     // exit workflows. This is separate from isOrgExitAdmin (which governs stage-ownership override).
     let canConfigureExit = isOrgExitAdmin;
+    let canTerminateExit = isOrgExitAdmin;
     if (!canConfigureExit && rbacRoleId) {
       try {
         const rbacRepo = require('../rbac/rbac.repository');
@@ -62,8 +63,10 @@ async function loadUserContext(req, _res, next) {
         const expanded = expandPermissionKeys(keys);
         canConfigureExit = permissionSatisfied(expanded, 'system-settings')
           || permissionSatisfied(expanded, P.EXIT_MANAGE) && permissionSatisfied(expanded, 'departments.manage');
+        canTerminateExit = permissionSatisfied(expanded, P.EXIT_TERMINATE);
       } catch (_) {
         canConfigureExit = false; // fail-closed
+        canTerminateExit = false;
       }
     }
 
@@ -74,6 +77,7 @@ async function loadUserContext(req, _res, next) {
       rbacRoleId,
       isOrgExitAdmin,
       canConfigureExit,
+      canTerminateExit,
     };
     return next();
   } catch (err) {
@@ -139,6 +143,12 @@ function authorizeExitAccess({ action } = {}) {
     if (action === 'create') {
       if (!req.exitUser.employeeId) {
         return next(ApiError.forbidden('A linked employee profile is required to submit an exit request'));
+      }
+      // Termination/Separation may be submitted only by explicitly permitted roles
+      // (Org Exit Admin retains access as platform-level override).
+      const wantsTermination = String(req.body?.exit_type || '').toLowerCase() === 'termination';
+      if (wantsTermination && !req.exitUser.isOrgExitAdmin && !req.exitUser.canTerminateExit) {
+        return next(ApiError.forbidden('Missing required permission: exit.terminate'));
       }
       return next();
     }

@@ -1,11 +1,11 @@
 'use strict';
 
-async function create(pool, { employeeId, forAdmin, title, message, type, ticketId }) {
+async function create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId }) {
   const { rows } = await pool.query(`
-    INSERT INTO notifications (employee_id, for_admin, title, message, type, ticket_id)
-    VALUES ($1, $2, $3, $4, $5, $6)
+    INSERT INTO notifications (employee_id, for_admin, recipient_id, recipient_role, title, message, type, ticket_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     RETURNING *
-  `, [employeeId || null, Boolean(forAdmin), title, message, type || 'info', ticketId || null]);
+  `, [employeeId || null, Boolean(forAdmin), recipientId || null, recipientRole || null, title, message, type || 'info', ticketId || null]);
   return rows[0];
 }
 
@@ -15,40 +15,68 @@ async function normalizeRole(role) {
 
 async function listForUser(pool, user) {
   const role = await normalizeRole(user.role || user.panel || '');
-  const isAdminRole = ['admin', 'hradmin', 'superadmin', 'supportadmin', 'billingadmin'].includes(role);
+  const isSuperadmin = role === 'superadmin';
+  const isAdminRole = ['admin', 'hradmin', 'supportadmin', 'billingadmin'].includes(role);
   
-  
+  console.log('[NOTIFICATIONS] listForUser - userId:', user.id, 'role:', role, 'isSuperadmin:', isSuperadmin, 'isAdminRole:', isAdminRole);
 
-  let adminCond = '';
-  if (isAdminRole) {
-    adminCond = 'OR for_admin = true';
+  let whereCondition = '';
+  let params = [];
+
+  if (isSuperadmin) {
+    // Superadmin should only see notifications specifically for superadmin
+    // No parameters needed for this query
+    whereCondition = `
+      WHERE recipient_role = 'superadmin'
+         OR (for_admin = true AND recipient_role IS NULL)  -- Backward compatibility
+    `;
+  } else if (isAdminRole) {
+    // Admin should only see:
+    // 1. Notifications specifically for them (recipient_id = admin.id)
+    // 2. Notifications for their role (recipient_role = 'admin')
+    // 3. Their own employee notifications (employee_id = user.id)
+    whereCondition = `
+      WHERE recipient_id = $1
+         OR recipient_role = 'admin'
+         OR employee_id = $1
+         OR employee_id IN (SELECT id FROM employees WHERE work_email = $2)
+    `;
+    params = [user.id, user.email || ''];
+  } else {
+    // Regular employee: only see their own notifications
+    whereCondition = `
+      WHERE employee_id = $1
+         OR employee_id IN (SELECT id FROM employees WHERE work_email = $2)
+    `;
+    params = [user.id, user.email || ''];
   }
-  
+
   const query = `
     SELECT * FROM notifications
-    WHERE employee_id = $1 
-       OR employee_id IN (SELECT id FROM employees WHERE work_email = $2)
-       ${adminCond}
+    ${whereCondition}
     ORDER BY created_at DESC
     LIMIT 100
   `;
 
-  
+  console.log('[NOTIFICATIONS] Query:', query);
+  console.log('[NOTIFICATIONS] Params:', params, '(count:', params.length, ')');
 
-  const { rows } = await pool.query(query, [user.id, user.email || '']);
+  const { rows } = await pool.query(query, params);
   
-  
+  console.log('[NOTIFICATIONS] Returned', rows.length, 'notifications for user', user.id);
   
   return rows.map(r => ({
     id: r.id,
     employeeId: r.employee_id,
     forAdmin: r.for_admin,
+    recipientId: r.recipient_id,
+    recipientRole: r.recipient_role,
     title: r.title,
     message: r.message,
     type: r.type,
     ticketId: r.ticket_id || null,
     relatedId: r.ticket_id || null,
-    role: r.for_admin ? 'superadmin' : 'employee',
+    role: r.recipient_role || (r.for_admin ? 'superadmin' : 'employee'),
     read: Boolean(r.is_read),
     isRead: Boolean(r.is_read),
     createdAt: r.created_at,
@@ -68,18 +96,47 @@ async function markAsRead(pool, id, user) {
 }
 
 async function markAllAsRead(pool, user) {
-  const role = String(user.role || user.panel || '').toLowerCase().replace(/_/g, '');
-  const isAdminRole = ['admin', 'hradmin', 'superadmin', 'supportadmin', 'billingadmin'].includes(role);
-  let adminCond = '';
-  if (isAdminRole) {
-    adminCond = 'OR for_admin = true';
+  const role = String(user.role || user.panel || '').toLowerCase().replace(/[_\s]/g, '');
+  const isSuperadmin = role === 'superadmin';
+  const isAdminRole = ['admin', 'hradmin', 'supportadmin', 'billingadmin'].includes(role);
+  
+  let updateQuery = '';
+  let params = [];
+
+  if (isSuperadmin) {
+    // Superadmin marks all superadmin notifications as read
+    updateQuery = `
+      UPDATE notifications
+      SET is_read = true
+      WHERE recipient_role = 'superadmin'
+         OR (for_admin = true AND recipient_role IS NULL)
+    `;
+  } else if (isAdminRole) {
+    // Admin marks their own notifications as read
+    updateQuery = `
+      UPDATE notifications
+      SET is_read = true
+      WHERE recipient_id = $1
+         OR recipient_role = 'admin'
+         OR employee_id = $1
+         OR employee_id IN (SELECT id FROM employees WHERE work_email = $2)
+    `;
+    params = [user.id, user.email || ''];
+  } else {
+    // Employee marks their own notifications as read
+    updateQuery = `
+      UPDATE notifications
+      SET is_read = true
+      WHERE employee_id = $1
+         OR employee_id IN (SELECT id FROM employees WHERE work_email = $2)
+    `;
+    params = [user.id, user.email || ''];
   }
-  await pool.query(`
-    UPDATE notifications
-    SET is_read = true
-    WHERE (employee_id = $1 OR employee_id IN (SELECT id FROM employees WHERE work_email = $2))
-       ${adminCond}
-  `, [user.id, user.email || '']);
+
+  console.log('[NOTIFICATIONS] markAllAsRead query:', updateQuery);
+  console.log('[NOTIFICATIONS] markAllAsRead params:', params, '(count:', params.length, ')');
+
+  await pool.query(updateQuery, params);
   return true;
 }
 

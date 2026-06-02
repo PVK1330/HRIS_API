@@ -1,5 +1,5 @@
 const superadminSupportService = require('../services/superadminSupport.service');
-const { emitTicketUpdate, emitTicketDeleted } = require('../socket');
+const { emitTicketUpdate, emitTicketDeleted, getIo } = require('../socket');
 const { pushNotification } = require('../modules/notifications/notifications.service');
 
 /**
@@ -147,11 +147,39 @@ async function updateStatus(req, res) {
     }
 
     // Notify the Admin who created the ticket about status change
+    // Superadmin updates ticket → notification only for the ticket creator admin
     try {
       const tenant = { dbName: updatedTicket.dbName };
       const title = 'Support Ticket Updated';
       const message = `Your ticket ${updatedTicket.subject} status changed to ${updatedTicket.status}`;
-      await pushNotification(tenant, { employeeId: updatedTicket.admin_id, forAdmin: false, title, message, type: 'SUPPORT_TICKET_UPDATED', ticketId: updatedTicket.id });
+      const notification = await pushNotification(tenant, { 
+        recipientId: updatedTicket.admin_id,  // Specific admin who created the ticket
+        recipientRole: 'admin',
+        title, 
+        message, 
+        type: 'SUPPORT_TICKET_UPDATED', 
+        ticketId: updatedTicket.id,
+        forAdmin: false
+      });
+      
+      console.log('[SUPERADMIN] Created notification for admin', updatedTicket.admin_id, 'notification:', notification);
+      
+      // Emit socket event to the admin if they're online
+      try {
+        const io = getIo();
+        if (io && updatedTicket.admin_id) {
+          console.log('[SUPERADMIN] Emitting notification event to user:', updatedTicket.admin_id);
+          io.to(`user:${updatedTicket.admin_id}`).emit('notification:new', {
+            id: notification?.id,
+            title,
+            message,
+            type: 'SUPPORT_TICKET_UPDATED',
+            ticketId: updatedTicket.id,
+          });
+        }
+      } catch (socketErr) {
+        console.error('[SUPERADMIN] Failed to emit socket event:', socketErr);
+      }
     } catch (err) {
       console.error('Failed to push support ticket status-updated notification (superadmin):', err);
     }
@@ -216,11 +244,39 @@ async function addReply(req, res) {
     const updatedTicket = await superadminSupportService.getTicketById(id);
 
     // Notify the Admin who created the ticket about the superadmin reply
+    // Superadmin replies → notification only for the ticket creator admin
     try {
       const tenant = { dbName: updatedTicket.dbName };
       const title = 'Support Ticket Updated';
-      const message = `A super admin replied to your ticket: ${updatedTicket.subject}`;
-      await pushNotification(tenant, { employeeId: updatedTicket.admin_id, forAdmin: false, title, message, type: 'SUPPORT_TICKET_UPDATED', ticketId: updatedTicket.id });
+      const messageText = `A super admin replied to your ticket: ${updatedTicket.subject}`;
+      const notification = await pushNotification(tenant, { 
+        recipientId: updatedTicket.admin_id,  // Specific admin who created the ticket
+        recipientRole: 'admin',
+        title, 
+        message: messageText, 
+        type: 'SUPPORT_TICKET_UPDATED', 
+        ticketId: updatedTicket.id,
+        forAdmin: false
+      });
+      
+      console.log('[SUPERADMIN] Created notification for admin', updatedTicket.admin_id, 'notification:', notification);
+      
+      // Emit socket event to the admin if they're online
+      try {
+        const io = getIo();
+        if (io && updatedTicket.admin_id) {
+          console.log('[SUPERADMIN] Emitting notification event to user:', updatedTicket.admin_id);
+          io.to(`user:${updatedTicket.admin_id}`).emit('notification:new', {
+            id: notification?.id,
+            title,
+            message: messageText,
+            type: 'SUPPORT_TICKET_UPDATED',
+            ticketId: updatedTicket.id,
+          });
+        }
+      } catch (socketErr) {
+        console.error('[SUPERADMIN] Failed to emit socket event:', socketErr);
+      }
     } catch (err) {
       console.error('Failed to push support ticket reply notification (superadmin):', err);
     }
@@ -307,7 +363,34 @@ async function updateTicket(req, res) {
       const tenant = { dbName: refreshedTicket.dbName };
       const title = 'Support Ticket Updated';
       const messageNotification = `Your ticket ${refreshedTicket.subject} status changed to ${refreshedTicket.status}`;
-      await pushNotification(tenant, { employeeId: refreshedTicket.admin_id, forAdmin: false, title, message: messageNotification, type: 'SUPPORT_TICKET_UPDATED', ticketId: refreshedTicket.id });
+      const notification = await pushNotification(tenant, { 
+        recipientId: refreshedTicket.admin_id,  // Specific admin who created the ticket
+        recipientRole: 'admin',
+        title, 
+        message: messageNotification, 
+        type: 'SUPPORT_TICKET_UPDATED', 
+        ticketId: refreshedTicket.id,
+        forAdmin: false
+      });
+      
+      console.log('[SUPERADMIN] Created notification for admin', refreshedTicket.admin_id, 'notification:', notification);
+      
+      // Emit socket event to the admin if they're online
+      try {
+        const io = getIo();
+        if (io && refreshedTicket.admin_id) {
+          console.log('[SUPERADMIN] Emitting notification event to user:', refreshedTicket.admin_id);
+          io.to(`user:${refreshedTicket.admin_id}`).emit('notification:new', {
+            id: notification?.id,
+            title,
+            message: messageNotification,
+            type: 'SUPPORT_TICKET_UPDATED',
+            ticketId: refreshedTicket.id,
+          });
+        }
+      } catch (socketErr) {
+        console.error('[SUPERADMIN] Failed to emit socket event:', socketErr);
+      }
     } catch (err) {
       console.error('Failed to push support ticket updated notification (superadmin):', err);
     }

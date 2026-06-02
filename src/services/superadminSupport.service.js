@@ -282,7 +282,8 @@ async function updateTicketStatus(ticketId, newStatus) {
         updateQuery += ` WHERE id = $2 RETURNING *`;
         const result = await tenantPool.query(updateQuery, params);
         if (result.rows.length) {
-          return result.rows[0];
+          // Include dbName for tenant reference
+          return { ...result.rows[0], dbName: tenant.db_name };
         }
       } catch (err) {
         // Continue with next tenant
@@ -336,20 +337,39 @@ async function addReply(ticketId, superadminId, message, internalNotes = null) {
     try {
       const ticketIdFormatted = `TKT-${String(ticketId).padStart(3, '0')}`;
       
-      // Try to get admin email from ticket or query if available
-      let adminEmail = ticket.admin_email;
-      if (!adminEmail && ticket.admin_id && ticket.dbName) {
+      let adminEmail = null;
+      let adminName = ticket.admin_name || 'Admin';
+
+      if (ticket.admin_id && ticket.dbName) {
         try {
           const adminResult = await tenantPool.query(
-            `SELECT email, work_email FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+            `SELECT u.id, u.username, u.name, u.email, u.role
+             FROM users u
+             WHERE u.id = $1 LIMIT 1`,
             [ticket.admin_id]
           );
+          
           if (adminResult.rows[0]) {
-            adminEmail = adminResult.rows[0].work_email || adminResult.rows[0].email;
+            const admin = adminResult.rows[0];
+            const rawEmail = admin.email || admin.username;
+            if (rawEmail) {
+              const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail);
+              if (isEmailValid) {
+                adminEmail = rawEmail;
+                adminName = admin.name || adminName;
+                console.log(`[Support Ticket] Selected admin recipient email: ${adminEmail}`);
+              } else {
+                console.warn(`[Support Ticket] Warning: Admin identifier '${rawEmail}' is not a valid email.`);
+              }
+            }
           }
         } catch (err) {
-          // Silent
+          console.error('Error fetching admin email:', err);
         }
+      }
+
+      if (!adminEmail) {
+        console.warn('[Support Ticket] Warning: No valid admin email found. Skipping email notification.');
       }
 
       if (adminEmail) {
@@ -518,40 +538,47 @@ async function updateTicket(ticketId, updates = {}) {
           
           // Send email to admin about status/description update (non-blocking)
           try {
-            
-            
-            
-            
             const ticketIdFormatted = `TKT-${String(ticketId).padStart(3, '0')}`;
             
             // Get admin_id from updated ticket
             const adminId = updatedTicket?.admin_id;
             
-            
+            let adminEmail = null;
+            let adminName = updatedTicket?.admin_name || 'Admin';
+
             if (adminId && tenant.db_name) {
-              // Fetch admin from users table using admin_id
-              let adminResult = await tenantPool.query(
-                `SELECT id, name, email, work_email FROM users WHERE id = $1 LIMIT 1`,
-                [adminId]
-              );
-              
-              let admin = adminResult.rows[0];
-              
-              // If not found in users, try employees table
-              if (!admin) {
-                adminResult = await tenantPool.query(
-                  `SELECT id, name, email, work_email FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+              try {
+                const adminResult = await tenantPool.query(
+                  `SELECT u.id, u.username, u.name, u.email, u.role
+                   FROM users u
+                   WHERE u.id = $1 LIMIT 1`,
                   [adminId]
                 );
-                admin = adminResult.rows[0];
+                
+                if (adminResult.rows[0]) {
+                  const admin = adminResult.rows[0];
+                  const rawEmail = admin.email || admin.username;
+                  if (rawEmail) {
+                    const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail);
+                    if (isEmailValid) {
+                      adminEmail = rawEmail;
+                      adminName = admin.name || adminName;
+                      console.log(`[Support Ticket] Selected admin recipient email: ${adminEmail}`);
+                    } else {
+                      console.warn(`[Support Ticket] Warning: Admin identifier '${rawEmail}' is not a valid email.`);
+                    }
+                  }
+                }
+              } catch (err) {
+                console.error('Error fetching admin email:', err);
               }
-              
-              
-              
-              
-              if (admin?.email) {
-                const adminEmail = admin.email || admin.work_email;
-                const adminName = admin.name;
+            }
+
+            if (!adminEmail) {
+              console.warn('[Support Ticket] Warning: No valid admin email found. Skipping email notification.');
+            }
+
+            if (adminEmail) {
                 
                 
 
@@ -654,7 +681,6 @@ HRMS Support Team
               } else {
                 
               }
-            }
           } catch (emailError) {
             
             // Email sending should not break ticket update

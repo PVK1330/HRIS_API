@@ -93,19 +93,20 @@ async function createTicket(req, res, next) {
 
     
 
-    // Send notification to Superadmin using existing notification system
-    // forAdmin=true sends to all admin-style users (superadmin/support_admin/billing_admin)
+    // Send notification to Superadmin only
+    // Admin creates ticket → notification only for superadmin
     try {
       
 
       const title = 'New Support Ticket Created';
       const message = `${ticket.admin_name || adminName || 'Admin'} created support ticket: ${ticket.subject}`;
       const notificationPayload = {
-        forAdmin: true,
+        recipientRole: 'superadmin',
         title,
         message,
         type: 'support_ticket',
         ticketId: ticket.id,
+        forAdmin: false,  // Use role-based filtering instead
       };
 
       
@@ -179,17 +180,18 @@ async function updateTicket(req, res, next) {
     const ticket = await supportService.updateTicket(req.user, req.params.id, payload);
 
     // Send notification to the Admin who created this ticket
-    // forAdmin=false with employeeId sends to the specific admin
+    // Send to the specific admin only
     try {
       const title = 'Support Ticket Updated';
       const message = `Your support ticket "${ticket.subject}" status changed to ${ticket.status}`;
       await pushNotification(req.tenant, { 
-        employeeId: ticket.admin_id, 
-        forAdmin: false, 
+        recipientId: ticket.admin_id, 
+        recipientRole: 'admin',
         title, 
         message, 
         type: 'support_ticket', 
-        ticketId: ticket.id 
+        ticketId: ticket.id,
+        forAdmin: false
       });
     } catch (err) {
       console.error('Failed to send ticket update notification:', err);

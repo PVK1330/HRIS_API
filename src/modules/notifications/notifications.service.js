@@ -13,19 +13,19 @@ async function ensureMigrated(dbName) {
   return p;
 }
 
-async function pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId }) {
+async function pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId }) {
   const dbName = tenant?.dbName || tenant?.db_name;
   if (!dbName) return null;
   await ensureMigrated(dbName);
   const pool = await getTenantPool(dbName);
-  return repo.create(pool, { employeeId, forAdmin, title, message, type, ticketId });
+  return repo.create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId });
 }
 
-async function sendSystemNotification(tenant, { employeeId, forAdmin, title, message, emailMessage, type, sendEmail = true, emailSubject = null }) {
+async function sendSystemNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, emailMessage, type, sendEmail = true, emailSubject = null }) {
   // 1. Instantly deliver central in-app push notification
   let notificationRecord = null;
     try {
-      notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId: null });
+      notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId: null });
   } catch (err) {
     console.error('Failed to log push notification centrally:', err);
   }
@@ -85,7 +85,14 @@ async function listNotifications(user, tenant = null) {
   const dbName = user?.db_name || tenant?.dbName || tenant?.db_name;
   const isSuperadmin = user?.role === 'superadmin';
   
-  
+  console.log('[NOTIFICATIONS SERVICE] listNotifications called', {
+    userId: user?.id,
+    userRole: user?.role,
+    userPanel: user?.panel,
+    isSuperadmin,
+    dbName,
+    hasTenant: !!tenant,
+  });
   
   // Superadmin without tenant context: fetch from ALL tenants
   if (isSuperadmin && !dbName) {
@@ -97,7 +104,7 @@ async function listNotifications(user, tenant = null) {
         `SELECT id, db_name FROM public.tenants WHERE status = 'active' ORDER BY created_at DESC`
       );
       
-      
+      console.log('[NOTIFICATIONS SERVICE] Superadmin fetching from', tenants.length, 'tenants');
       
       if (!tenants.length) {
         

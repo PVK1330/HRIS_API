@@ -1,6 +1,6 @@
 'use strict';
 
-const { getTenantPool } = require('../config/db');
+const { getTenantPool, pool } = require('../config/db');
 const ApiError = require('../utils/ApiError');
 const { runTenantMigrations } = require('../modules/tenant/tenant.service');
 const { sendMail } = require('../utils/mail');
@@ -62,7 +62,33 @@ async function createTicket(user, tenant, ticketData) {
   // Send email to superadmin about new ticket (non-blocking)
   try {
     const ticketId = `TKT-${String(ticketRecord.id).padStart(3, '0')}`;
-    const superadminEmail = process.env.SUPERADMIN_EMAIL;
+    
+    let superadminEmail = null;
+    try {
+      const saResult = await pool.query(`
+        SELECT id, username, email, role FROM users
+        WHERE LOWER(role) IN ('superadmin', 'super_admin')
+        AND COALESCE(email, username) IS NOT NULL
+        LIMIT 1
+      `);
+      if (saResult.rows.length > 0) {
+        const saUser = saResult.rows[0];
+        const rawEmail = saUser.email || saUser.username;
+        const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail);
+        if (isEmailValid) {
+          superadminEmail = rawEmail;
+          console.log(`[Support Ticket] Selected superadmin recipient email: ${superadminEmail}`);
+        } else {
+          console.warn(`[Support Ticket] Warning: Superadmin identifier '${rawEmail}' is not a valid email.`);
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching superadmin email:', err);
+    }
+
+    if (!superadminEmail) {
+      console.warn('[Support Ticket] Warning: No valid superadmin email found. Skipping email notification.');
+    }
 
     if (superadminEmail) {
       const emailHtml = `
@@ -255,22 +281,41 @@ async function updateTicket(user, ticketId, ticketData) {
   // Send email to admin about ticket update (non-blocking)
   try {
     const adminResult = await pool.query(
-      `SELECT id, name, email FROM users WHERE id = $1`,
+      `SELECT u.id, u.username, u.name, u.email, u.role
+       FROM users u
+       WHERE u.id = $1`,
       [updatedTicket.admin_id]
     );
 
     const admin = adminResult.rows[0];
+    let adminEmail = null;
+    let adminName = updatedTicket.admin_name || "Admin";
 
-    
-    
+    if (admin) {
+      const rawEmail = admin.email || admin.username;
+      if (rawEmail) {
+        const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail);
+        if (isEmailValid) {
+          adminEmail = rawEmail;
+          adminName = admin.name || adminName;
+          console.log(`[Support Ticket] Selected admin recipient email: ${adminEmail}`);
+        } else {
+          console.warn(`[Support Ticket] Warning: Admin identifier '${rawEmail}' is not a valid email.`);
+        }
+      }
+    }
 
-    if (admin?.email) {
+    if (!adminEmail) {
+      console.warn('[Support Ticket] Warning: No valid admin email found. Skipping email notification.');
+    }
+
+    if (adminEmail) {
       await sendMail({
-        to: admin.email,
+        to: adminEmail,
         subject: `Support Ticket Updated - TKT-${String(updatedTicket.id).padStart(3, '0')}`,
         html: `
           <h2>Support Ticket Updated</h2>
-          <p>Hello ${admin.name || updatedTicket.admin_name || "Admin"},</p>
+          <p>Hello ${adminName},</p>
           <p>Your support ticket has been updated by Superadmin.</p>
 
           <p><b>Ticket ID:</b> TKT-${String(updatedTicket.id).padStart(3, '0')}</p>

@@ -96,10 +96,13 @@ async function submitExitRequest(tenant, data, exitUser) {
 
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:request_created', { exitRequestId: Number(requestId) });
     try {
+      // Send notification to the employee about their exit request submission
       await notify().sendSystemNotification(tenant, {
-        forAdmin: true,
-        title: 'New Exit Request Submitted',
-        message: `${empName(empRows[0])} submitted a ${exitType} request.`,
+        employeeId: employeeId,
+        recipientId: employeeId,
+        recipientRole: 'employee',
+        title: 'Exit Request Submitted',
+        message: `Your ${exitType} request has been submitted. It will be processed according to company policy.`,
         type: 'exit_management',
         sendEmail: false,
       });
@@ -306,11 +309,15 @@ async function approveStage(tenant, id, exitUser, comments) {
     emit(tenant, `exit:${id}`, result.completed ? 'exit:request_completed' : 'exit:stage_advanced', { exitRequestId: Number(id) });
     if (result.completed) {
       try {
+        // Send notification only to the employee, not admins
         await notify().sendSystemNotification(tenant, {
-          employeeId: request.employee_id, forAdmin: false,
+          employeeId: request.employee_id,
+          recipientId: request.employee_id,
+          recipientRole: 'employee',
           title: 'Exit Process Completed',
           message: 'Your exit process has been completed.',
-          type: 'exit_management', sendEmail: false,
+          type: 'exit_management', 
+          sendEmail: false,
         });
       } catch (_) {}
     }
@@ -345,11 +352,15 @@ async function rejectStage(tenant, id, exitUser, reason) {
 
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'reject' });
     try {
+      // Send notification only to the employee, not admins
       await notify().sendSystemNotification(tenant, {
-        employeeId: request.employee_id, forAdmin: false,
+        employeeId: request.employee_id,
+        recipientId: request.employee_id,
+        recipientRole: 'employee',
         title: 'Exit Request Rejected',
         message: `Your exit request was rejected. Reason: ${reason}`,
-        type: 'exit_management', sendEmail: false,
+        type: 'exit_management', 
+        sendEmail: false,
       });
     } catch (_) {}
     return getExitRequest(tenant, id, exitUser);

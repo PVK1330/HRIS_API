@@ -26,8 +26,7 @@ async function handleAssetAssignmentNotifications(tenant, assetId) {
 
     // 2. Send In-App Feed alert to Company Administrators
     await notifService.pushNotification(tenant, {
-      employeeId: null,
-      forAdmin: true,
+      recipientRole: 'admin',
       title: `Asset Handover Notice: ${asset.assigned_to_name}`,
       message: `Asset ${asset.asset_id} (${asset.type || ''}) has been allocated to ${asset.assigned_to_name} (${asset.assigned_to_code}).`,
       type: 'info'

@@ -139,9 +139,9 @@ function authorizeExitAccess({ action } = {}) {
       return next();
     }
 
-    // Creating a new exit request — any authenticated portal employee.
+    // Creating a new exit request — any authenticated portal employee or org admin.
     if (action === 'create') {
-      if (!req.exitUser.employeeId) {
+      if (!req.exitUser.employeeId && !req.exitUser.isOrgExitAdmin) {
         return next(ApiError.forbidden('A linked employee profile is required to submit an exit request'));
       }
       // Termination/Separation may be submitted only by explicitly permitted roles

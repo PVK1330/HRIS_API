@@ -72,7 +72,7 @@ async function update(pool, id, data) {
          priority = COALESCE($3, priority),
          content = COALESCE($4, content),
          visibility = COALESCE($5, visibility),
-         schedule_date = COALESCE($6, schedule_date),
+         schedule_date = $6,
          status = COALESCE($7, status),
          dispatch_channels = COALESCE($8, dispatch_channels),
          updated_at = NOW()
@@ -121,7 +121,7 @@ async function remove(pool, id) {
 }
 
 async function getRecipients(pool, visibility) {
-  const baseWhere = `deleted_at IS NULL AND work_email IS NOT NULL AND work_email <> ''`;
+  const baseWhere = `deleted_at IS NULL`;
 
   if (visibility === 'All Employees' || visibility === 'all') {
     const { rows } = await pool.query(

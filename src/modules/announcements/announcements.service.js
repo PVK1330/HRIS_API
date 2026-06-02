@@ -28,6 +28,15 @@ function resolveStatusFromInput(data) {
   return explicit || 'Draft';
 }
 
+function normalizeScheduleDate(value) {
+  if (value == null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
 async function resolvePostedByEmployeeId(pool, user) {
   if (!user) return null;
   try {
@@ -173,7 +182,7 @@ async function listAnnouncements(pool, user) {
 
 async function createAnnouncement(tenant, pool, user, data) {
   const status = resolveStatusFromInput(data);
-  const scheduleRaw = data.schedule_date || data.scheduleDate;
+  const scheduleRaw = normalizeScheduleDate(data.schedule_date ?? data.scheduleDate);
   const postedBy = await resolvePostedByEmployeeId(pool, user);
 
   let announcement = await repo.create(pool, {
@@ -195,7 +204,11 @@ async function updateAnnouncement(tenant, pool, user, id, data) {
   if (!existing) return null;
 
   const status = data.status != null ? resolveStatusFromInput({ ...data, status: data.status }) : existing.status;
-  const scheduleRaw = data.schedule_date ?? data.scheduleDate ?? existing.schedule_date;
+  const hasScheduleField = Object.prototype.hasOwnProperty.call(data, 'schedule_date')
+    || Object.prototype.hasOwnProperty.call(data, 'scheduleDate');
+  const scheduleRaw = hasScheduleField
+    ? normalizeScheduleDate(data.schedule_date ?? data.scheduleDate)
+    : existing.schedule_date;
 
   let announcement = await repo.update(pool, id, {
     ...data,

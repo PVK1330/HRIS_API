@@ -57,7 +57,7 @@ async function resolveOnboardingReviewOwners(pool) {
        AND (
          LOWER(COALESCE(rr.name, '')) LIKE '%hr%'
          OR LOWER(COALESCE(rr.name, '')) LIKE '%admin%'
-         OR p.key IN ('system-settings', 'employee.edit', 'tasks')
+         OR p.key IN ('onboarding', 'system-settings', 'employee.edit', 'tasks')
        )
      ORDER BY e.id
      LIMIT 25`,
@@ -100,6 +100,9 @@ async function notifyAndAssignOnboardingTask(tenant, pool, emp, eventType = 'acc
   const description = eventType === 'uploaded'
     ? `${candidateName} uploaded onboarding documents. Please review and approve the checklist documents.`
     : `${candidateName} accepted and signed the offer. Please monitor onboarding documents and complete HR review.`;
+  const stepNum = eventType === 'uploaded' ? 3 : 1;
+  const companyName = await resolveCompanyName(tenant);
+  const notifiedEmails = new Set();
 
   for (const owner of owners) {
     try {
@@ -116,6 +119,19 @@ async function notifyAndAssignOnboardingTask(tenant, pool, emp, eventType = 'acc
           redirectUrl: taskId ? `/admin/tasks/${taskId}` : '/admin/onboarding',
         },
       );
+
+      // Email every authorized owner so they are alerted even if not online.
+      const to = String(owner.work_email || '').trim().toLowerCase();
+      if (to && !notifiedEmails.has(to)) {
+        await mailer.sendOnboardingStepNotifyToHr({
+          to,
+          candidateName,
+          empId: emp.emp_id || String(emp.id || ''),
+          step: stepNum,
+          companyName,
+        });
+        notifiedEmails.add(to);
+      }
     } catch (_) {
       // Non-blocking for candidate journey
     }

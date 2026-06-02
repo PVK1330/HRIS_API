@@ -32,8 +32,8 @@ class Task {
       data.description,
       data.priority || 'Medium',
       data.status || 'Pending',
-      data.dueDate || null,
-      data.assigneeId || null,
+      data.due_date || data.dueDate || null,
+      data.assignee_id || data.assigneeId || null,
       assignerId
     ];
     const { rows } = await pool.query(query, values);

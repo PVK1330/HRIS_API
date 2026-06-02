@@ -15,6 +15,7 @@ const workflowRepo = require('./onboarding.workflow.repository');
 const { WORKFLOW_STATUS } = require('./onboarding.workflow');
 const mailer = require('./onboarding.mailer');
 const { resolveCandidatePortalContext, buildCandidateUrls } = require('./candidatePortalUrl');
+const notifService = require('../../notifications/notifications.service');
 
 async function ensureMigrated(dbName) {
   await runTenantMigrations(dbName).catch(() => {
@@ -45,6 +46,99 @@ function publicCandidateView(emp) {
   };
 }
 
+async function resolveOnboardingReviewOwners(pool) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT e.id, e.full_name, e.work_email
+     FROM employees e
+     LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
+     LEFT JOIN rbac_role_permissions rp ON rp.role_id = rr.id
+     LEFT JOIN rbac_permissions p ON p.id = rp.permission_id
+     WHERE e.deleted_at IS NULL
+       AND (
+         LOWER(COALESCE(rr.name, '')) LIKE '%hr%'
+         OR LOWER(COALESCE(rr.name, '')) LIKE '%admin%'
+         OR p.key IN ('system-settings', 'employee.edit', 'tasks')
+       )
+     ORDER BY e.id
+     LIMIT 25`,
+  );
+  return rows;
+}
+
+async function createOnboardingReviewTask(pool, assigneeId, title, description, dueDateIso) {
+  const { rows } = await pool.query(
+    `SELECT id FROM tasks
+     WHERE is_deleted = false
+       AND status != 'Completed'
+       AND assignee_id = $1
+       AND title = $2
+     LIMIT 1`,
+    [assigneeId, title],
+  );
+  if (rows[0]?.id) return rows[0].id;
+  const { rows: created } = await pool.query(
+    `INSERT INTO tasks (title, description, priority, status, due_date, assignee_id, assigner_id)
+     VALUES ($1, $2, 'High', 'Pending', $3, $4, NULL)
+     RETURNING id`,
+    [title, description, dueDateIso, assigneeId],
+  );
+  return created[0]?.id || null;
+}
+
+async function notifyAndAssignOnboardingTask(tenant, pool, emp, eventType = 'accepted') {
+  const owners = await resolveOnboardingReviewOwners(pool);
+  if (!owners.length) return;
+
+  const candidateName = emp.full_name || 'Candidate';
+  const dueDate = new Date();
+  dueDate.setDate(dueDate.getDate() + 3);
+  const dueDateIso = dueDate.toISOString().slice(0, 10);
+
+  const title = eventType === 'uploaded'
+    ? `Review uploaded onboarding documents: ${candidateName}`
+    : `Follow-up onboarding acceptance: ${candidateName}`;
+  const description = eventType === 'uploaded'
+    ? `${candidateName} uploaded onboarding documents. Please review and approve the checklist documents.`
+    : `${candidateName} accepted and signed the offer. Please monitor onboarding documents and complete HR review.`;
+
+  for (const owner of owners) {
+    try {
+      const taskId = await createOnboardingReviewTask(pool, owner.id, title, description, dueDateIso);
+      await notifService.pushNotification(
+        { dbName: tenant.dbName, db_name: tenant.dbName },
+        {
+          employeeId: owner.id,
+          title,
+          message: description,
+          type: 'info',
+          entityType: 'onboarding',
+          entityId: emp.id,
+          redirectUrl: taskId ? `/admin/tasks/${taskId}` : '/admin/onboarding',
+        },
+      );
+    } catch (_) {
+      // Non-blocking for candidate journey
+    }
+  }
+
+  try {
+    await notifService.pushNotification(
+      { dbName: tenant.dbName, db_name: tenant.dbName },
+      {
+        forAdmin: true,
+        title,
+        message: description,
+        type: 'info',
+        entityType: 'onboarding',
+        entityId: emp.id,
+        redirectUrl: '/admin/onboarding',
+      },
+    );
+  } catch (_) {
+    // Non-blocking
+  }
+}
+
 async function getByToken(tenant, token) {
   const pool = getTenantPool(tenant.dbName);
   await ensureMigrated(tenant.dbName);
@@ -73,6 +167,7 @@ async function acceptOffer(tenant, token) {
 
   const { base, tenantSlug } = await resolveCandidatePortalContext(tenant.id);
   const urls = buildCandidateUrls(base, token, tenantSlug);
+  await notifyAndAssignOnboardingTask(tenant, pool, emp, 'accepted');
   return {
     ...publicCandidateView(emp),
     workflowStatus: WORKFLOW_STATUS.ACCEPTED_PENDING_UPLOAD,
@@ -234,6 +329,7 @@ async function uploadChecklistDocument(tenant, token, documentKey, file) {
      WHERE employee_id = $1 AND document_key = $2`,
     [emp.id, documentKey],
   );
+  await notifyAndAssignOnboardingTask(tenant, pool, emp, 'uploaded');
 
   return { documentKey, uploadStatus: 'Uploaded', message: 'Document uploaded successfully.' };
 }

@@ -15,6 +15,7 @@
  */
 
 const { getTenantPool } = require('../../config/db');
+const env = require('../../config/env');
 
 function notify() { return require('../notifications/notifications.service'); }
 
@@ -107,6 +108,31 @@ async function resolveResponsibles(pool, stageId) {
     );
     primaryAssignee = roleHolder.rows[0]?.id || null;
   }
+
+  // Fallback: if workflow stage has no mapped users/dept heads/role holders,
+  // assign to HR/Admin users so submissions still produce actionable tasks.
+  if (!recipients.length) {
+    const fallback = await pool.query(
+      `SELECT DISTINCT e.id AS employee_id, e.full_name, e.work_email
+       FROM employees e
+       LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
+       WHERE e.deleted_at IS NULL
+         AND (
+           LOWER(COALESCE(rr.name, '')) LIKE '%admin%'
+           OR LOWER(COALESCE(rr.name, '')) LIKE '%hr%'
+         )
+       ORDER BY e.id
+       LIMIT 10`,
+    );
+    const fallbackRecipients = fallback.rows || [];
+    if (fallbackRecipients.length) {
+      return {
+        recipients: fallbackRecipients,
+        primaryAssignee: primaryAssignee || fallbackRecipients[0].employee_id || null,
+      };
+    }
+  }
+
   return { recipients, primaryAssignee };
 }
 
@@ -120,17 +146,17 @@ async function setPendingAssignee(pool, requestId, stageId, employeeId) {
 }
 
 async function createStageTasks(pool, requestId, stageId, stageName, recipients) {
-  const defaultDueAtSql = `NOW() + INTERVAL '7 days'`;
+  const dueDays = Number.isFinite(env.EXIT_TASK_DUE_DAYS) ? env.EXIT_TASK_DUE_DAYS : 7;
   for (const r of recipients) {
     if (!r.employee_id) continue;
     await pool.query(
       `INSERT INTO exit_tasks (exit_request_id, stage_id, assigned_to, title, status, due_at)
-       SELECT $1, $2, $3, $4, 'PENDING', ${defaultDueAtSql}
+       SELECT $1, $2, $3, $4, 'PENDING', (NOW() + make_interval(days => $5::int))
        WHERE NOT EXISTS (
          SELECT 1 FROM exit_tasks
          WHERE exit_request_id = $1 AND stage_id = $2 AND assigned_to = $3 AND status = 'PENDING'
        )`,
-      [requestId, stageId, r.employee_id, `Action required: ${stageName || 'Exit stage'}`],
+      [requestId, stageId, r.employee_id, `Action required: ${stageName || 'Exit stage'}`, dueDays],
     );
   }
 }
@@ -158,7 +184,10 @@ async function onStageEntered(tenant, requestId) {
 
     const { recipients, primaryAssignee } = await resolveResponsibles(pool, req.current_stage_id);
     await setPendingAssignee(pool, requestId, req.current_stage_id, primaryAssignee);
-    await createStageTasks(pool, requestId, req.current_stage_id, req.stage_name, recipients);
+    const taskRecipients = recipients.length
+      ? recipients
+      : (primaryAssignee ? [{ employee_id: primaryAssignee }] : []);
+    await createStageTasks(pool, requestId, req.current_stage_id, req.stage_name, taskRecipients);
 
     for (const r of recipients) {
       await pushSafe(tenant, {
@@ -233,6 +262,7 @@ async function onCompleted(tenant, requestId) {
     await closeRequestTasks(pool, requestId);
 
     let attachments = [];
+    let documentsEmailed = false;
     try {
       const exitDocuments = require('./exitDocuments.service');
       let docs = await exitDocuments.listGenerated(tenant, requestId);
@@ -242,15 +272,14 @@ async function onCompleted(tenant, requestId) {
         if (templates.length > 0) {
           const res = await exitDocuments.generate(tenant, requestId, {
             template_ids: templates.map(t => t.id),
-            send_email: false
+            // Completion requirement: issue and email exit documents immediately.
+            send_email: true
           }, { actorName: 'System' });
-          docs = res.documents || [];
-          attachments = docs.map(d => ({
-            filename: d.file_name,
-            content: d.buffer
-          }));
+          documentsEmailed = !!res?.emailed;
+          docs = await exitDocuments.listGenerated(tenant, requestId);
         }
-      } else {
+      }
+      if (!documentsEmailed && docs.length > 0) {
         const fs = require('fs');
         const path = require('path');
         const env = require('../../config/env');
@@ -264,6 +293,15 @@ async function onCompleted(tenant, requestId) {
             });
           }
         }
+        if (attachments.length && req.work_email) {
+          await sendTemplate(req.work_email, 'exit_request_completed', {
+            employee_name: empName,
+            company_name: company.companyName,
+            app_name: company.companyName,
+            company_logo: company.companyLogo
+          }, attachments);
+          documentsEmailed = true;
+        }
       }
     } catch (err) {
       console.error('[onCompleted] Auto-generation of documents failed:', err);
@@ -276,12 +314,14 @@ async function onCompleted(tenant, requestId) {
       entityId: requestId,
       redirectUrl: `/admin/exit-management/${requestId}`
     });
-    await sendTemplate(req.work_email, 'exit_request_completed', { 
-      employee_name: empName, 
-      company_name: company.companyName, 
-      app_name: company.companyName, 
-      company_logo: company.companyLogo 
-    }, attachments);
+    if (!documentsEmailed) {
+      await sendTemplate(req.work_email, 'exit_request_completed', {
+        employee_name: empName,
+        company_name: company.companyName,
+        app_name: company.companyName,
+        company_logo: company.companyLogo
+      }, attachments);
+    }
     await pushSafe(tenant, {
       forAdmin: true, type: 'exit_management',
       title: 'Exit completed', message: `${empName}'s exit process is complete.`,

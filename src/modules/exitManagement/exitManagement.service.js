@@ -16,6 +16,11 @@ function notify() {
   if (!notifications) notifications = require('../notifications/notifications.service');
   return notifications;
 }
+let _events = null;
+function events() {
+  if (!_events) _events = require('./exitEvents.service');
+  return _events;
+}
 function emit(tenant, room, event, payload) {
   try {
     const { getIo } = require('../../socket');
@@ -62,6 +67,14 @@ async function submitExitRequest(tenant, data, exitUser) {
   if (active.length) throw ApiError.conflict('An active exit request already exists for this employee');
 
   const exitType = data.exit_type === 'termination' ? 'termination' : 'resignation';
+  
+  if (exitType === 'termination') {
+    // Restrict termination to explicitly permitted roles.
+    if (!exitUser.isOrgExitAdmin && !exitUser.canTerminateExit) {
+      throw ApiError.forbidden('Missing required permission: exit.terminate');
+    }
+  }
+
   const workflow = await getDefaultWorkflowFor(pool, exitType);
   if (!workflow) throw ApiError.badRequest('No active exit workflow is configured. Configure one under Settings > Exit Management.');
 
@@ -95,6 +108,7 @@ async function submitExitRequest(tenant, data, exitUser) {
     await client.query('COMMIT');
 
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:request_created', { exitRequestId: Number(requestId) });
+<<<<<<< HEAD
     try {
       // Send notification to the employee about their exit request submission
       await notify().sendSystemNotification(tenant, {
@@ -107,6 +121,10 @@ async function submitExitRequest(tenant, data, exitUser) {
         sendEmail: false,
       });
     } catch (_) { /* non-blocking */ }
+=======
+    // Notifications + template emails + stage-1 task assignment (best-effort, post-commit).
+    events().onSubmitted(tenant, requestId).catch(() => {});
+>>>>>>> 109cbc3bb86b12a612ad2b72a21eea64d8afd0f7
 
     return getExitRequest(tenant, requestId, exitUser);
   } catch (err) {
@@ -307,6 +325,7 @@ async function approveStage(tenant, id, exitUser, comments) {
 
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'approve' });
     emit(tenant, `exit:${id}`, result.completed ? 'exit:request_completed' : 'exit:stage_advanced', { exitRequestId: Number(id) });
+<<<<<<< HEAD
     if (result.completed) {
       try {
         // Send notification only to the employee, not admins
@@ -321,6 +340,10 @@ async function approveStage(tenant, id, exitUser, comments) {
         });
       } catch (_) {}
     }
+=======
+    // Completed → notify subject; otherwise notify + assign the newly-active stage's owners.
+    events().onApproved(tenant, Number(id), !!result.completed).catch(() => {});
+>>>>>>> 109cbc3bb86b12a612ad2b72a21eea64d8afd0f7
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -351,6 +374,7 @@ async function rejectStage(tenant, id, exitUser, reason) {
     await client.query('COMMIT');
 
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'reject' });
+<<<<<<< HEAD
     try {
       // Send notification only to the employee, not admins
       await notify().sendSystemNotification(tenant, {
@@ -363,6 +387,9 @@ async function rejectStage(tenant, id, exitUser, reason) {
         sendEmail: false,
       });
     } catch (_) {}
+=======
+    events().onRejected(tenant, Number(id), reason).catch(() => {});
+>>>>>>> 109cbc3bb86b12a612ad2b72a21eea64d8afd0f7
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -400,6 +427,8 @@ async function sendBackStage(tenant, id, exitUser, { target_stage_id, comments }
     await client.query('COMMIT');
 
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'send_back' });
+    // The target (earlier) stage is now active again — notify + assign its owners.
+    events().onStageEntered(tenant, Number(id)).catch(() => {});
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -432,6 +461,7 @@ async function reassignStage(tenant, id, exitUser, { department_id, comments }) 
     await recordAction(client, { ...request, current_owner_department_id: department_id }, 'REASSIGN', exitUser, comments);
     await client.query('COMMIT');
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'reassign' });
+    events().onReassigned(tenant, Number(id)).catch(() => {});
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -468,6 +498,7 @@ async function escalateStage(tenant, id, exitUser, comments) {
     );
     await client.query('COMMIT');
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'escalate' });
+    events().onEscalated(tenant, Number(id), stage.escalation_to_user_id || null).catch(() => {});
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -521,6 +552,7 @@ async function withdrawExitRequest(tenant, id, exitUser, reason) {
     );
     await client.query('COMMIT');
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'withdraw' });
+    events().onWithdrawn(tenant, Number(id)).catch(() => {});
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');

@@ -27,7 +27,10 @@ const adminOnly = (req, res, next) => {
 
 router.use(authenticate, tenantResolver, adminOnly);
 
-const uuidParam = param('id').isUUID().withMessage('Invalid category id');
+const categoryIdParam = param('id')
+  .isInt({ min: 1 })
+  .toInt()
+  .withMessage('Invalid category id');
 
 const createCategoryValidators = [
   body('name').trim().notEmpty().isLength({ min: 2, max: 100 }),
@@ -63,12 +66,12 @@ router.get('/categories', controller.getCategories);
 router.post('/categories', createCategoryValidators, validate, controller.createCategory);
 router.put(
   '/categories/:id',
-  uuidParam,
+  categoryIdParam,
   updateCategoryValidators,
   validate,
   controller.updateCategory
 );
-router.delete('/categories/:id', uuidParam, validate, controller.deleteCategory);
+router.delete('/categories/:id', categoryIdParam, validate, controller.deleteCategory);
 
 router.get('/rules', controller.getAssetRules);
 router.put(

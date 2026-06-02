@@ -89,6 +89,7 @@ const env = Object.freeze({
     max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 100,
     authMax: parseInt(process.env.AUTH_RATE_LIMIT_MAX, 10) || 10,
   },
+  EXIT_TASK_DUE_DAYS: Math.max(1, parseInt(process.env.EXIT_TASK_DUE_DAYS, 10) || 7),
 
   SEED: {
     email: process.env.SEED_SUPERADMIN_EMAIL,

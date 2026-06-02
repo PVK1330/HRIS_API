@@ -1,11 +1,23 @@
 'use strict';
 
+<<<<<<< HEAD
 async function create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId }) {
   const { rows } = await pool.query(`
     INSERT INTO notifications (employee_id, for_admin, recipient_id, recipient_role, title, message, type, ticket_id)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     RETURNING *
   `, [employeeId || null, Boolean(forAdmin), recipientId || null, recipientRole || null, title, message, type || 'info', ticketId || null]);
+=======
+async function create(pool, { employeeId, forAdmin, title, message, type, ticketId, entityType, entityId, redirectUrl }) {
+  const { rows } = await pool.query(`
+    INSERT INTO notifications (employee_id, for_admin, title, message, type, ticket_id, entity_type, entity_id, redirect_url)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    RETURNING *
+  `, [
+    employeeId || null, Boolean(forAdmin), title, message, type || 'info', 
+    ticketId || null, entityType || null, entityId || null, redirectUrl || null
+  ]);
+>>>>>>> 109cbc3bb86b12a612ad2b72a21eea64d8afd0f7
   return rows[0];
 }
 
@@ -76,7 +88,14 @@ async function listForUser(pool, user) {
     type: r.type,
     ticketId: r.ticket_id || null,
     relatedId: r.ticket_id || null,
+<<<<<<< HEAD
     role: r.recipient_role || (r.for_admin ? 'superadmin' : 'employee'),
+=======
+    entityType: r.entity_type || null,
+    entityId: r.entity_id || null,
+    redirectUrl: r.redirect_url || null,
+    role: r.for_admin ? 'superadmin' : 'employee',
+>>>>>>> 109cbc3bb86b12a612ad2b72a21eea64d8afd0f7
     read: Boolean(r.is_read),
     isRead: Boolean(r.is_read),
     createdAt: r.created_at,

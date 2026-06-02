@@ -39,4 +39,29 @@ const options = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, 'Builder options retrieved');
 });
 
-module.exports = { list, getOne, create, update, setDefault, remove, options };
+/* ---- Clearance-item catalog ---- */
+
+const listClearanceItems = asyncHandler(async (req, res) => {
+  const data = await service.listClearanceItems(req.tenant, { activeOnly: req.query.activeOnly === 'true' });
+  return ApiResponse.ok(res, data, 'Clearance items retrieved');
+});
+
+const createClearanceItem = asyncHandler(async (req, res) => {
+  const data = await service.createClearanceItem(req.tenant, req.body, req.exitUser);
+  return ApiResponse.created(res, data, 'Clearance item created');
+});
+
+const updateClearanceItem = asyncHandler(async (req, res) => {
+  const data = await service.updateClearanceItem(req.tenant, req.params.itemId, req.body);
+  return ApiResponse.ok(res, data, 'Clearance item updated');
+});
+
+const removeClearanceItem = asyncHandler(async (req, res) => {
+  const data = await service.deleteClearanceItem(req.tenant, req.params.itemId);
+  return ApiResponse.ok(res, data, 'Clearance item deleted');
+});
+
+module.exports = {
+  list, getOne, create, update, setDefault, remove, options,
+  listClearanceItems, createClearanceItem, updateClearanceItem, removeClearanceItem,
+};

@@ -17,6 +17,7 @@ const workflowRepo = require('./onboarding.workflow.repository');
 const { WORKFLOW_STATUS, WORKFLOW_STATUS_LABELS } = require('./onboarding.workflow');
 const { generateOfferLetterPdf } = require('./offerPdf.generator');
 const { resolveCandidatePortalContext, buildCandidateUrls } = require('./candidatePortalUrl');
+const notifService = require('../../notifications/notifications.service');
 
 const _migrationCache = new Map();
 async function ensureMigrated(dbName) {
@@ -204,6 +205,23 @@ async function notifyStepCompleted(user, employeeId, { step = 1 } = {}, auth = n
     }
   }
 
+  // Send system notification to HR admins
+  try {
+    const tenant = { dbName: user.db_name, db_name: user.db_name };
+    await notifService.pushNotification(tenant, {
+      employeeId: null,
+      forAdmin: true,
+      title: `Onboarding Step ${stepNum} Completed`,
+      message: `Candidate ${candidateName} has completed step ${stepNum} of onboarding.`,
+      type: 'info',
+      entityType: 'onboarding',
+      entityId: employeeId,
+      redirectUrl: '/admin/onboarding'
+    });
+  } catch (err) {
+    logger.warn(`Onboarding system notification failed: ${err.message}`);
+  }
+
   return {
     step: stepNum,
     candidateEmailSent,
@@ -311,6 +329,23 @@ async function setApprovalStatus(
       hrEmailSent = true;
     } catch (err) {
       logger.warn(`Onboarding accepted HR email failed: ${err.message}`);
+    }
+
+    // Send system notification to HR admins
+    try {
+      const tenant = { dbName: user.db_name, db_name: user.db_name };
+      await notifService.pushNotification(tenant, {
+        employeeId: null,
+        forAdmin: true,
+        title: `Offer Accepted by ${emp.full_name || 'Candidate'}`,
+        message: `${emp.full_name || 'Candidate'} has accepted the offer and submitted their ID and Resume.`,
+        type: 'success',
+        entityType: 'onboarding',
+        entityId: employeeId,
+        redirectUrl: '/admin/onboarding'
+      });
+    } catch (err) {
+      logger.warn(`Onboarding accepted system notification failed: ${err.message}`);
     }
 
     return {
@@ -602,6 +637,23 @@ async function uploadSignedOfferByHr(user, employeeId, file, auth = null) {
     onboarding_approval_status: 'Accepted',
   });
   await workflowRepo.seedChecklist(pool, employeeId);
+
+  // Send system notification to HR admins
+  try {
+    const tenant = { dbName: user.db_name, db_name: user.db_name };
+    await notifService.pushNotification(tenant, {
+      employeeId: null,
+      forAdmin: true,
+      title: `Signed Offer Uploaded for ${emp.full_name || 'Candidate'}`,
+      message: `The signed offer letter for ${emp.full_name || 'Candidate'} has been uploaded by HR.`,
+      type: 'info',
+      entityType: 'onboarding',
+      entityId: employeeId,
+      redirectUrl: '/admin/onboarding'
+    });
+  } catch (err) {
+    logger.warn(`Onboarding signed offer system notification failed: ${err.message}`);
+  }
 
   return {
     documentId: created.id,

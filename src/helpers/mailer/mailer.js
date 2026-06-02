@@ -113,13 +113,14 @@ class Mailer {
       fromEmail: email.systemEmail || process.env.EMAIL_FROM_ADDRESS || process.env.MAIL_FROM || envUser,
       fromName: email.systemFromName || process.env.EMAIL_FROM_NAME || process.env.MAIL_FROM_NAME || process.env.APP_NAME || 'HRIS System',
       appName: company.companyName || process.env.APP_NAME || 'HRIS System',
+      companyLogo: (await settingsService.getSettingsByGroup('logo'))?.largeLogo || '',
     };
 
     // Cache key based on every connection-relevant value, so a settings
     // change automatically invalidates the previous transporter.
     const cacheKey = [
       cfg.host, cfg.port, cfg.username, cfg.password,
-      cfg.encryption, cfg.fromEmail, cfg.fromName, cfg.appName,
+      cfg.encryption, cfg.fromEmail, cfg.fromName, cfg.appName, cfg.companyLogo,
     ].join('|');
 
     if (Mailer._instance && Mailer._cacheKey === cacheKey) {
@@ -148,12 +149,46 @@ class Mailer {
   /**
    * Wraps the rendered body inside the base layout and substitutes layout vars.
    */
-  _wrapInLayout(renderedBody, variables) {
+  _wrapInLayout(renderedBody, variables, attachmentsToMutate = null) {
     const layout = getBaseLayout();
+    const app_name = variables.app_name || this.config.appName;
+    const company_logo = variables.company_logo || this.config.companyLogo;
+
+    let company_header_html = `<h1 style="margin:0;font-size:20px;font-weight:700;color:#111827;letter-spacing:-0.01em;">${app_name}</h1>`;
+    if (company_logo) {
+      if (company_logo.startsWith('http')) {
+        company_header_html = `<img src="${company_logo}" alt="${app_name}" style="max-height: 48px; max-width: 150px; display: block; margin: 0 auto;" />`;
+      } else {
+        let attached = false;
+        if (attachmentsToMutate) {
+          const fs = require('fs');
+          const path = require('path');
+          const env = require('../../config/env');
+          const rel = company_logo.replace(/^\/uploads\//, '');
+          const diskPath = path.resolve(env.UPLOAD.dir, rel);
+          if (fs.existsSync(diskPath)) {
+            const cid = 'companylogo-' + Date.now();
+            attachmentsToMutate.push({
+              filename: path.basename(diskPath),
+              path: diskPath,
+              cid: cid
+            });
+            company_header_html = `<img src="cid:${cid}" alt="${app_name}" style="max-height: 48px; max-width: 150px; display: block; margin: 0 auto;" />`;
+            attached = true;
+          }
+        }
+        if (!attached) {
+          const logoUrl = `http://localhost:${process.env.PORT || 5000}${company_logo}`;
+          company_header_html = `<img src="${logoUrl}" alt="${app_name}" style="max-height: 48px; max-width: 150px; display: block; margin: 0 auto;" />`;
+        }
+      }
+    }
+
     return templateEngine.render(layout, {
       ...variables,
       body: renderedBody,
-      app_name: variables.app_name || this.config.appName,
+      app_name,
+      company_header_html,
       year: String(new Date().getFullYear()),
     });
   }
@@ -193,24 +228,26 @@ class Mailer {
       ...variables,
     };
 
+    let finalAttachments = Array.isArray(attachments) ? [...attachments] : [];
     const renderedSubject = templateEngine.render(subject || tpl.subject, mergedVars);
     const renderedBody = templateEngine.render(tpl.body, mergedVars);
-    const html = this._wrapInLayout(renderedBody, mergedVars);
+    const html = this._wrapInLayout(renderedBody, mergedVars, finalAttachments);
 
-    return this.sendRaw({ to, subject: renderedSubject, html, attachments });
+    return this.sendRaw({ to, subject: renderedSubject, html, attachments: finalAttachments, variables: mergedVars });
   }
 
   /**
    * Send an email with arbitrary HTML (no template lookup, but still wrapped in
    * the base layout for a consistent look). Used for the "send test email" flow.
    */
-  async sendRaw({ to, subject, html, attachments }) {
+  async sendRaw({ to, subject, html, attachments, variables = {} }) {
     if (!to) throw new ApiError(400, 'Recipient `to` is required');
     if (!subject) throw new ApiError(400, '`subject` is required');
     if (!html) throw new ApiError(400, '`html` is required');
 
     const transporter = this._getTransporter();
-    const wrapped = html.includes('<html') ? html : this._wrapInLayout(html, {});
+    let finalAttachments = Array.isArray(attachments) ? [...attachments] : [];
+    const wrapped = html.includes('<html') ? html : this._wrapInLayout(html, variables, finalAttachments);
 
     try {
       const info = await transporter.sendMail({
@@ -219,7 +256,7 @@ class Mailer {
         subject,
         html: wrapped,
         // Optional nodemailer attachments: [{ filename, content: <Buffer> }, ...]
-        ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
+        ...(finalAttachments.length ? { attachments: finalAttachments } : {}),
       });
       logger.info(`[mailer] sent to=${to} subject="${subject}" messageId=${info.messageId}`);
       return { success: true, messageId: info.messageId };

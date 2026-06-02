@@ -18,12 +18,17 @@ const { getTenantPool } = require('../../config/db');
 
 function notify() { return require('../notifications/notifications.service'); }
 
-async function getCompanyName() {
+async function getCompany(tenant) {
   try {
-    const settingsService = require('../settings/settings.service');
-    const company = await settingsService.getSettingsByGroup('company');
-    return company.companyName || 'Organization';
-  } catch (_) { return 'Organization'; }
+    const tenantSettingsService = require('../tenantSettings/tenantSettings.service');
+    const tenantSettings = await tenantSettingsService.getAdminSettings(tenant.dbName, '');
+    return {
+      companyName: tenantSettings.companyName || tenant.companyName || 'Organization',
+      companyLogo: tenantSettings.logoUrl || '',
+    };
+  } catch (_) { 
+    return { companyName: tenant ? tenant.companyName : 'Organization', companyLogo: '' }; 
+  }
 }
 
 async function sendTemplate(to, templateSlug, variables, attachments = []) {
@@ -207,7 +212,7 @@ async function onCompleted(tenant, requestId) {
     const pool = await getTenantPool(tenant.dbName);
     const req = await loadReq(pool, requestId);
     if (!req) return;
-    const company = await getCompanyName();
+    const company = await getCompany(tenant);
     const empName = fullName(req);
     await closeRequestTasks(pool, requestId);
 
@@ -252,7 +257,12 @@ async function onCompleted(tenant, requestId) {
       employeeId: req.employee_id, type: 'exit_management',
       title: 'Exit process completed', message: 'Your exit process has been completed.',
     });
-    await sendTemplate(req.work_email, 'exit_request_completed', { employee_name: empName, company_name: company }, attachments);
+    await sendTemplate(req.work_email, 'exit_request_completed', { 
+      employee_name: empName, 
+      company_name: company.companyName, 
+      app_name: company.companyName, 
+      company_logo: company.companyLogo 
+    }, attachments);
     await pushSafe(tenant, {
       forAdmin: true, type: 'exit_management',
       title: 'Exit completed', message: `${empName}'s exit process is complete.`,
@@ -265,15 +275,20 @@ async function onRejected(tenant, requestId, reason) {
     const pool = await getTenantPool(tenant.dbName);
     const req = await loadReq(pool, requestId);
     if (!req) return;
-    const company = await getCompanyName();
+    const company = await getCompany(tenant);
     const empName = fullName(req);
+    const reasonText = reason ? `\nReason: ${reason}` : '';
     await closeRequestTasks(pool, requestId);
     await pushSafe(tenant, {
       employeeId: req.employee_id, type: 'exit_management',
-      title: 'Exit request rejected', message: `Your exit request was rejected. Reason: ${reason}`,
+      title: 'Exit request rejected', message: `Your exit request was rejected.${reasonText}`,
     });
     await sendTemplate(req.work_email, 'exit_request_rejected', {
-      employee_name: empName, reason: reason || 'Not specified', company_name: company,
+      employee_name: empName,
+      company_name: company.companyName,
+      app_name: company.companyName,
+      company_logo: company.companyLogo,
+      reason: reason || 'Not specified',
     });
     await pushSafe(tenant, {
       forAdmin: true, type: 'exit_management',

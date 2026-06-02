@@ -57,7 +57,7 @@ async function loadContext(pool, requestId) {
   const { rows } = await pool.query(
     `SELECT er.id, er.employee_id, er.exit_type, er.exit_reason, er.status,
             er.notice_date, er.resignation_date, er.last_working_day,
-            e.full_name, e.first_name, e.last_name, e.work_email, e.job_title, e.department,
+            e.full_name, e.first_name, e.last_name, e.work_email, e.job_title, e.department, e.join_date,
             tt.name AS termination_type_name
      FROM exit_requests er
      LEFT JOIN employees e ON e.id = er.employee_id
@@ -71,15 +71,16 @@ async function loadContext(pool, requestId) {
 
 async function getCompany(tenant) {
   try {
-    const settingsService = require('../settings/settings.service');
-    const company = await settingsService.getSettingsByGroup('company');
+    const tenantSettingsService = require('../tenantSettings/tenantSettings.service');
+    const tenantSettings = await tenantSettingsService.getAdminSettings(tenant.dbName, '');
     return {
-      company_name: company.companyName || tenant.companyName || 'Organization',
-      contact_email: company.companyEmail || company.contactEmail || '',
-      company_address: company.companyAddress || company.address || '',
+      company_name: tenantSettings.companyName || tenant.companyName || 'Organization',
+      contact_email: tenantSettings.contactDetails || '',
+      company_address: tenantSettings.address || '',
+      company_logo_path: tenantSettings.logoUrl || '',
     };
   } catch (_) {
-    return { company_name: tenant.companyName || 'Organization', contact_email: '', company_address: '' };
+    return { company_name: tenant.companyName || 'Organization', contact_email: '', company_address: '', company_logo_path: '' };
   }
 }
 
@@ -99,6 +100,7 @@ function buildTagMap(ctx, company) {
     notice_date: fmtDate(ctx.notice_date),
     resignation_date: fmtDate(ctx.resignation_date),
     last_working_day: fmtDate(ctx.last_working_day),
+    joining_date: fmtDate(ctx.join_date),
     company_name: company.company_name,
     // Settlement figures live in payroll — left blank here for HR to fill in the template
     // or via a future payroll integration.
@@ -199,6 +201,10 @@ async function generate(tenant, requestId, dto, actor) {
           subject: `Your exit ${generated.length > 1 ? 'documents' : 'document'} — ${company.company_name}`,
           html,
           attachments: generated.map((g) => ({ filename: g.file_name, content: g.buffer })),
+          variables: {
+            app_name: company.company_name,
+            company_logo: company.company_logo_path
+          }
         });
         emailed = true;
       } catch (err) {

@@ -4,8 +4,17 @@ const path = require('path');
 
 const PDF_NAV_TIMEOUT_MS = Number(process.env.PDF_NAV_TIMEOUT_MS) || 60_000;
 
-function resolveLogoPath() {
+function resolveLogoPath(tenantLogoPath = '') {
+  let dbLogoPath = null;
+  if (tenantLogoPath && typeof tenantLogoPath === 'string') {
+    const env = require('../config/env');
+    // e.g. /uploads/superadmin-logos/xyz.png -> ./src/uploads/superadmin-logos/xyz.png
+    const relative = tenantLogoPath.replace(/^\/uploads\//, '');
+    dbLogoPath = path.resolve(env.UPLOAD.dir, relative);
+  }
+
   const candidates = [
+    dbLogoPath,
     process.env.HRIS_LOGO_PATH,
     path.resolve(__dirname, '../../../HRIS/public/HRIS_Logo.png'),
     path.resolve(__dirname, '../../public/HRIS_Logo.png'),
@@ -56,7 +65,7 @@ function replacePlaceholders(html, data) {
  */
 async function generatePdfFromHtml(htmlBody, tenant = {}) {
   let logoDataUri = '';
-  const logoPath = resolveLogoPath();
+  const logoPath = resolveLogoPath(tenant.company_logo_path);
 
   if (logoPath) {
     const logoBuffer = fs.readFileSync(logoPath);

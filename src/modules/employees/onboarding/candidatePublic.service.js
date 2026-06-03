@@ -19,6 +19,7 @@ const { resolveCandidatePortalContext, buildCandidateUrls } = require('./candida
 const notifService = require('../../notifications/notifications.service');
 const { getHROrAdminRecipients } = require('./utils/onboardingRecipients.utils');
 const { sendOfferRejectedNotification } = require('./onboardingNotification.service');
+const workflowAudit = require('../../workflow/workflowAudit.service');
 
 async function ensureMigrated(dbName) {
   await runTenantMigrations(dbName).catch(() => {
@@ -170,6 +171,13 @@ async function acceptOffer(tenant, token) {
   const { base, tenantSlug } = await resolveCandidatePortalContext(tenant.id);
   const urls = buildCandidateUrls(base, token, tenantSlug);
   await notifyAndAssignOnboardingTask(tenant, pool, emp, 'accepted');
+  await workflowAudit.log(tenant, {
+    module: 'onboarding',
+    action: 'offer_accepted',
+    entityType: 'employee',
+    entityId: emp.id,
+    detail: { source: 'candidate_portal' },
+  });
   return {
     ...publicCandidateView(emp),
     workflowStatus: WORKFLOW_STATUS.ACCEPTED_PENDING_UPLOAD,
@@ -203,6 +211,14 @@ async function rejectOffer(tenant, token, { reason } = {}) {
   } catch (err) {
     logger.warn(`Failed to dispatch offer rejection notification: ${err.message}`);
   }
+
+  await workflowAudit.log(tenant, {
+    module: 'onboarding',
+    action: 'offer_rejected',
+    entityType: 'employee',
+    entityId: emp.id,
+    detail: { reason: reason || '', source: 'candidate_portal' },
+  });
 
   return { workflowStatus: WORKFLOW_STATUS.REJECTED, message: 'Offer rejected.' };
 }

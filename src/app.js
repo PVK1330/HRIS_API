@@ -41,6 +41,7 @@ const designationsRoutes = require('./modules/designations/designations.routes')
 const exitSettingsRoutes = require('./modules/exitSettings/exitSettings.routes');
 const exitManagementRoutes = require('./modules/exitManagement/exitManagement.routes');
 const exitWorkflowConfigRoutes = require('./modules/exitWorkflowConfig/exitWorkflowConfig.routes');
+const onboardingSettingsRoutes = require('./modules/onboardingHandover/onboardingHandover.routes');
 const visaTypesRoutes = require('./modules/visa-types/visa-types.routes');
 const visaRecordsRoutes = require('./modules/visa-records/visa-records.routes');
 const publicOnboardingRoutes = require('./routes/public/onboardingRoutes');
@@ -187,6 +188,7 @@ app.use('/api/v1/admin/settings/termination-types', exitSettingsRoutes);
 app.use('/api/v1/exit-management', exitManagementRoutes);
 app.use('/api/v1/admin/settings/exit-workflows', exitWorkflowConfigRoutes);
 app.use('/api/v1/admin/settings', tenantSettingsRoutes);
+app.use('/api/v1/admin/settings/onboarding', onboardingSettingsRoutes);
 app.use('/api/v1/admin/documents', adminDocumentsRoutes);
 app.use('/api/v1/admin/payroll', require('./modules/payroll/payroll.routes'));
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);

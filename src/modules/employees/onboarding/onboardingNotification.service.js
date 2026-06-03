@@ -57,11 +57,10 @@ async function sendHandoverNotification(tenant, employeeId, employee, recipients
 
   for (const dUser of recipients) {
     let specificMessage = messageBase;
-    const dept = String(dUser.department || '').toLowerCase();
-    
-    if (dept === 'assets' || dept === 'it') {
+    const dept = String(dUser.department_name || dUser.department || '').toLowerCase();
+    if (dept.includes('it') || dept.includes('asset')) {
       specificMessage += ' Please provision laptop, email account, and system access.';
-    } else if (dept === 'finance' || dept === 'payroll') {
+    } else if (dept.includes('finance') || dept.includes('payroll')) {
       specificMessage += ' Please initiate payroll and finance setup.';
     }
 

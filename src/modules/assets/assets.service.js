@@ -3,8 +3,10 @@
 const repo = require('./assets.repository');
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
+const delivery = require('../notifications/notificationDelivery.service');
+const workflowAudit = require('../workflow/workflowAudit.service');
 
-async function handleAssetAssignmentNotifications(tenant, assetId) {
+async function handleAssetAssignmentNotifications(tenant, assetId, actor = {}) {
   try {
     const pool = await getTenantPool(tenant.dbName);
     const asset = await repo.findById(pool, assetId);
@@ -13,23 +15,34 @@ async function handleAssetAssignmentNotifications(tenant, assetId) {
     const title = `Asset Assigned: ${asset.type || 'Hardware Equipment'}`;
     const message = `You have been assigned corporate asset ${asset.asset_id} (${asset.type || ''}) with Serial Number: ${asset.serial_number || 'N/A'}. Allocation status: Assigned.`;
 
-    const notifService = require('../notifications/notifications.service');
-
-    // 1. Send In-App Feed alert to assigned individual
-    await notifService.pushNotification(tenant, {
+    await delivery.sendDedupedInApp(tenant, {
       employeeId: asset.employee_id,
-      forAdmin: false,
       title,
       message,
-      type: 'info'
+      type: 'info',
+      entityType: 'asset',
+      entityId: assetId,
+      redirectUrl: '/admin/assets',
+    }, {
+      notificationType: 'assets.assigned',
+      entityType: 'asset',
+      entityId: assetId,
+      recipientId: asset.employee_id,
     });
 
-    // 2. Send In-App Feed alert to Company Administrators
-    await notifService.pushNotification(tenant, {
-      recipientRole: 'admin',
+    await delivery.sendDedupedInApp(tenant, {
+      forAdmin: true,
       title: `Asset Handover Notice: ${asset.assigned_to_name}`,
       message: `Asset ${asset.asset_id} (${asset.type || ''}) has been allocated to ${asset.assigned_to_name} (${asset.assigned_to_code}).`,
-      type: 'info'
+      type: 'info',
+      entityType: 'asset',
+      entityId: assetId,
+      redirectUrl: '/admin/assets',
+    }, {
+      notificationType: 'assets.assigned.admin',
+      entityType: 'asset',
+      entityId: assetId,
+      recipientId: null,
     });
 
     // 3. Dispatch Email Notice to assigned person's corporate inbox and admin
@@ -79,9 +92,43 @@ async function handleAssetAssignmentNotifications(tenant, assetId) {
         html: mailHtml(tenant.name || 'Company Administrator')
       }).catch(err => console.error('Admin asset assignment mail error:', err));
     }
+
+    await workflowAudit.log(tenant, {
+      module: 'assets',
+      action: 'assigned',
+      entityType: 'asset',
+      entityId: assetId,
+      actorEmployeeId: actor.employeeId || null,
+      actorName: actor.actorName || null,
+      detail: { assetTag: asset.asset_id, employeeId: asset.employee_id },
+    });
   } catch (err) {
     console.error('Failed to dispatch asset allocation notifications', err);
   }
+}
+
+async function logAssetReturned(tenant, assetId, employeeId, actor = {}, detail = {}) {
+  await workflowAudit.log(tenant, {
+    module: 'assets',
+    action: 'returned',
+    entityType: 'asset',
+    entityId: assetId,
+    actorEmployeeId: actor.employeeId || null,
+    actorName: actor.actorName || null,
+    detail: { ...detail, employeeId },
+  });
+}
+
+async function logAssetReassigned(tenant, assetId, fromEmployeeId, toEmployeeId, actor = {}) {
+  await workflowAudit.log(tenant, {
+    module: 'assets',
+    action: 'reassigned',
+    entityType: 'asset',
+    entityId: assetId,
+    actorEmployeeId: actor.employeeId || null,
+    actorName: actor.actorName || null,
+    detail: { fromEmployeeId, toEmployeeId },
+  });
 }
 
 async function listAssets(tenant) {
@@ -96,7 +143,7 @@ async function getAsset(tenant, id) {
   return asset;
 }
 
-async function createAsset(tenant, data) {
+async function createAsset(tenant, data, actor = {}) {
   const pool = await getTenantPool(tenant.dbName);
   if (!data.assetId) {
     const assets = await repo.findAll(pool);
@@ -106,17 +153,21 @@ async function createAsset(tenant, data) {
   }
   const created = await repo.create(pool, data);
   if (created && data.employeeId) {
-    handleAssetAssignmentNotifications(tenant, created.id).catch(() => null);
+    handleAssetAssignmentNotifications(tenant, created.id, actor).catch(() => null);
   }
   return created;
 }
 
-async function updateAsset(tenant, id, data) {
+async function updateAsset(tenant, id, data, actor = {}) {
   const pool = await getTenantPool(tenant.dbName);
+  const previous = await repo.findById(pool, id);
   const updated = await repo.update(pool, id, data);
   if (!updated) throw new ApiError(404, 'Asset not found');
   if (data.employeeId) {
-    handleAssetAssignmentNotifications(tenant, id).catch(() => null);
+    if (previous?.employee_id && Number(previous.employee_id) !== Number(data.employeeId)) {
+      logAssetReassigned(tenant, id, previous.employee_id, data.employeeId, actor).catch(() => null);
+    }
+    handleAssetAssignmentNotifications(tenant, id, actor).catch(() => null);
   }
   return updated;
 }
@@ -133,5 +184,7 @@ module.exports = {
   getAsset,
   createAsset,
   updateAsset,
-  deleteAsset
+  deleteAsset,
+  logAssetReturned,
+  logAssetReassigned,
 };

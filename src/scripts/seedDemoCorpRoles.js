@@ -50,7 +50,7 @@ const ROLE_CONFIG = {
     perms: [
       'dashboard', 'employee-directory', 'employee-profiles',
       'employee.view', 'employee.create', 'employee.edit', 'employee.delete',
-      'departments', 'departments.manage', 'onboarding',
+      'departments', 'departments.manage', 'onboarding', 'onboarding.view', 'onboarding.manage',
       'leave-absence', 'leave.apply', 'leave.view', 'leave.approve',
       'attendance', 'attendance.view', 'time-tracking', 'overtime-management', 'shift-management',
       'attendance.view.own', 'attendance.view.team', 'attendance.view.all',
@@ -77,7 +77,8 @@ const ROLE_CONFIG = {
     scope: 'ALL',
     perms: [
       'dashboard', 'employee-directory', 'employee.view', 'employee-profiles',
-      'assets', 'assets.view', 'document.view', 'document.upload',
+      'assets', 'assets.view', 'assets.create', 'assets.edit', 'assets.assign', 'assets.return',
+      'document.view', 'document.upload',
       'policies', 'policies.view', 'announcements',
       'messages', 'messages.view', 'exit-management',
     ],

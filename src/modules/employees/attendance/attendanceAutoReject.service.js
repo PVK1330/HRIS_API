@@ -66,26 +66,11 @@ async function autoRejectRecord(pool, tenantDb, record, settings) {
       deviceInfo: 'attendance-cron',
     });
 
-    const title = 'Regularization auto-rejected';
-    const message = `Your attendance regularization for ${record.date} was automatically rejected after ${days} days without approval.`;
-
-    await sendSystemNotification(
-      { db_name: tenantDb, dbName: tenantDb },
-      {
-        employeeId: record.employee_id,
-        recipientId: record.employee_id,
-        recipientRole: 'employee',
-        title,
-        message,
-        emailMessage: message,
-        emailSubject: title,
-        type: notify.TYPES.REG_REJECTED,
-        sendEmail: true,
-        entityType: 'attendance',
-        entityId: String(record.id),
-        redirectUrl: '/employee/attendance',
-      },
-    );
+    await notify.notifyRegAutoRejected(pool, tenantDb, {
+      employeeId: record.employee_id,
+      date: record.date,
+      entityId: record.id
+    });
 
     return updated;
   } catch (e) {

@@ -129,7 +129,18 @@ async function markAssetReturned(tenant, requestId, assetId, data, actor) {
                assigned_date, returned_date, notes`,
     [status, data.condition || null, data.notes || null, assetId, employeeId],
   );
-  return rows[0];
+  const updated = rows[0];
+  if (updated && status === 'Returned') {
+    const assetsService = require('../assets/assets.service');
+    assetsService.logAssetReturned(
+      tenant,
+      assetId,
+      employeeId,
+      { employeeId: actor?.employeeId, actorName: actor?.actorName },
+      { status, notes: data.notes },
+    ).catch(() => null);
+  }
+  return updated;
 }
 
 async function addAttachment(tenant, requestId, stageId, file, meta, actor) {

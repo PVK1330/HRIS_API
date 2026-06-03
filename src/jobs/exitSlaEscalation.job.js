@@ -3,14 +3,110 @@
 const cron = require('node-cron');
 const logger = require('../utils/logger');
 const { superAdminPool, getTenantPool } = require('../config/db');
-const { pushNotification } = require('../modules/notifications/notifications.service');
+const delivery = require('../modules/notifications/notificationDelivery.service');
+const { getHROrAdminRecipients } = require('../modules/employees/onboarding/utils/onboardingRecipients.utils');
+const workflowAudit = require('../modules/workflow/workflowAudit.service');
 const { getIo } = require('../socket');
+
+async function getCompanyName(tenant) {
+  try {
+    const tenantSettingsService = require('../modules/tenantSettings/tenantSettings.service');
+    const settings = await tenantSettingsService.getAdminSettings(tenant.db_name, '');
+    return settings.companyName || tenant.name || 'Organization';
+  } catch (_) {
+    return tenant.name || 'Organization';
+  }
+}
+
+async function notifySlaBreach(tenant, row, companyName) {
+  const pool = await getTenantPool(tenant.db_name);
+  const empName = row.full_name || [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Employee';
+  const dueDate = row.stage_entered_at
+    ? new Date(new Date(row.stage_entered_at).getTime() + (row.sla_hours || 0) * 3600000).toISOString()
+    : '';
+  const delayHours = row.sla_hours || row.escalation_after_hours || 0;
+  const variables = {
+    recipient_name: '',
+    employee_name: empName,
+    stage_name: row.stage_name || '',
+    due_date: dueDate,
+    delay_hours: String(delayHours),
+    company_name: companyName,
+  };
+
+  const targets = new Map();
+
+  if (row.escalation_to_user_id) {
+    const { rows } = await pool.query(
+      `SELECT id, full_name, work_email FROM employees WHERE id = $1 AND deleted_at IS NULL`,
+      [row.escalation_to_user_id],
+    );
+    if (rows[0]) targets.set(rows[0].id, rows[0]);
+  }
+
+  if (row.current_owner_department_id) {
+    const { rows } = await pool.query(
+      `SELECT e.id, e.full_name, e.work_email
+       FROM departments d
+       JOIN employees e ON e.id = d.manager_id AND e.deleted_at IS NULL
+       WHERE d.id = $1`,
+      [row.current_owner_department_id],
+    );
+    if (rows[0]) targets.set(rows[0].id, rows[0]);
+  }
+
+  const hrAdmins = await getHROrAdminRecipients(pool);
+  for (const hr of hrAdmins) targets.set(hr.id, hr);
+
+  const tenantCtx = { dbName: tenant.db_name, db_name: tenant.db_name, id: tenant.id };
+
+  for (const person of targets.values()) {
+    variables.recipient_name = person.full_name || 'Colleague';
+    await delivery.sendDedupedSystem(tenantCtx, {
+      employeeId: person.id,
+      title: 'Exit Workflow SLA Breach',
+      message: `Stage "${row.stage_name}" for ${empName} is overdue (${delayHours}h SLA).`,
+      type: 'exit_management',
+      sendEmail: true,
+      emailSubject: `Exit Workflow SLA Breach — ${row.stage_name}`,
+      entityType: 'exit_request',
+      entityId: row.request_id,
+      redirectUrl: `/admin/exit-management/${row.request_id}`,
+    }, {
+      tenantId: tenant.id,
+      notificationType: 'exit.sla_breach',
+      entityType: 'exit_request',
+      entityId: row.request_id,
+      recipientId: person.id,
+    });
+
+    if (person.work_email) {
+      await delivery.sendDedupedEmailOnly(
+        tenantCtx,
+        { to: person.work_email, templateSlug: 'exit_sla_breach', variables },
+        {
+          tenantId: tenant.id,
+          notificationType: 'exit.sla_breach.email',
+          entityType: 'exit_request',
+          entityId: row.request_id,
+          recipientId: person.id,
+        },
+      );
+    }
+  }
+
+  await workflowAudit.log(tenantCtx, {
+    module: 'exit',
+    action: 'sla_breach',
+    entityType: 'exit_request',
+    entityId: row.request_id,
+    detail: { stageName: row.stage_name, delayHours },
+  });
+}
 
 async function processTenantSlas(tenant) {
   const pool = await getTenantPool(tenant.db_name);
 
-  // Requests whose ACTIVE stage breached its SLA and have not been escalated this occurrence.
-  // Reads the flat escalation columns + the exit_requests.stage_entered_at cache.
   const { rows: breached } = await pool.query(`
     SELECT er.id AS request_id, er.current_stage_id, er.current_owner_department_id,
            er.stage_entered_at, er.employee_id,
@@ -34,13 +130,13 @@ async function processTenantSlas(tenant) {
   if (!breached.length) return;
 
   logger.info(`[exitSlaEscalation] Found ${breached.length} SLA-breached stages for tenant=${tenant.db_name}`);
+  const companyName = await getCompanyName(tenant);
 
   for (const row of breached) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
-      // 1. Apply the escalation rule (REASSIGN moves ownership toward the target's department).
       if (row.escalation_action === 'REASSIGN' && row.escalation_to_user_id) {
         const { rows: ed } = await client.query(
           `SELECT department_id FROM employees WHERE id = $1`, [row.escalation_to_user_id],
@@ -53,7 +149,6 @@ async function processTenantSlas(tenant) {
         }
       }
 
-      // 2. Record the ESCALATE action + flag the open PENDING slot.
       await client.query(
         `INSERT INTO exit_approvals
            (exit_request_id, stage_id, department_id, action, actor_name, comments, acted_at)
@@ -68,28 +163,11 @@ async function processTenantSlas(tenant) {
 
       await client.query('COMMIT');
 
-      // 3. Notify the escalation target user (admin/department owner) and the employee
-      const empName = row.full_name || [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Employee';
-      try {
-        // Notify the department owner/escalation target if specified
-        if (row.escalation_to_user_id) {
-          await pushNotification({ dbName: tenant.db_name }, {
-            recipientId: row.escalation_to_user_id,
-            recipientRole: 'admin',
-            title: 'Exit Stage Escalated To You',
-            message: `An exit stage ("${row.stage_name}") for ${empName} has been escalated to you due to an SLA breach.`,
-            type: 'exit_management',
-          });
-        }
-        // Alternatively, notify all admins of the department if no specific user is set
-        // This would require a more complex query, so for now we skip it if no escalation_to_user_id
-      } catch (err) {
-        logger.error(`[exitSlaEscalation] Notification failed for request=${row.request_id}`, err);
-      }
+      await notifySlaBreach(tenant, row, companyName);
 
-      // 4. Real-time events (tenant + exit rooms).
       const io = getIo();
       if (io) {
+        const empName = row.full_name || [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Employee';
         io.to(`tenant:${tenant.db_name}`).emit('exit:sla_breached', {
           exitRequestId: row.request_id,
           stageId: row.current_stage_id,
@@ -116,7 +194,7 @@ async function runExitSlaEscalationJob() {
   logger.info('[exitSlaEscalation] Job execution started');
   try {
     const { rows } = await superAdminPool.query(
-      `SELECT id, name, db_name FROM public.tenants WHERE status = 'active' ORDER BY id ASC`
+      `SELECT id, name, db_name FROM public.tenants WHERE status = 'active' ORDER BY id ASC`,
     );
     for (const tenant of rows) {
       try {
@@ -137,14 +215,13 @@ function startExitSlaEscalationCron() {
   if (scheduledJob) return scheduledJob;
   const opts = {};
   if (process.env.TZ) opts.timezone = process.env.TZ;
-  
-  // Scheduled to run hourly
+
   scheduledJob = cron.schedule(
     '0 * * * *',
     () => {
       runExitSlaEscalationJob().catch((err) => logger.error('[exitSlaEscalation] cron runner error', err));
     },
-    opts
+    opts,
   );
   logger.info('[exitSlaEscalation] Cron registered successfully (runs hourly: 0 * * * *)');
   return scheduledJob;

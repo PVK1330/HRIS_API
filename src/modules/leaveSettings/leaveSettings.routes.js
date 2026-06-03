@@ -3,7 +3,7 @@
 const { Router } = require('express');
 const { body, param } = require('express-validator');
 
-const { authenticate } = require('../../middlewares/auth.middleware');
+const { authenticate, requirePermission, loadAuthContext } = require('../../middlewares/auth.middleware');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
 const validate = require('../../middlewares/validate.middleware');
 const ApiError = require('../../utils/ApiError');
@@ -13,14 +13,7 @@ const { mergeLeaveBody, VALID_PAID_UNPAID, VALID_ACCRUAL, VALID_LOP_RULES } =
 
 const router = Router();
 
-const adminOnly = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return next(new ApiError(403, 'Access denied. Admin role required.'));
-  }
-  next();
-};
-
-router.use(authenticate, tenantResolver, adminOnly);
+router.use(authenticate, tenantResolver, loadAuthContext, requirePermission('system-settings'));
 
 const uuidParam = param('id').isUUID();
 

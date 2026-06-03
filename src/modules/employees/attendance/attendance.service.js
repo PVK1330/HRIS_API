@@ -300,6 +300,15 @@ async function markAttendance(auth, user, data, req) {
     performedBy: actorEmployeeId(user),
     ...audit.auditMeta(req),
   });
+
+  const actorName = typeof actorEmployeeId === 'function' && user ? (user.name || user.email || 'Admin') : 'Admin';
+  await notify.notifyOverride(pool, user.db_name, {
+    employeeId: data.employeeId,
+    date: dateStr,
+    entityId: record.id,
+    overriderName: actorName
+  });
+
   return record;
 }
 
@@ -391,20 +400,18 @@ async function checkIn(auth, user, body, req) {
     forceCheckIn: true,
   }, req);
 
-  await notify.notifyEmployee(pool, user.db_name, {
+  await notify.notifyCheckIn(pool, user.db_name, {
     employeeId,
-    type: notify.TYPES.CHECK_IN,
-    title: 'Check-in recorded',
-    message: `You checked in at ${time}`,
+    time,
+    date: dateStr,
     entityId: record.id,
   });
 
   if (record.status === 'Late') {
-    await notify.notifyEmployee(pool, user.db_name, {
+    await notify.notifyLateArrival(pool, user.db_name, {
       employeeId,
-      type: notify.TYPES.LATE,
-      title: 'Late arrival',
-      message: `Late check-in recorded at ${time}`,
+      time,
+      date: dateStr,
       entityId: record.id,
     });
   }
@@ -451,11 +458,10 @@ async function checkOut(auth, user, body, req) {
     forceCheckOut: true,
   }, req);
 
-  await notify.notifyEmployee(pool, user.db_name, {
+  await notify.notifyCheckOut(pool, user.db_name, {
     employeeId,
-    type: notify.TYPES.CHECK_OUT,
-    title: 'Check-out recorded',
-    message: `You checked out at ${time}`,
+    time,
+    date: dateStr,
     entityId: record.id,
   });
 
@@ -538,11 +544,9 @@ async function submitRegularization(auth, user, body, req) {
       ...meta,
     });
 
-    await notify.notifyEmployee(pool, user.db_name, {
-      employeeId,
-      type: notify.TYPES.REG_SUBMITTED,
-      title: 'Regularization submitted',
-      message: `Your request for ${dateStr} is pending approval`,
+    await notify.notifyRegSubmitted(pool, user.db_name, {
+      employeeId: employeeId,
+      date: dateStr,
       entityId: record.id,
     });
     await notify.notifyManagersForRegularization(pool, user.db_name, full);
@@ -648,14 +652,20 @@ async function regularize(auth, user, id, { action, reason }, req) {
       ...meta,
     });
 
-    const type = action === 'approve' ? notify.TYPES.REG_APPROVED : notify.TYPES.REG_REJECTED;
-    await notify.notifyEmployee(pool, user.db_name, {
-      employeeId: record.employee_id,
-      type,
-      title: `Regularization ${regStatus.toLowerCase()}`,
-      message: `Your attendance regularization for ${record.date} was ${regStatus.toLowerCase()}`,
-      entityId: id,
-    });
+    if (action === 'approve') {
+      await notify.notifyRegApproved(pool, user.db_name, {
+        employeeId: record.employee_id,
+        date: record.date,
+        entityId: record.id,
+      });
+    } else {
+      await notify.notifyRegRejected(pool, user.db_name, {
+        employeeId: record.employee_id,
+        date: record.date,
+        entityId: record.id,
+        reason: reason || 'Not specified',
+      });
+    }
 
     const finalRow = await repo.findById(pool, id);
     return integrity.mapRecordForResponse(finalRow);

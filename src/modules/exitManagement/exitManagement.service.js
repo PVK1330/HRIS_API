@@ -413,8 +413,11 @@ async function sendBackStage(tenant, id, exitUser, { target_stage_id, comments }
     await client.query('COMMIT');
 
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'send_back' });
-    // The target (earlier) stage is now active again — notify + assign its owners.
-    events().onStageEntered(tenant, Number(id)).catch(() => { });
+    events().onSendBack(tenant, Number(id), {
+      reason: comments,
+      exitUser: { ...exitUser, actorName: exitUser.actorName || exitUser.full_name },
+    }).catch(() => { });
+    events().onStageEntered(tenant, Number(id), { skipBroadcast: true }).catch(() => { });
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -504,6 +507,10 @@ async function addComment(tenant, id, exitUser, comments) {
     if (!request) throw ApiError.notFound('Exit request not found');
     await recordAction(client, request, 'COMMENT', exitUser, comments);
     await client.query('COMMIT');
+    events().onCommentAdded(tenant, Number(id), {
+      comment: comments,
+      exitUser: { ...exitUser, actorName: exitUser.actorName || exitUser.full_name },
+    }).catch(() => { });
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -538,7 +545,7 @@ async function withdrawExitRequest(tenant, id, exitUser, reason) {
     );
     await client.query('COMMIT');
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'withdraw' });
-    events().onWithdrawn(tenant, Number(id)).catch(() => { });
+    events().onWithdrawn(tenant, Number(id), reason).catch(() => { });
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');

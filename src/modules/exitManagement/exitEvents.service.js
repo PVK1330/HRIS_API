@@ -16,6 +16,9 @@
 
 const { getTenantPool } = require('../../config/db');
 const env = require('../../config/env');
+const delivery = require('../notifications/notificationDelivery.service');
+const workflowAudit = require('../workflow/workflowAudit.service');
+const { getHROrAdminRecipients } = require('../employees/onboarding/utils/onboardingRecipients.utils');
 
 function notify() { return require('../notifications/notifications.service'); }
 
@@ -41,11 +44,25 @@ async function sendTemplate(to, templateSlug, variables, attachments = []) {
   } catch (_) { /* template missing / SMTP not configured — non-blocking */ }
 }
 
-async function pushSafe(tenant, payload) {
-  try { 
-    // Use sendSystemNotification but disable its built-in email since we handle emails manually in this file
-    await notify().sendSystemNotification(tenant, { ...payload, sendEmail: false }); 
+async function pushSafe(tenant, payload, dedupMeta) {
+  try {
+    const meta = dedupMeta || {
+      tenantId: tenant?.id,
+      notificationType: payload.type || 'exit_management',
+      entityType: payload.entityType || 'exit_request',
+      entityId: payload.entityId,
+      recipientId: payload.employeeId ?? null,
+    };
+    await delivery.sendDedupedInApp(tenant, {
+      ...payload,
+      type: payload.type || 'exit_management',
+    }, meta);
   } catch (_) { /* non-blocking */ }
+}
+
+async function emailSafe(tenant, to, templateSlug, variables, dedupMeta) {
+  if (!to) return;
+  await delivery.sendDedupedEmailOnly(tenant, { to, templateSlug, variables }, dedupMeta);
 }
 
 async function loadReq(pool, requestId) {
@@ -174,7 +191,7 @@ async function closeRequestTasks(pool, requestId) {
 /* ------------------------------------------------------------------ */
 
 /** A request has just entered its current stage: assign + notify the responsible person(s). */
-async function onStageEntered(tenant, requestId) {
+async function onStageEntered(tenant, requestId, options = {}) {
   try {
     const pool = await getTenantPool(tenant.dbName);
     const req = await loadReq(pool, requestId);
@@ -189,27 +206,47 @@ async function onStageEntered(tenant, requestId) {
       : (primaryAssignee ? [{ employee_id: primaryAssignee }] : []);
     await createStageTasks(pool, requestId, req.current_stage_id, req.stage_name, taskRecipients);
 
+    if (options.skipBroadcast) return;
+
     for (const r of recipients) {
       await pushSafe(tenant, {
-        employeeId: r.employee_id, type: 'exit_management',
+        employeeId: r.employee_id,
         title: 'Exit task assigned to you',
         message: `An exit request for ${empName} needs your action at the "${req.stage_name}" stage.`,
         entityType: 'exit_request',
         entityId: requestId,
-        redirectUrl: `/admin/exit-management/${requestId}`
+        redirectUrl: `/admin/exit-management/${requestId}`,
+      }, {
+        notificationType: 'exit.stage_entered.owner',
+        entityType: 'exit_request',
+        entityId: requestId,
+        recipientId: r.employee_id,
       });
-      await sendTemplate(r.work_email, 'exit_stage_pending', {
-        recipient_name: r.full_name || 'Colleague', employee_name: empName,
-        job_title: req.job_title || '', stage_name: req.stage_name || '', company_name: company.companyName,
+      await emailSafe(tenant, r.work_email, 'exit_stage_pending', {
+        recipient_name: r.full_name || 'Colleague',
+        employee_name: empName,
+        job_title: req.job_title || '',
+        stage_name: req.stage_name || '',
+        company_name: company.companyName,
+      }, {
+        notificationType: 'exit.stage_entered.owner.email',
+        entityType: 'exit_request',
+        entityId: requestId,
+        recipientId: r.employee_id,
       });
     }
     await pushSafe(tenant, {
-      forAdmin: true, type: 'exit_management',
+      forAdmin: true,
       title: 'Exit stage advanced',
       message: `${empName}'s exit request reached the "${req.stage_name}" stage.`,
       entityType: 'exit_request',
       entityId: requestId,
-      redirectUrl: `/admin/exit-management/${requestId}`
+      redirectUrl: `/admin/exit-management/${requestId}`,
+    }, {
+      notificationType: 'exit.stage_entered.admin',
+      entityType: 'exit_request',
+      entityId: requestId,
+      recipientId: null,
     });
   } catch (_) { /* non-blocking */ }
 }
@@ -241,8 +278,23 @@ async function onSubmitted(tenant, requestId) {
       entityId: requestId,
       redirectUrl: `/admin/exit-management/${requestId}`
     });
-    await sendTemplate(req.work_email, 'exit_request_submitted', {
-      employee_name: empName, exit_type: req.exit_type || 'exit', company_name: company.companyName,
+    await emailSafe(tenant, req.work_email, 'exit_request_submitted', {
+      employee_name: empName,
+      exit_type: req.exit_type || 'exit',
+      company_name: company.companyName,
+    }, {
+      notificationType: 'exit.submitted.email',
+      entityType: 'exit_request',
+      entityId: requestId,
+      recipientId: req.employee_id,
+    });
+
+    await workflowAudit.log(tenant, {
+      module: 'exit',
+      action: 'submitted',
+      entityType: 'exit_request',
+      entityId: requestId,
+      detail: { exitType: req.exit_type },
     });
   } catch (_) { /* non-blocking */ }
 }
@@ -323,11 +375,25 @@ async function onCompleted(tenant, requestId) {
       }, attachments);
     }
     await pushSafe(tenant, {
-      forAdmin: true, type: 'exit_management',
-      title: 'Exit completed', message: `${empName}'s exit process is complete.`,
+      forAdmin: true,
+      title: 'Exit completed',
+      message: `${empName}'s exit process is complete.`,
       entityType: 'exit_request',
       entityId: requestId,
-      redirectUrl: `/admin/exit-management/${requestId}`
+      redirectUrl: `/admin/exit-management/${requestId}`,
+    }, {
+      notificationType: 'exit.completed.admin',
+      entityType: 'exit_request',
+      entityId: requestId,
+      recipientId: null,
+    });
+
+    await workflowAudit.log(tenant, {
+      module: 'exit',
+      action: 'completed',
+      entityType: 'exit_request',
+      entityId: requestId,
+      detail: {},
     });
   } catch (_) { /* non-blocking */ }
 }
@@ -356,27 +422,306 @@ async function onRejected(tenant, requestId, reason) {
       reason: reason || 'Not specified',
     });
     await pushSafe(tenant, {
-      forAdmin: true, type: 'exit_management',
-      title: 'Exit request rejected', message: `${empName}'s exit request was rejected.`,
+      forAdmin: true,
+      title: 'Exit request rejected',
+      message: `${empName}'s exit request was rejected.`,
       entityType: 'exit_request',
       entityId: requestId,
-      redirectUrl: `/admin/exit-management/${requestId}`
+      redirectUrl: `/admin/exit-management/${requestId}`,
+    }, {
+      notificationType: 'exit.rejected.admin',
+      entityType: 'exit_request',
+      entityId: requestId,
+      recipientId: null,
+    });
+
+    await workflowAudit.log(tenant, {
+      module: 'exit',
+      action: 'rejected',
+      entityType: 'exit_request',
+      entityId: requestId,
+      detail: { reason: reason || '' },
     });
   } catch (_) { /* non-blocking */ }
 }
 
-async function onWithdrawn(tenant, requestId) {
+async function onWithdrawn(tenant, requestId, reason) {
   try {
     const pool = await getTenantPool(tenant.dbName);
     const req = await loadReq(pool, requestId);
     if (!req) return;
+    const company = await getCompany(tenant);
+    const empName = fullName(req);
+    const reasonText = reason || 'Withdrawn by request owner';
     await closeRequestTasks(pool, requestId);
+
     await pushSafe(tenant, {
-      forAdmin: true, type: 'exit_management',
-      title: 'Exit request withdrawn', message: `${fullName(req)}'s exit request was withdrawn.`,
+      employeeId: req.employee_id,
+      title: 'Exit request withdrawn',
+      message: 'Your exit request has been withdrawn.',
       entityType: 'exit_request',
       entityId: requestId,
-      redirectUrl: `/admin/exit-management/${requestId}`
+      redirectUrl: `/admin/exit-management/${requestId}`,
+    }, {
+      notificationType: 'exit.withdrawn.employee',
+      entityType: 'exit_request',
+      entityId: requestId,
+      recipientId: req.employee_id,
+    });
+
+    if (req.work_email) {
+      await emailSafe(tenant, req.work_email, 'exit_request_withdrawn', {
+        recipient_name: empName,
+        employee_name: empName,
+        reason: reasonText,
+        company_name: company.companyName,
+      }, {
+        notificationType: 'exit.withdrawn.employee.email',
+        entityType: 'exit_request',
+        entityId: requestId,
+        recipientId: req.employee_id,
+      });
+    }
+
+    const stageId = req.current_stage_id;
+    if (stageId) {
+      const { recipients } = await resolveResponsibles(pool, stageId);
+      for (const r of recipients) {
+        await pushSafe(tenant, {
+          employeeId: r.employee_id,
+          title: 'Exit request withdrawn',
+          message: `${empName}'s exit request was withdrawn. ${reasonText}`,
+          entityType: 'exit_request',
+          entityId: requestId,
+          redirectUrl: `/admin/exit-management/${requestId}`,
+        }, {
+          notificationType: 'exit.withdrawn.owner',
+          entityType: 'exit_request',
+          entityId: requestId,
+          recipientId: r.employee_id,
+        });
+        if (r.work_email) {
+          await emailSafe(tenant, r.work_email, 'exit_request_withdrawn', {
+            recipient_name: r.full_name || 'Colleague',
+            employee_name: empName,
+            reason: reasonText,
+            company_name: company.companyName,
+          }, {
+            notificationType: 'exit.withdrawn.owner.email',
+            entityType: 'exit_request',
+            entityId: requestId,
+            recipientId: r.employee_id,
+          });
+        }
+      }
+    }
+
+    const hrAdmins = await getHROrAdminRecipients(pool);
+    for (const admin of hrAdmins) {
+      await pushSafe(tenant, {
+        employeeId: admin.id,
+        title: 'Exit request withdrawn',
+        message: `${empName}'s exit request was withdrawn.`,
+        entityType: 'exit_request',
+        entityId: requestId,
+        redirectUrl: `/admin/exit-management/${requestId}`,
+      }, {
+        notificationType: 'exit.withdrawn.hr',
+        entityType: 'exit_request',
+        entityId: requestId,
+        recipientId: admin.id,
+      });
+    }
+
+    await pushSafe(tenant, {
+      forAdmin: true,
+      title: 'Exit request withdrawn',
+      message: `${empName}'s exit request was withdrawn.`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`,
+    }, {
+      notificationType: 'exit.withdrawn.admin',
+      entityType: 'exit_request',
+      entityId: requestId,
+      recipientId: null,
+    });
+
+    await workflowAudit.log(tenant, {
+      module: 'exit',
+      action: 'withdrawn',
+      entityType: 'exit_request',
+      entityId: requestId,
+      detail: { reason: reasonText },
+    });
+  } catch (_) { /* non-blocking */ }
+}
+
+async function onSendBack(tenant, requestId, { reason, exitUser } = {}) {
+  try {
+    const pool = await getTenantPool(tenant.dbName);
+    const req = await loadReq(pool, requestId);
+    if (!req || !req.current_stage_id) return;
+    const company = await getCompany(tenant);
+    const empName = fullName(req);
+    const senderName = exitUser?.actorName || exitUser?.full_name || 'Approver';
+    const reasonText = reason || 'Revision required';
+
+    await pushSafe(tenant, {
+      employeeId: req.employee_id,
+      title: 'Your exit request has been sent back for revision.',
+      message: `Reason: ${reasonText}. From: ${senderName}`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`,
+    }, {
+      notificationType: 'exit.sent_back.employee',
+      entityType: 'exit_request',
+      entityId: requestId,
+      recipientId: req.employee_id,
+    });
+
+    if (req.work_email) {
+      await emailSafe(tenant, req.work_email, 'exit_request_sent_back', {
+        recipient_name: empName,
+        employee_name: empName,
+        stage_name: req.stage_name || '',
+        reason: reasonText,
+        sender_name: senderName,
+        company_name: company.companyName,
+      }, {
+        notificationType: 'exit.sent_back.employee.email',
+        entityType: 'exit_request',
+        entityId: requestId,
+        recipientId: req.employee_id,
+      });
+    }
+
+    const { recipients } = await resolveResponsibles(pool, req.current_stage_id);
+    for (const r of recipients) {
+      await pushSafe(tenant, {
+        employeeId: r.employee_id,
+        title: 'Exit request sent back for revision',
+        message: `${empName}'s request was sent back at "${req.stage_name}". ${reasonText}`,
+        entityType: 'exit_request',
+        entityId: requestId,
+        redirectUrl: `/admin/exit-management/${requestId}`,
+      }, {
+        notificationType: 'exit.sent_back.approver',
+        entityType: 'exit_request',
+        entityId: requestId,
+        recipientId: r.employee_id,
+      });
+      if (r.work_email) {
+        await emailSafe(tenant, r.work_email, 'exit_request_sent_back', {
+          recipient_name: r.full_name || 'Colleague',
+          employee_name: empName,
+          stage_name: req.stage_name || '',
+          reason: reasonText,
+          sender_name: senderName,
+          company_name: company.companyName,
+        }, {
+          notificationType: 'exit.sent_back.approver.email',
+          entityType: 'exit_request',
+          entityId: requestId,
+          recipientId: r.employee_id,
+        });
+      }
+    }
+
+    await workflowAudit.log(tenant, {
+      module: 'exit',
+      action: 'sent_back',
+      entityType: 'exit_request',
+      entityId: requestId,
+      actorEmployeeId: exitUser?.employeeId || null,
+      actorName: senderName,
+      detail: { reason: reasonText, stage: req.stage_name },
+    });
+  } catch (_) { /* non-blocking */ }
+}
+
+async function onCommentAdded(tenant, requestId, { comment, exitUser } = {}) {
+  try {
+    const pool = await getTenantPool(tenant.dbName);
+    const req = await loadReq(pool, requestId);
+    if (!req) return;
+    const company = await getCompany(tenant);
+    const empName = fullName(req);
+    const senderName = exitUser?.actorName || 'User';
+    const commentText = String(comment || '').trim();
+
+    await pushSafe(tenant, {
+      employeeId: req.employee_id,
+      title: 'New comment on your exit request',
+      message: `${senderName}: ${commentText}`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`,
+    }, {
+      notificationType: 'exit.comment.employee',
+      entityType: 'exit_request',
+      entityId: requestId,
+      recipientId: req.employee_id,
+    });
+
+    if (req.work_email) {
+      await emailSafe(tenant, req.work_email, 'exit_comment_added', {
+        recipient_name: empName,
+        employee_name: empName,
+        sender_name: senderName,
+        comment: commentText,
+        company_name: company.companyName,
+      }, {
+        notificationType: 'exit.comment.employee.email',
+        entityType: 'exit_request',
+        entityId: requestId,
+        recipientId: req.employee_id,
+      });
+    }
+
+    if (req.current_stage_id) {
+      const { recipients } = await resolveResponsibles(pool, req.current_stage_id);
+      for (const r of recipients) {
+        if (r.employee_id === exitUser?.employeeId) continue;
+        await pushSafe(tenant, {
+          employeeId: r.employee_id,
+          title: 'New exit request comment',
+          message: `${senderName} on ${empName}: ${commentText}`,
+          entityType: 'exit_request',
+          entityId: requestId,
+          redirectUrl: `/admin/exit-management/${requestId}`,
+        }, {
+          notificationType: 'exit.comment.approver',
+          entityType: 'exit_request',
+          entityId: requestId,
+          recipientId: r.employee_id,
+        });
+        if (r.work_email) {
+          await emailSafe(tenant, r.work_email, 'exit_comment_added', {
+            recipient_name: r.full_name || 'Colleague',
+            employee_name: empName,
+            sender_name: senderName,
+            comment: commentText,
+            company_name: company.companyName,
+          }, {
+            notificationType: 'exit.comment.approver.email',
+            entityType: 'exit_request',
+            entityId: requestId,
+            recipientId: r.employee_id,
+          });
+        }
+      }
+    }
+
+    await workflowAudit.log(tenant, {
+      module: 'exit',
+      action: 'comment_added',
+      entityType: 'exit_request',
+      entityId: requestId,
+      actorEmployeeId: exitUser?.employeeId || null,
+      actorName: senderName,
+      detail: { comment: commentText },
     });
   } catch (_) { /* non-blocking */ }
 }
@@ -536,7 +881,15 @@ async function listRequestTasks(tenant, requestId) {
 
 async function completeTask(tenant, taskId, exitUser) {
   const pool = await getTenantPool(tenant.dbName);
-  const { rows } = await pool.query(`SELECT * FROM exit_tasks WHERE id = $1`, [taskId]);
+  const { rows } = await pool.query(
+    `SELECT t.*, er.employee_id, e.full_name, e.work_email, s.name AS stage_name
+     FROM exit_tasks t
+     JOIN exit_requests er ON er.id = t.exit_request_id
+     LEFT JOIN employees e ON e.id = er.employee_id
+     LEFT JOIN exit_workflow_stages s ON s.id = t.stage_id
+     WHERE t.id = $1`,
+    [taskId],
+  );
   const task = rows[0];
   const ApiError = require('../../utils/ApiError');
   if (!task) throw ApiError.notFound('Task not found');
@@ -549,7 +902,89 @@ async function completeTask(tenant, taskId, exitUser) {
      WHERE id = $1 RETURNING *`,
     [taskId, exitUser.employeeId || null],
   );
-  return upd[0];
+  const completed = upd[0];
+  if (completed) {
+    onTaskCompleted(tenant, task).catch(() => {});
+  }
+  return completed;
+}
+
+async function onTaskCompleted(tenant, task) {
+  try {
+    const pool = await getTenantPool(tenant.dbName);
+    const company = await getCompany(tenant);
+    const empName = task.full_name || 'Employee';
+    const title = `Exit task completed: ${task.title}`;
+
+    if (task.stage_id) {
+      const { recipients } = await resolveResponsibles(pool, task.stage_id);
+      for (const r of recipients) {
+        await pushSafe(tenant, {
+          employeeId: r.employee_id,
+          title,
+          message: `Task "${task.title}" for ${empName} has been completed.`,
+          entityType: 'exit_request',
+          entityId: task.exit_request_id,
+          redirectUrl: `/admin/exit-management/${task.exit_request_id}`,
+        }, {
+          notificationType: 'exit.task_completed.owner',
+          entityType: 'exit_task',
+          entityId: task.id,
+          recipientId: r.employee_id,
+        });
+        if (r.work_email) {
+          await emailSafe(tenant, r.work_email, 'exit_task_completed', {
+            recipient_name: r.full_name || 'Colleague',
+            employee_name: empName,
+            task_title: task.title,
+            company_name: company.companyName,
+          }, {
+            notificationType: 'exit.task_completed.owner.email',
+            entityType: 'exit_task',
+            entityId: task.id,
+            recipientId: r.employee_id,
+          });
+        }
+      }
+    }
+
+    if (task.employee_id) {
+      await pushSafe(tenant, {
+        employeeId: task.employee_id,
+        title,
+        message: `A task in your exit process ("${task.title}") has been completed.`,
+        entityType: 'exit_request',
+        entityId: task.exit_request_id,
+        redirectUrl: `/admin/exit-management/${task.exit_request_id}`,
+      }, {
+        notificationType: 'exit.task_completed.employee',
+        entityType: 'exit_task',
+        entityId: task.id,
+        recipientId: task.employee_id,
+      });
+      if (task.work_email) {
+        await emailSafe(tenant, task.work_email, 'exit_task_completed', {
+          recipient_name: empName,
+          employee_name: empName,
+          task_title: task.title,
+          company_name: company.companyName,
+        }, {
+          notificationType: 'exit.task_completed.employee.email',
+          entityType: 'exit_task',
+          entityId: task.id,
+          recipientId: task.employee_id,
+        });
+      }
+    }
+
+    await workflowAudit.log(tenant, {
+      module: 'exit',
+      action: 'task_completed',
+      entityType: 'exit_task',
+      entityId: task.id,
+      detail: { title: task.title, exitRequestId: task.exit_request_id },
+    });
+  } catch (_) { /* non-blocking */ }
 }
 
 async function setTaskDelayReason(tenant, taskId, exitUser, reason) {
@@ -578,7 +1013,20 @@ async function setTaskDelayReason(tenant, taskId, exitUser, reason) {
 }
 
 module.exports = {
-  onSubmitted, onApproved, onCompleted, onRejected, onWithdrawn, onStageEntered,
-  onReassigned, onEscalated, onDocumentsSent,
-  listMyTasks, listRequestTasks, completeTask, setTaskDelayReason,
+  onSubmitted,
+  onApproved,
+  onCompleted,
+  onRejected,
+  onWithdrawn,
+  onSendBack,
+  onCommentAdded,
+  onStageEntered,
+  onReassigned,
+  onEscalated,
+  onDocumentsSent,
+  onTaskCompleted,
+  listMyTasks,
+  listRequestTasks,
+  completeTask,
+  setTaskDelayReason,
 };

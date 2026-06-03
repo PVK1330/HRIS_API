@@ -1,26 +1,6 @@
 'use strict';
 
 /**
- * Get active employees belonging to specific departments
- */
-async function getDepartmentRecipients(pool, departments = []) {
-  if (!departments || departments.length === 0) return [];
-  
-  const placeholders = departments.map((_, i) => `$${i + 1}`).join(',');
-  const query = `
-    SELECT id, work_email, full_name, department
-    FROM employees
-    WHERE deleted_at IS NULL 
-      AND employment_status = 'Active'
-      AND LOWER(department) IN (${placeholders})
-  `;
-  
-  const values = departments.map(d => d.toLowerCase());
-  const { rows } = await pool.query(query, values);
-  return rows;
-}
-
-/**
  * Get active HR and Admin users (based on role names or permissions)
  */
 async function getHROrAdminRecipients(pool) {
@@ -35,7 +15,7 @@ async function getHROrAdminRecipients(pool) {
       AND (
         LOWER(COALESCE(rr.name, '')) LIKE '%hr%'
         OR LOWER(COALESCE(rr.name, '')) LIKE '%admin%'
-        OR p.key IN ('onboarding', 'system-settings', 'employee.edit', 'tasks')
+        OR p.key IN ('onboarding', 'onboarding.manage', 'onboarding.view', 'system-settings', 'tasks')
       )
     ORDER BY e.id
     LIMIT 50
@@ -46,6 +26,5 @@ async function getHROrAdminRecipients(pool) {
 }
 
 module.exports = {
-  getDepartmentRecipients,
   getHROrAdminRecipients,
 };

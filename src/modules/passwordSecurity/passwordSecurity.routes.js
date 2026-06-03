@@ -3,7 +3,7 @@
 const { Router } = require('express');
 const { body } = require('express-validator');
 
-const { authenticate } = require('../../middlewares/auth.middleware');
+const { authenticate, requirePermission, loadAuthContext } = require('../../middlewares/auth.middleware');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
 const validate = require('../../middlewares/validate.middleware');
 const ApiError = require('../../utils/ApiError');
@@ -15,14 +15,7 @@ const {
 
 const router = Router();
 
-const adminOnly = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return next(new ApiError(403, 'Access denied. Admin role required.'));
-  }
-  next();
-};
-
-router.use(authenticate, tenantResolver, adminOnly);
+router.use(authenticate, tenantResolver, loadAuthContext, requirePermission('system-settings'));
 
 function normalizeBody(req, _res, next) {
   req.body = { ...(req.body || {}), ...mergePasswordSecurityFlat(req.body || {}) };

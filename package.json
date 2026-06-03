@@ -26,6 +26,7 @@
     "test:attendance:integrity": "node src/tests/attendance.integrity.test.js",
     "test:attendance:audit": "node src/tests/attendance.production.audit.test.js",
     "test:attendance:holiday-dedup": "node src/tests/holiday.notification.dedup.test.js",
+    "test:workflow:notifications": "node src/tests/workflow.notifications.test.js",
     "repair:attendance-permissions": "node src/scripts/repairAttendancePermissions.js",
     "repair:attendance-records": "node src/scripts/repairAttendanceRecords.js",
     "repair:attendance-records:dry": "node src/scripts/repairAttendanceRecords.js --dry-run",

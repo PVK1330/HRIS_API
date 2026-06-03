@@ -74,6 +74,14 @@ async function processDailyAbsent(pool, dateStr) {
       employeeId,
       newValue: record,
     });
+    
+    try {
+      await notify.notifyAbsent(pool, null, {
+        employeeId,
+        date: dateStr
+      });
+    } catch (e) {}
+
     marked += 1;
   }
 
@@ -182,6 +190,19 @@ async function processOvertimeRecalc(pool, dateStr) {
         overtime_raw_hours: computed.overtime_raw_hours,
       },
     });
+
+    if (computed.overtime_hours > 0 && computed.overtime_hours !== oldOt) {
+      try {
+        const notify = require('./attendanceNotifications.service');
+        await notify.notifyOtApproved(pool, null, {
+          employeeId: row.employee_id,
+          date: dateStr,
+          entityId: row.id,
+          hours: computed.overtime_hours
+        });
+      } catch(e) {}
+    }
+
     updated += 1;
   }
 
@@ -290,6 +311,32 @@ async function processMonthlyClosure(pool, year, month) {
   return { records_closed: rowCount };
 }
 
+async function processMissingCheckoutNotifications(pool, tenantDb, dateStr) {
+  const { rows } = await pool.query(
+    `SELECT a.id, a.employee_id, TO_CHAR(a.date, 'YYYY-MM-DD') as date
+     FROM attendance a
+     JOIN employees e ON e.id = a.employee_id AND e.deleted_at IS NULL
+     WHERE a.date = $1::date
+       AND a.check_in_time IS NOT NULL 
+       AND a.check_out_time IS NULL
+       AND a.status NOT IN ('On Leave', 'Holiday', 'Weekend', 'Absent')`,
+    [dateStr]
+  );
+
+  let notified = 0;
+  for (const row of rows) {
+    try {
+      await notify.notifyMissingCheckout(pool, tenantDb, {
+        employeeId: row.employee_id,
+        date: row.date,
+        entityId: row.id
+      });
+      notified++;
+    } catch (e) {}
+  }
+  return { notified };
+}
+
 async function processAutoReject(pool, tenantDb) {
   return autoReject.processAutoRejections(pool, tenantDb, { skipBatchAudit: true });
 }
@@ -301,5 +348,6 @@ module.exports = {
   processAttendanceSummary,
   processMonthlyClosure,
   processAutoReject,
+  processMissingCheckoutNotifications,
   listActiveEmployeesWithoutAttendance,
 };

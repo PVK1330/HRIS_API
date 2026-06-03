@@ -3,11 +3,12 @@
 const { Router } = require('express');
 const { body, param } = require('express-validator');
 
-const { authenticate } = require('../../middlewares/auth.middleware');
+const { authenticate, requirePermission, loadAuthContext } = require('../../middlewares/auth.middleware');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
 const validate = require('../../middlewares/validate.middleware');
 const ApiError = require('../../utils/ApiError');
 const controller = require('./assetSettings.controller');
+const { P } = require('../../constants/permissions');
 const {
   mergeFlatRulesBody,
   VALID_ASSIGNING_RULES,
@@ -18,14 +19,7 @@ const {
 
 const router = Router();
 
-const adminOnly = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return next(new ApiError(403, 'Access denied. Admin role required.'));
-  }
-  next();
-};
-
-router.use(authenticate, tenantResolver, adminOnly);
+router.use(authenticate, tenantResolver, loadAuthContext);
 
 const categoryIdParam = param('id')
   .isInt({ min: 1 })
@@ -62,20 +56,22 @@ const updateRulesValidators = [
   body('approval_workflow').optional().isIn(VALID_APPROVAL_WORKFLOWS),
 ];
 
-router.get('/categories', controller.getCategories);
-router.post('/categories', createCategoryValidators, validate, controller.createCategory);
+router.get('/categories', requirePermission(P.ASSETS_VIEW), controller.getCategories);
+router.post('/categories', requirePermission(P.ASSETS_CREATE), createCategoryValidators, validate, controller.createCategory);
 router.put(
   '/categories/:id',
+  requirePermission(P.ASSETS_EDIT),
   categoryIdParam,
   updateCategoryValidators,
   validate,
   controller.updateCategory
 );
-router.delete('/categories/:id', categoryIdParam, validate, controller.deleteCategory);
+router.delete('/categories/:id', requirePermission(P.ASSETS_DELETE), categoryIdParam, validate, controller.deleteCategory);
 
-router.get('/rules', controller.getAssetRules);
+router.get('/rules', requirePermission(P.ASSETS_VIEW), controller.getAssetRules);
 router.put(
   '/rules',
+  requirePermission(P.ASSETS_EDIT),
   normalizeRulesBody,
   updateRulesValidators,
   validate,

@@ -7,17 +7,17 @@ const {
   authenticate,
   loadAuthContext,
   requirePermission,
+  requireAnyPermission,
 } = require('../../middlewares/auth.middleware');
 const { P } = require('../../constants/permissions');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
 
 router.use(authenticate, tenantResolver, loadAuthContext);
-router.use(requirePermission(P.ASSETS_VIEW));
 
-router.get('/', controller.list);
-router.get('/:id', controller.getOne);
-router.post('/', controller.create);
-router.put('/:id', controller.update);
-router.delete('/:id', controller.remove);
+router.get('/', requirePermission(P.ASSETS_VIEW), controller.list);
+router.get('/:id', requirePermission(P.ASSETS_VIEW), controller.getOne);
+router.post('/', requirePermission(P.ASSETS_CREATE), controller.create);
+router.put('/:id', requireAnyPermission(P.ASSETS_EDIT, P.ASSETS_ASSIGN), controller.update);
+router.delete('/:id', requirePermission(P.ASSETS_DELETE), controller.remove);
 
 module.exports = router;

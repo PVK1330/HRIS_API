@@ -25,7 +25,7 @@ function handleMulter(req, res, next) {
 
 router.post(
   '/:id/onboarding/notify-step',
-  requirePermission(P.EMPLOYEE_EDIT),
+  requirePermission(P.ONBOARDING_MANAGE),
   [
     param('id').isInt({ min: 1 }),
     body('step').optional().isInt({ min: 1, max: 10 }),
@@ -36,7 +36,7 @@ router.post(
 
 router.post(
   '/:id/onboarding/send-offer-letter',
-  requirePermission(P.EMPLOYEE_EDIT),
+  requirePermission(P.ONBOARDING_MANAGE),
   [
     param('id').isInt({ min: 1 }),
     body('dateOfOffer').optional({ nullable: true }).isString().trim(),
@@ -53,7 +53,7 @@ router.post(
 
 router.patch(
   '/:id/onboarding/approval',
-  requirePermission(P.EMPLOYEE_EDIT),
+  requirePermission(P.ONBOARDING_MANAGE),
   [
     param('id').isInt({ min: 1 }),
     body('status').exists().isString().trim().isLength({ min: 1, max: 32 }),
@@ -66,7 +66,7 @@ router.patch(
 
 router.get(
   '/:id/onboarding/checklist',
-  requirePermission(P.EMPLOYEE_VIEW),
+  requirePermission(P.ONBOARDING_VIEW),
   [param('id').isInt({ min: 1 })],
   validate,
   ctrl.getChecklist,
@@ -74,7 +74,7 @@ router.get(
 
 router.patch(
   '/:id/onboarding/checklist/:itemId/review',
-  requirePermission(P.EMPLOYEE_EDIT),
+  requirePermission(P.ONBOARDING_MANAGE),
   [
     param('id').isInt({ min: 1 }),
     param('itemId').isInt({ min: 1 }),
@@ -89,7 +89,7 @@ router.patch(
 
 router.post(
   '/:id/onboarding/signed-offer',
-  requirePermission(P.EMPLOYEE_EDIT),
+  requirePermission(P.ONBOARDING_MANAGE),
   [param('id').isInt({ min: 1 })],
   validate,
   handleMulter,
@@ -98,7 +98,7 @@ router.post(
 
 router.post(
   '/:id/onboarding/complete',
-  requirePermission(P.EMPLOYEE_EDIT),
+  requirePermission(P.ONBOARDING_MANAGE),
   [param('id').isInt({ min: 1 })],
   validate,
   ctrl.completeWorkflow,
@@ -106,7 +106,7 @@ router.post(
 
 router.post(
   '/:id/onboarding/remind-documents',
-  requirePermission(P.EMPLOYEE_EDIT),
+  requirePermission(P.ONBOARDING_MANAGE),
   [param('id').isInt({ min: 1 })],
   validate,
   ctrl.remindDocuments,

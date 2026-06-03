@@ -19,8 +19,8 @@ const { generateOfferLetterPdf } = require('./offerPdf.generator');
 const { resolveCandidatePortalContext, buildCandidateUrls } = require('./candidatePortalUrl');
 const notifService = require('../../notifications/notifications.service');
 const checklistUtils = require('./utils/onboardingChecklist.utils');
-const { getDepartmentRecipients } = require('./utils/onboardingRecipients.utils');
-const { sendHandoverNotification } = require('./onboardingNotification.service');
+const onboardingEvents = require('./onboardingEvents.service');
+const workflowAudit = require('../../workflow/workflowAudit.service');
 
 const _migrationCache = new Map();
 async function ensureMigrated(dbName) {
@@ -270,20 +270,32 @@ async function setApprovalStatus(
   }
 
   if (normalized === 'Rejected') {
+    const reason = String(rejectionReason).trim();
     await workflowRepo.patchOnboardingFields(pool, employeeId, {
       onboarding_approval_status: normalized,
       onboarding_workflow_status: WORKFLOW_STATUS.REJECTED,
-      onboarding_rejection_reason: String(rejectionReason).trim(),
+      onboarding_rejection_reason: reason,
     });
     await pool.query(
       `UPDATE employees SET employment_status = 'Terminated', updated_at = NOW()
        WHERE id = $1 AND deleted_at IS NULL`,
       [employeeId],
     );
+    const tenant = {
+      dbName: user.db_name,
+      db_name: user.db_name,
+      id: user.tenant_id,
+      companyName: await resolveCompanyName(user),
+    };
+    const actor = {
+      employeeId: user.employeeId || auth?.employeeId || null,
+      actorName: user.full_name || user.name || 'HR',
+    };
+    await onboardingEvents.notifyHrRejected(tenant, pool, emp, reason, actor);
     return {
       status: normalized,
-      hrEmailSent: false,
-      message: 'Onboarding rejected.',
+      hrEmailSent: true,
+      message: 'Onboarding rejected. Candidate and HR have been notified.',
     };
   }
 
@@ -334,22 +346,21 @@ async function setApprovalStatus(
       logger.warn(`Onboarding accepted HR email failed: ${err.message}`);
     }
 
-    // Send system notification to HR admins
-    try {
-      const tenant = { dbName: user.db_name, db_name: user.db_name };
-      await notifService.pushNotification(tenant, {
-        employeeId: null,
-        forAdmin: true,
-        title: `Offer Accepted by ${emp.full_name || 'Candidate'}`,
-        message: `${emp.full_name || 'Candidate'} has accepted the offer and submitted their ID and Resume.`,
-        type: 'success',
-        entityType: 'onboarding',
-        entityId: employeeId,
-        redirectUrl: '/admin/onboarding'
-      });
-    } catch (err) {
-      logger.warn(`Onboarding accepted system notification failed: ${err.message}`);
-    }
+    const tenant = {
+      dbName: user.db_name,
+      db_name: user.db_name,
+      id: user.tenant_id,
+      companyName: companyName,
+    };
+    await workflowAudit.log(tenant, {
+      module: 'onboarding',
+      action: 'hr_approved',
+      entityType: 'employee',
+      entityId: employeeId,
+      actorEmployeeId: user.employeeId || auth?.employeeId || null,
+      actorName: user.full_name || user.name || 'HR',
+      detail: { status: normalized },
+    });
 
     return {
       status: normalized,
@@ -473,6 +484,17 @@ async function sendOfferLetter(
     throw ApiError.internal('Could not send offer letter email');
   }
 
+  const tenant = {
+    dbName: user.db_name,
+    db_name: user.db_name,
+    id: user.tenant_id,
+    companyName,
+  };
+  await onboardingEvents.notifyOfferSent(tenant, pool, emp, {
+    employeeId: user.employeeId || auth?.employeeId || null,
+    actorName: user.full_name || user.name || 'HR',
+  });
+
   return {
     emailSent: true,
     attachmentCount: 1,
@@ -553,43 +575,27 @@ async function reviewChecklistItem(
     hrReviewComment,
   });
 
-  // Notify candidate if email exists
-  const personalEmail = String(emp.personal_email || '').trim();
-  if (personalEmail && (normalized === 'Approved' || normalized === 'Rejected')) {
-    try {
-      const companyName = await resolveCompanyName(user);
-      const items = await workflowRepo.listChecklist(pool, employeeId);
-      const targetItem = items.find((i) => String(i.id) === String(itemId));
-      
-      const { base, tenantSlug } = await resolveCandidatePortalContext(user.tenant_id);
-      const token = emp.onboarding_token;
-      const urls = buildCandidateUrls(base, token, tenantSlug);
-
-      if (normalized === 'Approved' && targetItem) {
-        const pendingCount = checklistUtils.getRemainingDocumentCount(items);
-        
-        await mailer.sendDocumentApprovedToCandidate({
-          to: personalEmail,
-          candidateName: emp.full_name || 'Candidate',
-          companyName,
-          documentName: targetItem.document_label,
-          pendingCount,
-          documentsUrl: urls.documentsUrl,
-        });
-      } else if (normalized === 'Rejected' && targetItem) {
-        await mailer.sendDocumentRejectedToCandidate({
-          to: personalEmail,
-          candidateName: emp.full_name || 'Candidate',
-          companyName,
-          documentName: targetItem.document_label,
-          rejectionReason: hrReviewComment,
-          documentsUrl: urls.documentsUrl,
-        });
-      }
-      logger.info(`Candidate notified of document ${normalized} status for item ${itemId}`);
-    } catch (err) {
-      logger.warn(`Failed to notify candidate about document review: ${err.message}`);
-    }
+  const items = await workflowRepo.listChecklist(pool, employeeId);
+  const targetItem = items.find((i) => String(i.id) === String(itemId));
+  if (normalized === 'Approved' || normalized === 'Rejected') {
+    const tenant = {
+      dbName: user.db_name,
+      db_name: user.db_name,
+      id: user.tenant_id,
+      companyName: await resolveCompanyName(user),
+    };
+    await onboardingEvents.notifyDocumentReviewed(
+      tenant,
+      pool,
+      emp,
+      targetItem,
+      normalized,
+      hrReviewComment,
+      {
+        employeeId: user.employeeId || auth?.employeeId || null,
+        actorName: user.full_name || user.name || 'HR',
+      },
+    );
   }
 
   return { message: 'Document review updated.' };
@@ -642,17 +648,17 @@ async function completeOnboardingWorkflow(user, employeeId, auth = null) {
   const empService = require('../employees.service');
   const activation = await empService.completeOnboardingActivation(user, employeeId, auth);
 
-  // Send cross-department handover notifications
   try {
-    const tenant = { dbName: user.db_name, db_name: user.db_name };
-    const departmentUsers = await getDepartmentRecipients(pool, ['assets', 'it', 'finance', 'payroll']);
-    
-    await sendHandoverNotification(tenant, employeeId, emp, departmentUsers);
+    const tenant = {
+      dbName: user.db_name,
+      db_name: user.db_name,
+      id: user.tenant_id,
+      companyName: await resolveCompanyName(user),
+    };
+    await onboardingEvents.dispatchHandover(tenant, pool, employeeId, emp);
   } catch (err) {
     logger.warn(`Onboarding handover notification failed: ${err.message}`);
   }
-
-  logger.info(`Onboarding handover notification dispatched for employee ${employeeId}`);
 
   return {
     workflowStatus: WORKFLOW_STATUS.ONBOARDING_COMPLETE,

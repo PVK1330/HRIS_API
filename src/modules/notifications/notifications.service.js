@@ -14,41 +14,39 @@ async function ensureMigrated(dbName) {
   return p;
 }
 
-<<<<<<< HEAD
-async function pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId }) {
-=======
 async function pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId, entityType, entityId, redirectUrl }) {
->>>>>>> 109cbc3bb86b12a612ad2b72a21eea64d8afd0f7
   const dbName = tenant?.dbName || tenant?.db_name;
   if (!dbName) return null;
   await ensureMigrated(dbName);
   const pool = await getTenantPool(dbName);
-<<<<<<< HEAD
   return repo.create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId });
 }
 
 async function sendSystemNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, emailMessage, type, sendEmail = true, emailSubject = null }) {
   // 1. Instantly deliver central in-app push notification
   let notificationRecord = null;
-    try {
-      notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId: null });
-=======
-  const notificationRecord = await repo.create(pool, { employeeId, forAdmin, title, message, type, ticketId, entityType, entityId, redirectUrl });
-  
   try {
-    const io = getIo();
-    if (io && notificationRecord) {
-      if (employeeId) {
-        io.to(`user:${employeeId}`).emit('new_notification', notificationRecord);
-      } else if (forAdmin) {
-        io.to(`tenant:${dbName}`).emit('new_notification', notificationRecord); // Broadcast to admins
+    notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId: null });
+    const notificationRecord = await repo.create(pool, { employeeId, forAdmin, title, message, type, ticketId, entityType, entityId, redirectUrl });
+
+    try {
+      const io = getIo();
+      if (io && notificationRecord) {
+        if (employeeId) {
+          io.to(`user:${employeeId}`).emit('new_notification', notificationRecord);
+        } else if (forAdmin) {
+          io.to(`tenant:${dbName}`).emit('new_notification', notificationRecord); // Broadcast to admins
+        }
       }
+    } catch (err) {
+      console.error('Failed to emit push notification centrally:', err);
     }
+
+    return notificationRecord;
   } catch (err) {
-    console.error('Failed to emit push notification centrally:', err);
+    console.error('Failed to log push notification centrally:', err);
+    return null;
   }
-  
-  return notificationRecord;
 }
 
 async function sendSystemNotification(tenant, { employeeId, forAdmin, title, message, emailMessage, type, sendEmail = true, emailSubject = null, entityType, entityId, redirectUrl }) {
@@ -56,7 +54,6 @@ async function sendSystemNotification(tenant, { employeeId, forAdmin, title, mes
   let notificationRecord = null;
   try {
     notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId: null, entityType, entityId, redirectUrl });
->>>>>>> 109cbc3bb86b12a612ad2b72a21eea64d8afd0f7
   } catch (err) {
     console.error('Failed to log push notification centrally:', err);
   }
@@ -115,7 +112,7 @@ async function sendSystemNotification(tenant, { employeeId, forAdmin, title, mes
 async function listNotifications(user, tenant = null) {
   const dbName = user?.db_name || tenant?.dbName || tenant?.db_name;
   const isSuperadmin = user?.role === 'superadmin';
-  
+
   console.log('[NOTIFICATIONS SERVICE] listNotifications called', {
     userId: user?.id,
     userRole: user?.role,
@@ -124,42 +121,42 @@ async function listNotifications(user, tenant = null) {
     dbName,
     hasTenant: !!tenant,
   });
-  
+
   // Superadmin without tenant context: fetch from ALL tenants
   if (isSuperadmin && !dbName) {
     try {
-      
-      
+
+
       // Get all tenant databases
       const { rows: tenants } = await superAdminPool.query(
         `SELECT id, db_name FROM public.tenants WHERE status = 'active' ORDER BY created_at DESC`
       );
-      
+
       console.log('[NOTIFICATIONS SERVICE] Superadmin fetching from', tenants.length, 'tenants');
-      
+
       if (!tenants.length) {
-        
+
         return [];
       }
-      
+
       // Fetch notifications from all tenant databases
       let allNotifications = [];
-      
+
       for (const tenantRecord of tenants) {
         try {
           await ensureMigrated(tenantRecord.db_name);
           const pool = await getTenantPool(tenantRecord.db_name);
           const notifications = await repo.listForUser(pool, user);
-          
-          
-          
+
+
+
           // Add tenant info to each notification
           const notificationsWithTenant = notifications.map(n => ({
             ...n,
             _tenantId: tenantRecord.id,
             _tenantDbName: tenantRecord.db_name,
           }));
-          
+
           allNotifications = allNotifications.concat(notificationsWithTenant);
         } catch (err) {
           console.error('[NOTIFICATIONS SERVICE] Error fetching from tenant:', {
@@ -170,31 +167,31 @@ async function listNotifications(user, tenant = null) {
           // Continue with other tenants
         }
       }
-      
+
       // Sort by created_at descending (newest first)
       allNotifications.sort((a, b) => new Date(b.created_at || b.createdAt) - new Date(a.created_at || a.createdAt));
-      
-      
-      
+
+
+
       return allNotifications;
     } catch (err) {
       console.error('[NOTIFICATIONS SERVICE] Error fetching superadmin notifications from all tenants:', err);
       return [];
     }
   }
-  
+
   // Regular user or user with tenant context
   if (!dbName) {
-    
+
     return [];
   }
-  
+
   await ensureMigrated(dbName);
   const pool = await getTenantPool(dbName);
   const notifications = await repo.listForUser(pool, user);
-  
-  
-  
+
+
+
   return notifications;
 }
 

@@ -23,13 +23,21 @@ function requireOrgSettingsAccess(req, _res, next) {
 
   const auth = req.auth;
   if (!auth?.permissions) {
-    return next(ApiError.forbidden('Organization settings access required'));
+    return next(
+      ApiError.forbidden(
+        'Organization settings access required. Assign the system-settings permission to this role.',
+      ),
+    );
   }
 
   const ok = ORG_SETTINGS_KEYS.some((k) => permissionSatisfied(auth.permissions, k));
   if (ok) return next();
 
-  return next(ApiError.forbidden('Organization settings access required'));
+  return next(
+    ApiError.forbidden(
+      'Organization settings access required. HR and other roles need the system-settings permission.',
+    ),
+  );
 }
 
 module.exports = { requireOrgSettingsAccess };

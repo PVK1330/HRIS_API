@@ -5,6 +5,7 @@ const fs = require('fs').promises;
 const { getTenantPool } = require('../../../config/db');
 const env = require('../../../config/env');
 const ApiError = require('../../../utils/ApiError');
+const logger = require('../../../utils/logger');
 const { runTenantMigrations } = require('../../tenant/tenant.service');
 const empRepo = require('../employees.repository');
 const docRepo = require('../documents/documents.repository');

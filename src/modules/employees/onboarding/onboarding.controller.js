@@ -85,6 +85,15 @@ const uploadSignedOffer = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, result, result.message);
 });
 
+const remindDocuments = asyncHandler(async (req, res) => {
+  const result = await service.sendPendingDocumentReminder(
+    req.user,
+    req.params.id,
+    req.auth,
+  );
+  return ApiResponse.ok(res, result, result.message);
+});
+
 module.exports = {
   notifyStep,
   approval,
@@ -93,4 +102,5 @@ module.exports = {
   reviewChecklist,
   completeWorkflow,
   uploadSignedOffer,
+  remindDocuments,
 };

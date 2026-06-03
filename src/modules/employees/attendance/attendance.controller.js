@@ -1,37 +1,120 @@
 'use strict';
 
 const asyncHandler = require('../../../utils/asyncHandler');
-const ApiResponse  = require('../../../utils/ApiResponse');
-const service      = require('./attendance.service');
+const ApiResponse = require('../../../utils/ApiResponse');
+const service = require('./attendance.service');
 
-// GET /api/v1/employees/:employeeId/attendance
 const list = asyncHandler(async (req, res) => {
-  const data = await service.getAttendance(req.user, req.params.employeeId, req.query);
+  const data = await service.getAttendance(req.auth, req.user, req.params.employeeId, req.query);
   return ApiResponse.ok(res, data, 'Attendance retrieved successfully');
 });
 
-// GET /api/v1/attendance
 const listAll = asyncHandler(async (req, res) => {
-  const data = await service.listAttendance(req.user, req.query);
+  const data = await service.listAttendance(req.auth, req.user, req.query);
   return ApiResponse.ok(res, data, 'Attendance retrieved successfully');
 });
 
-// POST /api/v1/attendance
 const mark = asyncHandler(async (req, res) => {
-  const data = await service.markAttendance(req.user, req.body);
+  const data = await service.markAttendance(req.auth, req.user, req.body, req);
   return ApiResponse.created(res, { record: data }, 'Attendance marked successfully');
 });
 
-// GET /api/v1/attendance/regularizations
+const checkIn = asyncHandler(async (req, res) => {
+  const data = await service.checkIn(req.auth, req.user, req.body, req);
+  return ApiResponse.ok(res, { record: data }, 'Check-in successful');
+});
+
+const checkOut = asyncHandler(async (req, res) => {
+  const data = await service.checkOut(req.auth, req.user, req.body, req);
+  return ApiResponse.ok(res, { record: data }, 'Check-out successful');
+});
+
+const submitRegularization = asyncHandler(async (req, res) => {
+  const data = await service.submitRegularization(req.auth, req.user, req.body, req);
+  return ApiResponse.created(res, { record: data }, 'Regularization submitted');
+});
+
 const pendingRegularizations = asyncHandler(async (req, res) => {
-  const data = await service.getPendingRegularizations(req.user, req.query);
+  const data = await service.getPendingRegularizations(req.auth, req.user, req.query);
   return ApiResponse.ok(res, data, 'Pending regularizations retrieved');
 });
 
-// PATCH /api/v1/attendance/:id/regularize
 const regularize = asyncHandler(async (req, res) => {
-  const data = await service.regularize(req.user, req.params.id, req.body);
+  const data = await service.regularize(req.auth, req.user, req.params.id, req.body, req);
   return ApiResponse.ok(res, { record: data }, 'Regularization processed');
 });
 
-module.exports = { list, listAll, mark, pendingRegularizations, regularize };
+const payrollSummary = asyncHandler(async (req, res) => {
+  const data = await service.getPayrollSummary(req.auth, req.user, req.query);
+  return ApiResponse.ok(res, data, 'Payroll attendance summary retrieved');
+});
+
+const detail = asyncHandler(async (req, res) => {
+  const data = await service.getRecordDetail(req.auth, req.user, req.params.id);
+  return ApiResponse.ok(res, data, 'Attendance record retrieved');
+});
+
+const myToday = asyncHandler(async (req, res) => {
+  const data = await service.getMyToday(req.auth, req.user);
+  return ApiResponse.ok(res, data, 'Today attendance status retrieved');
+});
+
+const dashboard = asyncHandler(async (req, res) => {
+  const data = await service.getDashboard(req.auth, req.user, req.query);
+  return ApiResponse.ok(res, data, 'Attendance dashboard retrieved');
+});
+
+const report = asyncHandler(async (req, res) => {
+  const data = await service.getReport(req.auth, req.user, req.query);
+  return ApiResponse.ok(res, data, 'Attendance report generated');
+});
+
+const regularizationHistory = asyncHandler(async (req, res) => {
+  const data = await service.getRegularizationHistory(req.auth, req.user, req.query);
+  return ApiResponse.ok(res, data, 'Regularization history retrieved');
+});
+
+const exportPdf = asyncHandler(async (req, res) => {
+  const { buffer, contentType, filename } = await service.exportReport(
+    req.auth,
+    req.user,
+    req.query,
+    'pdf',
+    req,
+  );
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  return res.send(buffer);
+});
+
+const exportExcel = asyncHandler(async (req, res) => {
+  const { buffer, contentType, filename } = await service.exportReport(
+    req.auth,
+    req.user,
+    req.query,
+    'excel',
+    req,
+  );
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  return res.send(buffer);
+});
+
+module.exports = {
+  list,
+  listAll,
+  mark,
+  checkIn,
+  checkOut,
+  submitRegularization,
+  pendingRegularizations,
+  regularize,
+  payrollSummary,
+  detail,
+  myToday,
+  dashboard,
+  report,
+  regularizationHistory,
+  exportPdf,
+  exportExcel,
+};

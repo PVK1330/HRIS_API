@@ -4,18 +4,35 @@ const { Router } = require('express');
 const { body, param, query } = require('express-validator');
 const validate = require('../../../middlewares/validate.middleware');
 const ctrl = require('./attendance.controller');
+const v = require('./attendanceValidators');
 const {
   authenticate,
   loadAuthContext,
   requirePermission,
+  requireAnyPermission,
 } = require('../../../middlewares/auth.middleware');
 const { P } = require('../../../constants/permissions');
 const { requireEmployeeScopeAccess } = require('../../../middlewares/employeeScope.middleware');
 
-// ─── Employee-scoped: mounted at /api/v1/employees/:employeeId/attendance ─────
-const employeeRouter = Router({ mergeParams: true });
+function anyViewPermission() {
+  return (req, res, next) => {
+    const { hasPermission } = require('../../../services/authz.service');
+    const ok =
+      hasPermission(req.auth, P.ATTENDANCE_VIEW_OWN)
+      || hasPermission(req.auth, P.ATTENDANCE_VIEW_TEAM)
+      || hasPermission(req.auth, P.ATTENDANCE_VIEW_ALL)
+      || hasPermission(req.auth, P.ATTENDANCE_VIEW)
+      || hasPermission(req.auth, P.ATTENDANCE_MANAGE);
+    if (!ok) {
+      const ApiError = require('../../../utils/ApiError');
+      return next(ApiError.forbidden('Attendance view permission required'));
+    }
+    return next();
+  };
+}
 
-employeeRouter.use(requirePermission(P.ATTENDANCE_VIEW));
+const employeeRouter = Router({ mergeParams: true });
+employeeRouter.use(anyViewPermission());
 employeeRouter.use(requireEmployeeScopeAccess('employeeId'));
 
 employeeRouter.get('/', [
@@ -24,14 +41,54 @@ employeeRouter.get('/', [
   query('month').optional().isInt({ min: 1, max: 12 }),
 ], validate, ctrl.list);
 
-// ─── Admin-level: mounted at /api/v1/attendance ───────────────────────────────
 const adminRouter = Router();
 adminRouter.use(authenticate, loadAuthContext);
-adminRouter.use(requirePermission(P.ATTENDANCE_VIEW));
 
-adminRouter.get('/regularizations', ctrl.pendingRegularizations);
+adminRouter.get(
+  '/me/today',
+  requireAnyPermission(
+    P.ATTENDANCE_CREATE,
+    P.ATTENDANCE_VIEW_OWN,
+    P.ATTENDANCE_VIEW_TEAM,
+    P.ATTENDANCE_VIEW_ALL,
+  ),
+  ctrl.myToday,
+);
+adminRouter.get('/dashboard', anyViewPermission(), [
+  query('date').optional().isDate(),
+], validate, ctrl.dashboard);
 
-adminRouter.get('/', [
+adminRouter.get('/reports/data', anyViewPermission(), [
+  query('reportType').optional().isString().trim(),
+  query('dateFrom').optional().isDate(),
+  query('dateTo').optional().isDate(),
+  query('year').optional().isInt({ min: 2000, max: 2100 }),
+  query('month').optional().isInt({ min: 1, max: 12 }),
+  query('employeeId').optional().isInt({ min: 1 }),
+  query('department').optional().isString().trim(),
+  query('designation').optional().isString().trim(),
+  query('location').optional().isString().trim(),
+  query('shiftId').optional().isInt({ min: 1 }),
+  query('status').optional().isString().trim(),
+], validate, ctrl.report);
+
+adminRouter.get('/reports/export/pdf', anyViewPermission(), ctrl.exportPdf);
+adminRouter.get('/reports/export/excel', anyViewPermission(), ctrl.exportExcel);
+
+adminRouter.get('/regularizations', anyViewPermission(), ctrl.pendingRegularizations);
+adminRouter.get('/regularizations/history', anyViewPermission(), [
+  query('status').optional().isIn(['Pending', 'Approved', 'Rejected']),
+  query('page').optional().isInt({ min: 1 }),
+  query('limit').optional().isInt({ min: 1, max: 100 }),
+], validate, ctrl.regularizationHistory);
+
+adminRouter.get('/payroll-summary', anyViewPermission(), [
+  query('employeeId').isInt({ min: 1 }),
+  query('year').optional().isInt({ min: 2000, max: 2100 }),
+  query('month').optional().isInt({ min: 1, max: 12 }),
+], validate, ctrl.payrollSummary);
+
+adminRouter.get('/', anyViewPermission(), [
   query('date').optional().isDate(),
   query('department').optional().isString().trim(),
   query('status').optional().isString().trim(),
@@ -40,23 +97,42 @@ adminRouter.get('/', [
   query('limit').optional().isInt({ min: 1, max: 100 }),
 ], validate, ctrl.listAll);
 
-adminRouter.post('/', [
-  body('employeeId').isInt({ min: 1 }).withMessage('employeeId required'),
-  body('date').isDate().withMessage('date required (YYYY-MM-DD)'),
-  body('workMode').isIn(['In Office', 'Remote', 'Field']).withMessage('Invalid workMode'),
-  body('status').isIn(['Present', 'Absent', 'Half Day', 'Late', 'On Leave']).withMessage('Invalid status'),
-  body('checkInTime').optional({ nullable: true }).matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/),
-  body('checkOutTime').optional({ nullable: true }).matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/),
-  body('overtimeHours').optional({ nullable: true }).isFloat({ min: 0 }),
-  body('isLate').optional().isBoolean(),
-  body('earlyDeparture').optional().isBoolean(),
-  body('notes').optional().isString().trim(),
-], validate, ctrl.mark);
+adminRouter.post('/check-in', requirePermission(P.ATTENDANCE_CREATE), v.employeePunchBody, validate, ctrl.checkIn);
 
-adminRouter.patch('/:id/regularize', [
+adminRouter.post('/check-out', requirePermission(P.ATTENDANCE_CREATE), v.employeePunchBody, validate, ctrl.checkOut);
+
+adminRouter.post('/regularization', requirePermission(P.ATTENDANCE_REGULARIZATION_REQUEST), [
+  body('employeeId').optional().isInt({ min: 1 }),
+  body('date').isDate(),
+  v.optionalReason,
+  body('checkInTime').optional({ nullable: true, checkFalsy: false })
+    .custom((val) => val == null || v.timePattern.test(String(val))),
+  body('checkOutTime').optional({ nullable: true, checkFalsy: false })
+    .custom((val) => val == null || v.timePattern.test(String(val))),
+  body('workMode').optional().isString().trim(),
+  v.optionalNotes,
+], validate, ctrl.submitRegularization);
+
+adminRouter.post('/override', requirePermission(P.ATTENDANCE_MANAGE), v.overrideBody, validate, ctrl.mark);
+adminRouter.post('/', requirePermission(P.ATTENDANCE_MANAGE), v.overrideBody, validate, ctrl.mark);
+
+adminRouter.get('/:id', anyViewPermission(), [param('id').isInt({ min: 1 })], validate, ctrl.detail);
+
+adminRouter.patch('/:id/regularize', (req, res, next) => {
+  const { hasPermission } = require('../../../services/authz.service');
+  const ok =
+    hasPermission(req.auth, P.ATTENDANCE_APPROVE)
+    || hasPermission(req.auth, P.ATTENDANCE_REJECT)
+    || hasPermission(req.auth, P.ATTENDANCE_MANAGE);
+  if (!ok) {
+    const ApiError = require('../../../utils/ApiError');
+    return next(ApiError.forbidden('Approve or reject permission required'));
+  }
+  return next();
+}, [
   param('id').isInt({ min: 1 }),
-  body('action').isIn(['approve', 'reject']).withMessage('action must be approve or reject'),
-  body('reason').optional().isString().trim(),
+  body('action').isIn(['approve', 'reject']),
+  v.optionalReason,
 ], validate, ctrl.regularize);
 
 module.exports = { employeeRouter, adminRouter };

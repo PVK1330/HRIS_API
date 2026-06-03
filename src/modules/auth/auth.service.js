@@ -17,6 +17,7 @@ const { renderEmail } = require('../../utils/emailTemplate');
 const {
   expandPermissionKeys,
   toAllowedModuleKeys,
+  toAllowedModulesForJwt,
 } = require('../../constants/permissions');
 
 async function gatherTenantFeatures(tenantId) {
@@ -501,14 +502,13 @@ async function findTenantAdminForLogin(tenantPool, loginId, tenantAdminEmail) {
 
 async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures, planDetails, planFeatures) {
   const rbacRepo = require('../rbac/rbac.repository');
+  const rbacRoleId = emp.rbac_role_id || null;
+
   let allowedModules = ['dashboard'];
-  if (emp.rbac_role_id) {
-    const keys = await rbacRepo.permissionKeysForRole(tenantPool, emp.rbac_role_id);
+  if (rbacRoleId) {
+    const keys = await rbacRepo.permissionKeysForRole(tenantPool, rbacRoleId);
     const expanded = expandPermissionKeys(keys);
-    allowedModules = toAllowedModuleKeys(expanded);
-    if (!allowedModules.includes('dashboard')) {
-      allowedModules = ['dashboard', ...allowedModules];
-    }
+    allowedModules = toAllowedModulesForJwt(expanded);
   }
 
   const token = jwt.sign(
@@ -519,7 +519,7 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
       role: 'employee',
       tenant_id: tenant.id,
       db_name: tenant.db_name,
-      rbacRoleId: emp.rbac_role_id || null,
+      rbacRoleId: rbacRoleId || null,
       employeeId: emp.id,
       department: emp.department || null,
       userType: 'employee',
@@ -537,7 +537,7 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
       role: 'employee',
       tenantId: tenant.id,
       tenantName: tenant.name,
-      rbacRoleId: emp.rbac_role_id,
+      rbacRoleId: rbacRoleId || null,
       employeeId: emp.id,
       department: emp.department || null,
     },
@@ -1068,10 +1068,7 @@ async function getAccessProfile(currentUser) {
   } else if (currentUser.rbacRoleId) {
     const keys = await rbacRepo.permissionKeysForRole(tenantPool, currentUser.rbacRoleId);
     const expanded = expandPermissionKeys(keys);
-    allowedModules = toAllowedModuleKeys(expanded);
-    if (!allowedModules.includes('dashboard')) {
-      allowedModules = ['dashboard', ...allowedModules];
-    }
+    allowedModules = toAllowedModulesForJwt(expanded);
   }
 
   return {

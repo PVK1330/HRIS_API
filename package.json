@@ -16,7 +16,15 @@
     "seed:demo:workflow": "node src/scripts/seedDemoCorpWorkflow.js",
     "seed:demo:roles": "node src/scripts/seedDemoCorpRoles.js",
     "db:reset": "node src/scripts/resetDb.js",
-    "db:setup": "npm run db:reset && npm run migrate && npm run seed:superadmin && npm run seed:tenants"
+    "db:setup": "npm run db:reset && npm run migrate && npm run seed:superadmin && npm run seed:tenants",
+    "test:attendance": "node src/tests/attendance.enterprise.test.js",
+    "test:attendance:security": "node src/tests/attendance.approval.security.test.js",
+    "test:attendance:settings": "node src/tests/attendance.settings.test.js",
+    "test:attendance:cron": "node src/tests/attendance.cron.test.js",
+    "test:attendance:settings-rbac": "node src/tests/attendance.settings.rbac.test.js",
+    "test:attendance:holidays": "node --test src/tests/holidays.seed.test.js",
+    "test:attendance:integrity": "node src/tests/attendance.integrity.test.js",
+    "repair:attendance-permissions": "node src/scripts/repairAttendancePermissions.js"
   },
   "keywords": [
     "pern",

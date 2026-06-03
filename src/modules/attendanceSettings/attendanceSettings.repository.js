@@ -17,10 +17,21 @@ const COLUMN_KEYS = new Set([
   'overtime_eligibility',
   'overtime_calculation_rule',
   'overtime_approval_workflow',
+  'approval_workflow_type',
+  'weekend_mode',
+  'custom_week_off_days',
+  'uk_holiday_region',
+  'shift_type_default',
+  'overtime_custom_multiplier',
+  'attendance_location_tracking',
 ]);
 
 const TIME_KEYS = new Set(['work_start_time', 'work_end_time']);
-const NUMERIC_KEYS = new Set(['total_required_hours', 'min_hours_for_present']);
+const NUMERIC_KEYS = new Set([
+  'total_required_hours',
+  'min_hours_for_present',
+  'overtime_custom_multiplier',
+]);
 
 async function getSettings(pool) {
   const { rows } = await pool.query(

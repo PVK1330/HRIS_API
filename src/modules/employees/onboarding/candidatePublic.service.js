@@ -16,6 +16,8 @@ const { WORKFLOW_STATUS } = require('./onboarding.workflow');
 const mailer = require('./onboarding.mailer');
 const { resolveCandidatePortalContext, buildCandidateUrls } = require('./candidatePortalUrl');
 const notifService = require('../../notifications/notifications.service');
+const { getHROrAdminRecipients } = require('./utils/onboardingRecipients.utils');
+const { sendOfferRejectedNotification } = require('./onboardingNotification.service');
 
 async function ensureMigrated(dbName) {
   await runTenantMigrations(dbName).catch(() => {
@@ -46,24 +48,7 @@ function publicCandidateView(emp) {
   };
 }
 
-async function resolveOnboardingReviewOwners(pool) {
-  const { rows } = await pool.query(
-    `SELECT DISTINCT e.id, e.full_name, e.work_email
-     FROM employees e
-     LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
-     LEFT JOIN rbac_role_permissions rp ON rp.role_id = rr.id
-     LEFT JOIN rbac_permissions p ON p.id = rp.permission_id
-     WHERE e.deleted_at IS NULL
-       AND (
-         LOWER(COALESCE(rr.name, '')) LIKE '%hr%'
-         OR LOWER(COALESCE(rr.name, '')) LIKE '%admin%'
-         OR p.key IN ('onboarding', 'system-settings', 'employee.edit', 'tasks')
-       )
-     ORDER BY e.id
-     LIMIT 25`,
-  );
-  return rows;
-}
+
 
 async function createOnboardingReviewTask(pool, assigneeId, title, description, dueDateIso) {
   const { rows } = await pool.query(
@@ -86,7 +71,7 @@ async function createOnboardingReviewTask(pool, assigneeId, title, description, 
 }
 
 async function notifyAndAssignOnboardingTask(tenant, pool, emp, eventType = 'accepted') {
-  const owners = await resolveOnboardingReviewOwners(pool);
+  const owners = await getHROrAdminRecipients(pool);
   if (!owners.length) return;
 
   const candidateName = emp.full_name || 'Candidate';
@@ -209,6 +194,14 @@ async function rejectOffer(tenant, token, { reason } = {}) {
      WHERE id = $1 AND deleted_at IS NULL`,
     [emp.id],
   );
+
+  try {
+    const owners = await getHROrAdminRecipients(pool);
+    await sendOfferRejectedNotification(tenant, emp.id, emp, owners, reason);
+    logger.info(`Offer rejection notifications dispatched for ${emp.id}`);
+  } catch (err) {
+    logger.warn(`Failed to dispatch offer rejection notification: ${err.message}`);
+  }
 
   return { workflowStatus: WORKFLOW_STATUS.REJECTED, message: 'Offer rejected.' };
 }

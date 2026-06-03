@@ -29,6 +29,7 @@ const { attendanceAdminRoutes, leaveAdminRoutes } = employeesRoutes;
 const messagesRoutes = require('./modules/messages/messages.routes');
 const tenantSettingsRoutes = require('./modules/tenantSettings/tenantSettings.routes');
 const attendanceSettingsRoutes = require('./modules/attendanceSettings/attendanceSettings.routes');
+const holidaysRoutes = require('./modules/holidays/holidays.routes');
 const assetSettingsRoutes = require('./modules/assetSettings/assetSettings.routes');
 const passwordSecurityRoutes = require('./modules/passwordSecurity/passwordSecurity.routes');
 const notificationSettingsRoutes = require('./modules/notificationSettings/notificationSettings.routes');
@@ -139,6 +140,7 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/letters', lettersRoutes);
 app.use('/api/v1/employees', employeesRoutes);
 app.use('/api/v1/attendance', attendanceAdminRoutes);
+app.use('/api/v1/holidays', holidaysRoutes);
 app.use('/api/v1/leave', leaveAdminRoutes);
 // Standalone dropdowns (placed BEFORE general routers to avoid wildcard matching)
 app.get('/api/v1/performance-cycles/dropdown', authenticate, loadAuthContext, getCyclesDropdown);

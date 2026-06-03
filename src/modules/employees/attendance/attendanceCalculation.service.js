@@ -1,0 +1,261 @@
+'use strict';
+
+const settingsRepo = require('../../attendanceSettings/attendanceSettings.repository');
+const graceEngine = require('./attendanceGrace.service');
+const overtimeEngine = require('./attendanceOvertime.service');
+const integrity = require('./attendanceIntegrity.service');
+
+function parseTimeToMinutes(t) {
+  if (!t) return null;
+  const s = String(t).slice(0, 5);
+  const [h, m] = s.split(':').map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+function minutesToHours(mins) {
+  if (mins == null || mins <= 0) return 0;
+  return parseFloat((mins / 60).toFixed(2));
+}
+
+function getDayOfWeek(dateStr) {
+  return new Date(`${dateStr}T12:00:00Z`).getUTCDay();
+}
+
+function isWeekend(dateStr, settings) {
+  const dow = getDayOfWeek(dateStr);
+  const mode = settings?.weekend_mode || 'Saturday/Sunday';
+  if (mode === 'Sunday Only') return dow === 0;
+  if (mode === 'Custom Week Off') {
+    const days = settings?.custom_week_off_days || [0, 6];
+    return days.includes(dow);
+  }
+  return dow === 0 || dow === 6;
+}
+
+async function loadSettings(pool) {
+  let s = await settingsRepo.getSettings(pool);
+  if (!s) s = await settingsRepo.seedDefault(pool);
+  return s;
+}
+
+async function findLeaveForDate(pool, employeeId, dateStr) {
+  const { rows } = await pool.query(
+    `SELECT id, leave_type, status
+     FROM leave_requests
+     WHERE employee_id = $1
+       AND status = 'Approved'
+       AND from_date <= $2::date
+       AND to_date >= $2::date
+     LIMIT 1`,
+    [employeeId, dateStr],
+  );
+  return rows[0] || null;
+}
+
+async function findHolidayForDate(pool, dateStr, region) {
+  const reg = region || 'England';
+  const year = parseInt(String(dateStr).slice(0, 4), 10);
+  const { rows } = await pool.query(
+    `SELECT hd.name, hc.region
+     FROM holiday_dates hd
+     JOIN holiday_calendars hc ON hc.id = hd.calendar_id
+     WHERE hd.holiday_date = $1::date
+       AND hc.region = $2
+       AND hc.year = $3
+       AND hc.is_active = true
+     LIMIT 1`,
+    [dateStr, reg, year],
+  );
+  return rows[0] || null;
+}
+
+async function getEmployeeShift(pool, employeeId, dateStr) {
+  const { rows } = await pool.query(
+    `SELECT s.*
+     FROM employee_shift_assignments esa
+     JOIN shifts s ON s.id = esa.shift_id
+     WHERE esa.employee_id = $1
+       AND esa.effective_from <= $2::date
+       AND (esa.effective_to IS NULL OR esa.effective_to >= $2::date)
+     ORDER BY esa.effective_from DESC
+     LIMIT 1`,
+    [employeeId, dateStr],
+  );
+  if (rows[0]) return rows[0];
+  const { rows: def } = await pool.query(
+    `SELECT * FROM shifts WHERE is_active = true ORDER BY id ASC LIMIT 1`,
+  );
+  return def[0] || null;
+}
+
+/**
+ * Compute attendance metrics from punch times and tenant settings.
+ */
+function computeFromPunch({
+  settings,
+  shift,
+  checkInTime,
+  checkOutTime,
+  workMode,
+  dateStr,
+  leaveRecord,
+  holidayRecord,
+  monthlyLateCountBefore = 0,
+}) {
+  if (leaveRecord) {
+    return {
+      status: 'On Leave',
+      leave_type: leaveRecord.leave_type,
+      worked_hours: 0,
+      break_hours: 0,
+      total_hours: 0,
+      overtime_hours: 0,
+      late_minutes: 0,
+      early_departure_minutes: 0,
+      is_late: false,
+      early_departure: false,
+      paid_day: true,
+    };
+  }
+
+  if (holidayRecord) {
+    return {
+      status: 'Holiday',
+      holiday_region: holidayRecord.region,
+      worked_hours: 0,
+      break_hours: 0,
+      total_hours: 0,
+      overtime_hours: 0,
+      late_minutes: 0,
+      early_departure_minutes: 0,
+      is_late: false,
+      early_departure: false,
+      paid_day: true,
+    };
+  }
+
+  if (isWeekend(dateStr, settings)) {
+    return {
+      status: 'Weekend',
+      worked_hours: 0,
+      break_hours: 0,
+      total_hours: 0,
+      overtime_hours: 0,
+      late_minutes: 0,
+      early_departure_minutes: 0,
+      is_late: false,
+      early_departure: false,
+      paid_day: false,
+    };
+  }
+
+  const workStart = parseTimeToMinutes(shift?.start_time || settings?.work_start_time);
+  const workEnd = parseTimeToMinutes(shift?.end_time || settings?.work_end_time);
+  const breakMins = shift?.break_minutes ?? settings?.break_duration_minutes ?? 30;
+  const graceMins = shift?.grace_minutes ?? 0;
+  const bufferMins = settings?.ten_minute_buffer ? 10 : 0;
+  const minPresent = Number(
+    shift?.minimum_hours ?? settings?.min_hours_for_present ?? 6,
+  );
+  const requiredHours = Number(settings?.total_required_hours ?? 8);
+  const otAfter = Number(shift?.overtime_after_hours ?? requiredHours);
+  const otEligible = settings?.overtime_eligibility === true;
+
+  const inMins = parseTimeToMinutes(checkInTime);
+  const outMins = parseTimeToMinutes(checkOutTime);
+
+  let workedMins = 0;
+  if (inMins != null && outMins != null) {
+    let diff = outMins - inMins;
+    if (shift?.is_night_shift && diff < 0) diff += 24 * 60;
+    workedMins = Math.max(0, diff - breakMins);
+  }
+
+  const workedHours = minutesToHours(workedMins);
+  const breakHours = minutesToHours(breakMins);
+  const totalHours = workedHours;
+
+  let lateMinutes = 0;
+  if (inMins != null && workStart != null) {
+    const allowedStart = workStart + graceMins + bufferMins;
+    if (inMins > allowedStart) lateMinutes = inMins - allowedStart;
+  }
+
+  let earlyDepartureMinutes = 0;
+  if (outMins != null && workEnd != null && outMins < workEnd) {
+    earlyDepartureMinutes = workEnd - outMins;
+  }
+
+  let rawOvertimeHours = 0;
+  if (otEligible && workedHours > otAfter) {
+    rawOvertimeHours = parseFloat((workedHours - otAfter).toFixed(2));
+  }
+  const otResult = overtimeEngine.calculateOvertimeHours(settings, rawOvertimeHours);
+
+  let status = 'Present';
+  const mode = workMode || 'In Office';
+  if (mode === 'Remote') status = 'Remote';
+  else if (mode === 'Field' || mode === 'Field Duty') status = 'Field Duty';
+  else if (mode === 'Work From Home') status = 'Work From Home';
+
+  let graceApplied = false;
+  let isLate = false;
+
+  if (!checkInTime && !checkOutTime) {
+    status = 'Absent';
+  } else if (lateMinutes > 0 && settings?.late_mark_auto_calculation !== false) {
+    const rawLateStatus = workedHours < minPresent ? 'Half Day' : 'Late';
+    const graceResult = graceEngine.applyGraceToLateStatus({
+      settings,
+      rawStatus: rawLateStatus,
+      lateMinutes,
+      monthlyLateCountBefore,
+      workedHours,
+      minPresent,
+    });
+    status = graceResult.status;
+    isLate = graceResult.is_late;
+    graceApplied = graceResult.grace_applied;
+  }
+
+  if (workedHours > 0 && workedHours < minPresent && status !== 'Late') {
+    const rule = settings?.early_departure_rule || 'Mark half day';
+    if (rule.toLowerCase().includes('half')) status = 'Half Day';
+    else if (earlyDepartureMinutes > 0) status = 'Half Day';
+  }
+
+  if (workedHours === 0 && (checkInTime || checkOutTime)) {
+    status = 'Half Day';
+  }
+
+  const raw = {
+    status,
+    worked_hours: workedHours,
+    break_hours: breakHours,
+    total_hours: totalHours,
+    overtime_hours: otResult.overtime_hours,
+    overtime_raw_hours: otResult.raw_hours,
+    overtime_multiplier: otResult.multiplier,
+    late_minutes: lateMinutes,
+    early_departure_minutes: earlyDepartureMinutes,
+    is_late: isLate,
+    early_departure: earlyDepartureMinutes > 0,
+    paid_day: status !== 'Absent',
+    grace_applied: graceApplied,
+  };
+
+  return integrity.sanitizeMetrics(raw, checkInTime, checkOutTime, 'N/A');
+}
+
+module.exports = {
+  loadSettings,
+  findLeaveForDate,
+  findHolidayForDate,
+  getEmployeeShift,
+  computeFromPunch,
+  isWeekend,
+  parseTimeToMinutes,
+  graceEngine,
+  overtimeEngine,
+};

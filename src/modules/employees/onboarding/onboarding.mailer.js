@@ -162,11 +162,113 @@ ${list}
   });
 }
 
+function buildOnboardingEmailTemplate({ company, title, bodyHtml, cta }) {
+  return brandedEmailLayout({
+    companyName: company,
+    title,
+    bodyHtml,
+    primaryCta: cta,
+  });
+}
+
+async function sendMissingDocumentsReminderToCandidate({
+  to,
+  candidateName,
+  companyName,
+  documentsUrl,
+  pendingDocuments = [],
+  rejectedDocuments = [],
+}) {
+  const company = companyName || process.env.COMPANY_NAME || 'Your Company';
+  
+  let listHtml = '';
+  if (pendingDocuments.length > 0) {
+    listHtml += `<p><strong>Pending Documents:</strong></p><ul style="margin:12px 0;padding-left:20px;">${pendingDocuments.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>`;
+  }
+  if (rejectedDocuments.length > 0) {
+    listHtml += `<p><strong>Documents requiring re-upload (Rejected):</strong></p><ul style="margin:12px 0;padding-left:20px;color:#ef4444;">${rejectedDocuments.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>`;
+  }
+
+  const html = buildOnboardingEmailTemplate({
+    company,
+    title: 'Action Required: Pending Onboarding Documents',
+    bodyHtml: `<p>Hi ${escapeHtml(candidateName)},</p>
+<p>This is a gentle reminder that we are still waiting for some of your onboarding documents.</p>
+${listHtml}
+<p>Please upload these documents as soon as possible using your secure portal link.</p>`,
+    cta: { href: documentsUrl, label: 'Upload Documents →' },
+  });
+  await sendMail({
+    to,
+    subject: `${company} — Action Required: Pending Documents`,
+    html,
+    text: `Reminder to upload documents: ${documentsUrl}`,
+  });
+}
+
+async function sendDocumentApprovedToCandidate({
+  to,
+  candidateName,
+  companyName,
+  documentName,
+  pendingCount,
+  documentsUrl,
+}) {
+  const company = companyName || process.env.COMPANY_NAME || 'Your Company';
+  const pendingText = pendingCount > 0 
+    ? `<p>You have <strong>${pendingCount}</strong> mandatory document(s) left to upload or pending review.</p>`
+    : `<p>Great news! All your mandatory documents have been approved.</p>`;
+
+  const html = buildOnboardingEmailTemplate({
+    company,
+    title: 'Document Approved',
+    bodyHtml: `<p>Hi ${escapeHtml(candidateName)},</p>
+<p>Your document <strong>${escapeHtml(documentName)}</strong> has been reviewed and approved by our HR team.</p>
+${pendingText}`,
+    cta: pendingCount > 0 ? { href: documentsUrl, label: 'View Portal →' } : null,
+  });
+  await sendMail({
+    to,
+    subject: `${company} — Document Approved: ${documentName}`,
+    html,
+    text: `Document ${documentName} was approved.`,
+  });
+}
+
+async function sendDocumentRejectedToCandidate({
+  to,
+  candidateName,
+  companyName,
+  documentName,
+  rejectionReason,
+  documentsUrl,
+}) {
+  const company = companyName || process.env.COMPANY_NAME || 'Your Company';
+  const html = buildOnboardingEmailTemplate({
+    company,
+    title: 'Document Re-upload Required',
+    bodyHtml: `<p>Hi ${escapeHtml(candidateName)},</p>
+<p>Our HR team reviewed your document <strong>${escapeHtml(documentName)}</strong> but it requires your attention.</p>
+<p style="padding:12px;background-color:#fee2e2;color:#991b1b;border-radius:4px;"><strong>Reason:</strong> ${escapeHtml(rejectionReason || 'Please provide a clearer or more accurate document.')}</p>
+<p>Please re-upload this document using your secure portal link.</p>`,
+    cta: { href: documentsUrl, label: 'Re-upload Document →' },
+  });
+  await sendMail({
+    to,
+    subject: `${company} — Action Required: Document Rejected (${documentName})`,
+    html,
+    text: `Document ${documentName} was rejected. Reason: ${rejectionReason}. Upload here: ${documentsUrl}`,
+  });
+}
+
 module.exports = {
   sendOnboardingStepCompletedToCandidate,
   sendOnboardingStepNotifyToHr,
   sendOnboardingAcceptedToHr,
   sendOfferLetterToCandidate,
   sendDocumentChecklistToCandidate,
+  sendMissingDocumentsReminderToCandidate,
+  sendDocumentApprovedToCandidate,
+  sendDocumentRejectedToCandidate,
   STEP_LABELS,
 };

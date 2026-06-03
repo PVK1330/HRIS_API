@@ -3,6 +3,8 @@
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
 const repository = require('./attendanceSettings.repository');
+const settingsAuth = require('./attendanceSettingsAuth.service');
+const settingsAudit = require('./attendanceSettingsAudit.service');
 const {
   EARLY_DEPARTURE_RULES,
   WHO_CAN_SUBMIT,
@@ -29,6 +31,12 @@ const CAMEL_TO_SNAKE = {
   overtimeEligibility: 'overtime_eligibility',
   overtimeCalculationRule: 'overtime_calculation_rule',
   overtimeApprovalWorkflow: 'overtime_approval_workflow',
+  approvalWorkflowType: 'approval_workflow_type',
+  weekendMode: 'weekend_mode',
+  customWeekOffDays: 'custom_week_off_days',
+  ukHolidayRegion: 'uk_holiday_region',
+  shiftTypeDefault: 'shift_type_default',
+  overtimeCustomMultiplier: 'overtime_custom_multiplier',
 };
 
 const COLUMN_KEYS = new Set([
@@ -48,6 +56,13 @@ const COLUMN_KEYS = new Set([
   'overtime_eligibility',
   'overtime_calculation_rule',
   'overtime_approval_workflow',
+  'approval_workflow_type',
+  'weekend_mode',
+  'custom_week_off_days',
+  'uk_holiday_region',
+  'shift_type_default',
+  'overtime_custom_multiplier',
+  'attendance_location_tracking',
 ]);
 
 function formatHm(v) {
@@ -85,11 +100,28 @@ function mapToResponse(row) {
       whoCanSubmitRequest: row.who_can_submit_request,
       approver: row.approver,
       autoRejectionAfterDays: row.auto_rejection_after_days,
+      approvalWorkflowType: row.approval_workflow_type,
+    },
+    weekendSettings: {
+      weekendMode: row.weekend_mode,
+      customWeekOffDays: row.custom_week_off_days,
+    },
+    holidaySettings: {
+      ukHolidayRegion: row.uk_holiday_region,
+    },
+    shiftDefaults: {
+      shiftTypeDefault: row.shift_type_default,
     },
     overtimeSettings: {
       overtimeEligibility: row.overtime_eligibility,
       calculationRule: row.overtime_calculation_rule,
+      customMultiplier: row.overtime_custom_multiplier != null
+        ? parseFloat(row.overtime_custom_multiplier)
+        : 1,
       approvalWorkflow: row.overtime_approval_workflow,
+    },
+    locationTracking: {
+      enabled: row.attendance_location_tracking === true,
     },
     updatedAt: row.updated_at,
   };
@@ -135,6 +167,7 @@ function mergeFlatAttendanceFields(body) {
   if (os && typeof os === 'object') {
     if (os.overtimeEligibility !== undefined) patch.overtime_eligibility = os.overtimeEligibility;
     if (os.calculationRule !== undefined) patch.overtime_calculation_rule = os.calculationRule;
+    if (os.customMultiplier !== undefined) patch.overtime_custom_multiplier = os.customMultiplier;
     if (os.approvalWorkflow !== undefined) {
       patch.overtime_approval_workflow = os.approvalWorkflow;
     }
@@ -289,7 +322,9 @@ function validateCrossField(existingRow, patch) {
   }
 }
 
-async function getAttendanceSettings(dbName) {
+async function getAttendanceSettings(dbName, auth, req = null) {
+  settingsAuth.assertCanViewSettings(auth);
+
   const pool = getTenantPool(dbName);
   let row = await repository.getSettings(pool);
   if (!row) {
@@ -298,10 +333,16 @@ async function getAttendanceSettings(dbName) {
   if (!row) {
     throw ApiError.notFound('Attendance settings not found');
   }
-  return mapToResponse(row);
+
+  const data = mapToResponse(row);
+  const ctx = req ? settingsAudit.auditContextFromReq(req) : {};
+  await settingsAudit.logView(pool, ctx);
+  return data;
 }
 
-async function updateAttendanceSettings(dbName, body) {
+async function updateAttendanceSettings(dbName, body, auth, req = null) {
+  settingsAuth.assertCanManageSettings(auth);
+
   const pool = getTenantPool(dbName);
   let existingRow = await repository.getSettings(pool);
   if (!existingRow) {
@@ -322,11 +363,21 @@ async function updateAttendanceSettings(dbName, body) {
   validateTimesAndRanges(patch);
   validateCrossField(existingRow, patch);
 
+  const oldValue = mapToResponse(existingRow);
   const updated = await repository.updateSettings(pool, patch);
   if (!updated) {
     throw ApiError.notFound('Attendance settings not found');
   }
-  return mapToResponse(updated);
+  const newValue = mapToResponse(updated);
+
+  const ctx = req ? settingsAudit.auditContextFromReq(req) : {};
+  await settingsAudit.logUpdate(pool, {
+    oldValue,
+    newValue,
+    ...ctx,
+  });
+
+  return newValue;
 }
 
 module.exports = {

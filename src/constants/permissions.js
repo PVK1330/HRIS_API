@@ -16,6 +16,17 @@ const P = {
   DOCUMENT_UPLOAD: 'document.upload',
   PAYROLL_VIEW: 'payroll.view',
   ATTENDANCE_VIEW: 'attendance.view',
+  ATTENDANCE_VIEW_OWN: 'attendance.view.own',
+  ATTENDANCE_VIEW_TEAM: 'attendance.view.team',
+  ATTENDANCE_VIEW_ALL: 'attendance.view.all',
+  ATTENDANCE_CREATE: 'attendance.create',
+  ATTENDANCE_UPDATE: 'attendance.update',
+  ATTENDANCE_REGULARIZATION_REQUEST: 'attendance.regularization.request',
+  ATTENDANCE_APPROVE: 'attendance.approve',
+  ATTENDANCE_REJECT: 'attendance.reject',
+  ATTENDANCE_MANAGE: 'attendance.manage',
+  ATTENDANCE_SETTINGS_VIEW: 'attendance.settings.view',
+  ATTENDANCE_SETTINGS_MANAGE: 'attendance.settings.manage',
   PERFORMANCE_VIEW: 'performance.view',
   DEPARTMENTS_MANAGE: 'departments.manage',
   POLICIES_MANAGE: 'policies.manage',
@@ -36,7 +47,30 @@ const LEGACY_KEY_TO_ACTIONS = {
   dashboard: ['dashboard'],
   'employee-directory': [P.EMPLOYEE_VIEW],
   'employee-profiles': [P.EMPLOYEE_VIEW, P.EMPLOYEE_EDIT],
-  attendance: [P.ATTENDANCE_VIEW],
+  attendance: [
+    P.ATTENDANCE_VIEW,
+    P.ATTENDANCE_VIEW_ALL,
+    P.ATTENDANCE_VIEW_TEAM,
+    P.ATTENDANCE_VIEW_OWN,
+    P.ATTENDANCE_CREATE,
+    P.ATTENDANCE_REGULARIZATION_REQUEST,
+    P.ATTENDANCE_APPROVE,
+    P.ATTENDANCE_REJECT,
+    P.ATTENDANCE_MANAGE,
+    P.ATTENDANCE_SETTINGS_VIEW,
+    P.ATTENDANCE_SETTINGS_MANAGE,
+  ],
+  'attendance.view': [
+    P.ATTENDANCE_VIEW,
+    P.ATTENDANCE_VIEW_OWN,
+  ],
+  'time-tracking': [
+    P.ATTENDANCE_VIEW_OWN,
+    P.ATTENDANCE_CREATE,
+    P.ATTENDANCE_REGULARIZATION_REQUEST,
+  ],
+  'shift-management': [P.ATTENDANCE_VIEW_TEAM, P.ATTENDANCE_VIEW_OWN],
+  'overtime-management': [P.ATTENDANCE_VIEW_TEAM, P.ATTENDANCE_VIEW_ALL],
   'leave-absence': [P.LEAVE_VIEW, P.LEAVE_APPROVE],
   'documents-approval': [P.DOCUMENT_VIEW, P.DOCUMENT_UPLOAD],
   'visa-nationality': [P.VISA_VIEW, P.VISA_MANAGE],
@@ -67,6 +101,17 @@ const ACTION_TO_LEGACY_KEYS = {
   [P.DOCUMENT_UPLOAD]: ['documents-approval'],
   [P.PAYROLL_VIEW]: ['payroll-management'],
   [P.ATTENDANCE_VIEW]: ['attendance'],
+  [P.ATTENDANCE_VIEW_OWN]: ['attendance'],
+  [P.ATTENDANCE_VIEW_TEAM]: ['attendance'],
+  [P.ATTENDANCE_VIEW_ALL]: ['attendance'],
+  [P.ATTENDANCE_CREATE]: ['attendance'],
+  [P.ATTENDANCE_UPDATE]: ['attendance'],
+  [P.ATTENDANCE_REGULARIZATION_REQUEST]: ['attendance'],
+  [P.ATTENDANCE_APPROVE]: ['attendance'],
+  [P.ATTENDANCE_REJECT]: ['attendance'],
+  [P.ATTENDANCE_MANAGE]: ['attendance'],
+  [P.ATTENDANCE_SETTINGS_VIEW]: ['attendance'],
+  [P.ATTENDANCE_SETTINGS_MANAGE]: ['attendance'],
   [P.PERFORMANCE_VIEW]: ['performance'],
   [P.DEPARTMENTS_MANAGE]: ['departments', 'designations'],
   [P.POLICIES_MANAGE]: ['policies'],
@@ -133,6 +178,18 @@ function toAllowedModuleKeys(grantedSet) {
   return Array.from(modules);
 }
 
+/** Sidebar legacy keys + explicit permission slugs for strict UI gates */
+function toAllowedModulesForJwt(grantedSet) {
+  const set = new Set(['dashboard']);
+  for (const key of grantedSet || []) {
+    if (key) set.add(key);
+  }
+  for (const key of toAllowedModuleKeys(grantedSet)) {
+    set.add(key);
+  }
+  return Array.from(set);
+}
+
 module.exports = {
   P,
   LEGACY_KEY_TO_ACTIONS,
@@ -141,4 +198,5 @@ module.exports = {
   expandPermissionKeys,
   permissionSatisfied,
   toAllowedModuleKeys,
+  toAllowedModulesForJwt,
 };

@@ -6,7 +6,7 @@ async function create(pool, { employeeId, forAdmin, recipientId, recipientRole, 
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     RETURNING *
   `, [
-    employeeId || null, Boolean(forAdmin), recipientId || null, recipientRole || null, title, message, type || 'info',
+    employeeId || null, Boolean(forAdmin), title, message, type || 'info',
     ticketId || null, entityType || null, entityId || null, redirectUrl || null
   ]);
   return rows[0];
@@ -20,7 +20,7 @@ async function listForUser(pool, user) {
   const role = await normalizeRole(user.role || user.panel || '');
   const isSuperadmin = role === 'superadmin';
   const isAdminRole = ['admin', 'hradmin', 'supportadmin', 'billingadmin'].includes(role);
-  
+
   console.log('[NOTIFICATIONS] listForUser - userId:', user.id, 'role:', role, 'isSuperadmin:', isSuperadmin, 'isAdminRole:', isAdminRole);
 
   let whereCondition = '';
@@ -65,9 +65,9 @@ async function listForUser(pool, user) {
   console.log('[NOTIFICATIONS] Params:', params, '(count:', params.length, ')');
 
   const { rows } = await pool.query(query, params);
-  
+
   console.log('[NOTIFICATIONS] Returned', rows.length, 'notifications for user', user.id);
-  
+
   return rows.map(r => ({
     id: r.id,
     employeeId: r.employee_id,
@@ -87,7 +87,7 @@ async function listForUser(pool, user) {
     isRead: Boolean(r.is_read),
     createdAt: r.created_at,
     created_at: r.created_at,
-    time: r.created_at ? new Date(r.created_at).toLocaleDateString() + ' ' + new Date(r.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''
+    time: r.created_at ? new Date(r.created_at).toLocaleDateString() + ' ' + new Date(r.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
   }));
 }
 
@@ -105,7 +105,7 @@ async function markAllAsRead(pool, user) {
   const role = String(user.role || user.panel || '').toLowerCase().replace(/[_\s]/g, '');
   const isSuperadmin = role === 'superadmin';
   const isAdminRole = ['admin', 'hradmin', 'supportadmin', 'billingadmin'].includes(role);
-  
+
   let updateQuery = '';
   let params = [];
 

@@ -119,7 +119,7 @@ async function submitExitRequest(tenant, data, exitUser) {
         sendEmail: false,
       });
     } catch (_) { /* non-blocking */ }
-    events().onSubmitted(tenant, requestId).catch(() => {});
+    events().onSubmitted(tenant, requestId).catch(() => { });
 
     return getExitRequest(tenant, requestId, exitUser);
   } catch (err) {
@@ -333,7 +333,7 @@ async function approveStage(tenant, id, exitUser, comments) {
         });
       } catch (_) { /* non-blocking */ }
     }
-    events().onApproved(tenant, Number(id), !!result.completed).catch(() => {});
+    events().onApproved(tenant, Number(id), !!result.completed).catch(() => { });
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -375,7 +375,7 @@ async function rejectStage(tenant, id, exitUser, reason) {
         sendEmail: false,
       });
     } catch (_) { /* non-blocking */ }
-    events().onRejected(tenant, Number(id), reason).catch(() => {});
+    events().onRejected(tenant, Number(id), reason).catch(() => { });
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');

@@ -109,9 +109,8 @@ async function submitExitRequest(tenant, data, exitUser) {
 
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:request_created', { exitRequestId: Number(requestId) });
     try {
-      // Send notification to the employee about their exit request submission
       await notify().sendSystemNotification(tenant, {
-        employeeId: employeeId,
+        employeeId,
         recipientId: employeeId,
         recipientRole: 'employee',
         title: 'Exit Request Submitted',
@@ -120,9 +119,6 @@ async function submitExitRequest(tenant, data, exitUser) {
         sendEmail: false,
       });
     } catch (_) { /* non-blocking */ }
-    // Notifications + template emails + stage-1 task assignment (best-effort, post-commit).
-    events().onSubmitted(tenant, requestId).catch(() => { });
-    // Notifications + template emails + stage-1 task assignment (best-effort, post-commit).
     events().onSubmitted(tenant, requestId).catch(() => { });
 
     return getExitRequest(tenant, requestId, exitUser);
@@ -326,7 +322,6 @@ async function approveStage(tenant, id, exitUser, comments) {
     emit(tenant, `exit:${id}`, result.completed ? 'exit:request_completed' : 'exit:stage_advanced', { exitRequestId: Number(id) });
     if (result.completed) {
       try {
-        // Send notification only to the employee, not admins
         await notify().sendSystemNotification(tenant, {
           employeeId: request.employee_id,
           recipientId: request.employee_id,
@@ -336,11 +331,8 @@ async function approveStage(tenant, id, exitUser, comments) {
           type: 'exit_management',
           sendEmail: false,
         });
-      } catch (_) { }
+      } catch (_) { /* non-blocking */ }
     }
-    // Completed → notify subject; otherwise notify + assign the newly-active stage's owners.
-    events().onApproved(tenant, Number(id), !!result.completed).catch(() => { });
-    // Completed → notify subject; otherwise notify + assign the newly-active stage's owners.
     events().onApproved(tenant, Number(id), !!result.completed).catch(() => { });
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
@@ -373,7 +365,6 @@ async function rejectStage(tenant, id, exitUser, reason) {
 
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'reject' });
     try {
-      // Send notification only to the employee, not admins
       await notify().sendSystemNotification(tenant, {
         employeeId: request.employee_id,
         recipientId: request.employee_id,
@@ -383,8 +374,7 @@ async function rejectStage(tenant, id, exitUser, reason) {
         type: 'exit_management',
         sendEmail: false,
       });
-    } catch (_) { }
-    events().onRejected(tenant, Number(id), reason).catch(() => { });
+    } catch (_) { /* non-blocking */ }
     events().onRejected(tenant, Number(id), reason).catch(() => { });
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {

@@ -1,21 +1,15 @@
 'use strict';
 
 const { Router } = require('express');
-const { authenticate } = require('../../middlewares/auth.middleware');
+const { authenticate, loadAuthContext } = require('../../middlewares/auth.middleware');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
-const ApiError = require('../../utils/ApiError');
+const { requireOrgSettingsAccess } = require('../../middlewares/orgSettingsAccess.middleware');
 const ctrl = require('./rbac.controller');
 
 const router = Router();
 
-const adminOnly = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return next(ApiError.forbidden('Only organization admins can manage roles'));
-  }
-  next();
-};
-
-router.use(authenticate, tenantResolver, adminOnly);
+/** Tenant admin or RBAC holders with system-settings (e.g. HR Admin). */
+router.use(authenticate, tenantResolver, loadAuthContext, requireOrgSettingsAccess);
 
 router.get('/permissions', ctrl.listPermissions);
 router.get('/permissions/available', ctrl.listAvailablePermissions);

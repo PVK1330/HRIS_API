@@ -1,12 +1,13 @@
 'use strict';
 
 const { sendSystemNotification } = require('../notifications/notifications.service');
+const historyRepo = require('./holidayNotificationHistory.repository');
 
 const EVENT_TYPES = {
-  CREATED: 'holiday.created',
-  UPDATED: 'holiday.updated',
-  DELETED: 'holiday.deleted',
-  REMINDER: 'holiday.reminder',
+  CREATED: historyRepo.NOTIFICATION_TYPES.CREATED,
+  UPDATED: historyRepo.NOTIFICATION_TYPES.UPDATED,
+  DELETED: historyRepo.NOTIFICATION_TYPES.DELETED,
+  REMINDER: historyRepo.NOTIFICATION_TYPES.REMINDER,
 };
 
 /**
@@ -64,7 +65,13 @@ async function notifyHolidayEvent(pool, tenantDb, {
   title,
   message,
   entityId,
+  holidayId,
 }) {
+  const hid = holidayId ?? entityId;
+  if (!hid) {
+    return { notified: 0, skipped: 0, reason: 'missing_holiday_id' };
+  }
+
   const buckets = await resolveRecipients(pool);
   const seen = new Set();
   const all = [
@@ -75,9 +82,23 @@ async function notifyHolidayEvent(pool, tenantDb, {
     ...buckets.admin,
   ];
 
+  let notified = 0;
+  let skipped = 0;
+
   for (const r of all) {
     if (!r.employeeId || seen.has(r.employeeId)) continue;
     seen.add(r.employeeId);
+
+    const already = await historyRepo.wasAlreadySent(pool, {
+      holidayId: hid,
+      employeeId: r.employeeId,
+      notificationType: eventType,
+    });
+    if (already) {
+      skipped += 1;
+      continue;
+    }
+
     await sendSystemNotification(
       { db_name: tenantDb, dbName: tenantDb },
       {
@@ -91,13 +112,20 @@ async function notifyHolidayEvent(pool, tenantDb, {
         type: eventType,
         sendEmail: true,
         entityType: 'holiday',
-        entityId: entityId ? String(entityId) : null,
+        entityId: String(hid),
         redirectUrl: '/admin/settings?tab=attendance',
       },
     );
+
+    await historyRepo.recordSent(pool, {
+      holidayId: hid,
+      employeeId: r.employeeId,
+      notificationType: eventType,
+    });
+    notified += 1;
   }
 
-  return { notified: seen.size };
+  return { notified, skipped, totalRecipients: seen.size };
 }
 
 module.exports = {

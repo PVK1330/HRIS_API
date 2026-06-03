@@ -1,9 +1,9 @@
 'use strict';
 
-async function create(pool, { employeeId, forAdmin, title, message, type, ticketId, entityType, entityId, redirectUrl }) {
+async function create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId, entityType, entityId, redirectUrl }) {
   const { rows } = await pool.query(`
-    INSERT INTO notifications (employee_id, for_admin, title, message, type, ticket_id, entity_type, entity_id, redirect_url)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    INSERT INTO notifications (employee_id, for_admin, recipient_id, recipient_role, title, message, type, ticket_id, entity_type, entity_id, redirect_url)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     RETURNING *
   `, [
     employeeId || null, Boolean(forAdmin), title, message, type || 'info',
@@ -79,11 +79,10 @@ async function listForUser(pool, user) {
     type: r.type,
     ticketId: r.ticket_id || null,
     relatedId: r.ticket_id || null,
-    role: r.recipient_role || (r.for_admin ? 'superadmin' : 'employee'),
     entityType: r.entity_type || null,
     entityId: r.entity_id || null,
     redirectUrl: r.redirect_url || null,
-    role: r.for_admin ? 'superadmin' : 'employee',
+    role: r.recipient_role || (r.for_admin ? 'superadmin' : 'employee'),
     read: Boolean(r.is_read),
     isRead: Boolean(r.is_read),
     createdAt: r.created_at,

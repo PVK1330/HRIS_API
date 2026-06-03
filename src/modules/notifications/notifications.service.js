@@ -1,4 +1,5 @@
 'use strict';
+// Merge conflicts resolved — push + sendSystemNotification with recipientId support
 
 const repo = require('./notifications.repository');
 const { getTenantPool, superAdminPool } = require('../../config/db');
@@ -14,70 +15,109 @@ async function ensureMigrated(dbName) {
   return p;
 }
 
-async function pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId, entityType, entityId, redirectUrl }) {
+async function pushNotification(tenant, {
+  employeeId,
+  forAdmin,
+  recipientId,
+  recipientRole,
+  title,
+  message,
+  type,
+  ticketId,
+  entityType,
+  entityId,
+  redirectUrl,
+}) {
   const dbName = tenant?.dbName || tenant?.db_name;
   if (!dbName) return null;
   await ensureMigrated(dbName);
   const pool = await getTenantPool(dbName);
-  return repo.create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId });
-}
 
-async function sendSystemNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, emailMessage, type, sendEmail = true, emailSubject = null }) {
-  // 1. Instantly deliver central in-app push notification
-
-  const notificationRecord = await repo.create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId, entityType, entityId, redirectUrl });
+  const notificationRecord = await repo.create(pool, {
+    employeeId,
+    forAdmin,
+    recipientId,
+    recipientRole,
+    title,
+    message,
+    type,
+    ticketId,
+    entityType,
+    entityId,
+    redirectUrl,
+  });
 
   try {
-    notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId: null });
-    const notificationRecord = await repo.create(pool, { employeeId, forAdmin, title, message, type, ticketId, entityType, entityId, redirectUrl });
-
-    try {
-      const io = getIo();
-      if (io && notificationRecord) {
-        if (employeeId) {
-          io.to(`user:${employeeId}`).emit('new_notification', notificationRecord);
-        } else if (forAdmin) {
-          io.to(`tenant:${dbName}`).emit('new_notification', notificationRecord); // Broadcast to admins
-        }
+    const io = getIo();
+    if (io && notificationRecord) {
+      if (employeeId) {
+        io.to(`user:${employeeId}`).emit('new_notification', notificationRecord);
+      } else if (forAdmin) {
+        io.to(`tenant:${dbName}`).emit('new_notification', notificationRecord);
       }
-    } catch (err) {
-      console.error('Failed to emit push notification centrally:', err);
     }
-
-    return notificationRecord;
   } catch (err) {
-    console.error('Failed to log push notification centrally:', err);
-    return null;
+    console.error('Failed to emit push notification centrally:', err);
   }
+
+  return notificationRecord;
 }
 
-async function sendSystemNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, emailMessage, type, sendEmail = true, emailSubject = null, entityType, entityId, redirectUrl }) {
-  // 1. Instantly deliver central in-app push notification
+async function sendSystemNotification(tenant, {
+  employeeId,
+  forAdmin,
+  recipientId,
+  recipientRole,
+  title,
+  message,
+  emailMessage,
+  type,
+  sendEmail = true,
+  emailSubject = null,
+  entityType,
+  entityId,
+  redirectUrl,
+}) {
   let notificationRecord = null;
   try {
-    notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId: null, entityType, entityId, redirectUrl });
-    notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId: null, entityType, entityId, redirectUrl });
+    notificationRecord = await pushNotification(tenant, {
+      employeeId,
+      forAdmin,
+      recipientId,
+      recipientRole,
+      title,
+      message,
+      type,
+      ticketId: null,
+      entityType,
+      entityId,
+      redirectUrl,
+    });
   } catch (err) {
     console.error('Failed to log push notification centrally:', err);
   }
 
-  // 2. Automated email delivery if requested
   if (sendEmail) {
     let emailTo = null;
+    const dbName = tenant?.dbName || tenant?.db_name;
     if (forAdmin) {
-      emailTo = tenant.admin_email;
-    } else if (employeeId) {
-      try {
-        const pool = await getTenantPool(tenant.dbName);
-        const { rows } = await pool.query(
-          `SELECT work_email FROM employees WHERE id = $1 AND deleted_at IS NULL`,
-          [employeeId]
-        );
-        if (rows[0]?.work_email) {
-          emailTo = rows[0].work_email;
+      emailTo = tenant?.admin_email || null;
+    } else {
+      const targetEmployeeId = employeeId || recipientId;
+      if (targetEmployeeId && dbName) {
+        try {
+          const pool = await getTenantPool(dbName);
+          const { rows } = await pool.query(
+            `SELECT work_email, personal_email FROM employees WHERE id = $1 AND deleted_at IS NULL`,
+            [targetEmployeeId],
+          );
+          emailTo =
+            String(rows[0]?.work_email || '').trim() ||
+            String(rows[0]?.personal_email || '').trim() ||
+            null;
+        } catch (err) {
+          console.error(`Failed to query employee ${targetEmployeeId} email for notification:`, err);
         }
-      } catch (err) {
-        console.error(`Failed to query employee ${employeeId} email for notification:`, err);
       }
     }
 
@@ -116,33 +156,14 @@ async function listNotifications(user, tenant = null) {
   const dbName = user?.db_name || tenant?.dbName || tenant?.db_name;
   const isSuperadmin = user?.role === 'superadmin';
 
-  console.log('[NOTIFICATIONS SERVICE] listNotifications called', {
-    userId: user?.id,
-    userRole: user?.role,
-    userPanel: user?.panel,
-    isSuperadmin,
-    dbName,
-    hasTenant: !!tenant,
-  });
-
-  // Superadmin without tenant context: fetch from ALL tenants
   if (isSuperadmin && !dbName) {
     try {
-
-
-      // Get all tenant databases
       const { rows: tenants } = await superAdminPool.query(
-        `SELECT id, db_name FROM public.tenants WHERE status = 'active' ORDER BY created_at DESC`
+        `SELECT id, db_name FROM public.tenants WHERE status = 'active' ORDER BY created_at DESC`,
       );
 
-      console.log('[NOTIFICATIONS SERVICE] Superadmin fetching from', tenants.length, 'tenants');
+      if (!tenants.length) return [];
 
-      if (!tenants.length) {
-
-        return [];
-      }
-
-      // Fetch notifications from all tenant databases
       let allNotifications = [];
 
       for (const tenantRecord of tenants) {
@@ -151,10 +172,7 @@ async function listNotifications(user, tenant = null) {
           const pool = await getTenantPool(tenantRecord.db_name);
           const notifications = await repo.listForUser(pool, user);
 
-
-
-          // Add tenant info to each notification
-          const notificationsWithTenant = notifications.map(n => ({
+          const notificationsWithTenant = notifications.map((n) => ({
             ...n,
             _tenantId: tenantRecord.id,
             _tenantDbName: tenantRecord.db_name,
@@ -167,14 +185,12 @@ async function listNotifications(user, tenant = null) {
             dbName: tenantRecord.db_name,
             error: err.message,
           });
-          // Continue with other tenants
         }
       }
 
-      // Sort by created_at descending (newest first)
-      allNotifications.sort((a, b) => new Date(b.created_at || b.createdAt) - new Date(a.created_at || a.createdAt));
-
-
+      allNotifications.sort(
+        (a, b) => new Date(b.created_at || b.createdAt) - new Date(a.created_at || a.createdAt),
+      );
 
       return allNotifications;
     } catch (err) {
@@ -183,19 +199,11 @@ async function listNotifications(user, tenant = null) {
     }
   }
 
-  // Regular user or user with tenant context
-  if (!dbName) {
-
-    return [];
-  }
+  if (!dbName) return [];
 
   await ensureMigrated(dbName);
   const pool = await getTenantPool(dbName);
-  const notifications = await repo.listForUser(pool, user);
-
-
-
-  return notifications;
+  return repo.listForUser(pool, user);
 }
 
 async function readNotification(user, id, tenant = null) {
@@ -228,5 +236,5 @@ module.exports = {
   listNotifications,
   readNotification,
   readAllNotifications,
-  deleteNotification
+  deleteNotification,
 };

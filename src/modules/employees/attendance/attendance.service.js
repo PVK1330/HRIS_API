@@ -303,20 +303,59 @@ async function markAttendance(auth, user, data, req) {
   return record;
 }
 
+const PUNCH_ALLOWED_STATUSES = new Set(['active', 'probation', 'notice period']);
+
 async function assertActiveForPunch(pool, employeeId) {
   const { rows } = await pool.query(
-    `SELECT employment_status, portal_enabled FROM employees
+    `SELECT employment_status, portal_enabled, onboarding_workflow_status,
+            onboarding_completed_at
+     FROM employees
      WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
     [employeeId],
   );
   if (!rows.length) throw ApiError.notFound('Employee not found');
-  const status = String(rows[0].employment_status || '').toLowerCase();
-  if (status === 'onboarding' || status === 'terminated') {
-    throw ApiError.forbidden('Check-in is not available for this employment status');
-  }
   if (rows[0].portal_enabled === false) {
     throw ApiError.forbidden('Portal access is disabled for this employee');
   }
+
+  let status = String(rows[0].employment_status || '').trim().toLowerCase();
+
+  // Repair legacy rows: portal active but status still Onboarding after workflow completed
+  if (status === 'onboarding') {
+    const wf = String(rows[0].onboarding_workflow_status || '').trim().toLowerCase();
+    if (rows[0].onboarding_completed_at || wf === 'onboarding_complete') {
+      await pool.query(
+        `UPDATE employees SET employment_status = 'Active', updated_at = NOW() WHERE id = $1`,
+        [employeeId],
+      );
+      status = 'active';
+    }
+  }
+
+  if (PUNCH_ALLOWED_STATUSES.has(status)) return;
+
+  if (!status) {
+    await pool.query(
+      `UPDATE employees SET employment_status = 'Active', updated_at = NOW() WHERE id = $1`,
+      [employeeId],
+    );
+    return;
+  }
+
+  if (status === 'onboarding') {
+    throw ApiError.forbidden(
+      'Check-in is not available until HR completes onboarding activation (employment status: Onboarding).',
+    );
+  }
+  if (status === 'terminated' || status === 'resigned') {
+    throw ApiError.forbidden(
+      `Check-in is not available for employment status: ${rows[0].employment_status}.`,
+    );
+  }
+
+  throw ApiError.forbidden(
+    `Check-in is not available for employment status: ${rows[0].employment_status || 'Unknown'}.`,
+  );
 }
 
 async function checkIn(auth, user, body, req) {

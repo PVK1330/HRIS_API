@@ -76,6 +76,13 @@ async function bootstrap() {
       logger.error('Failed to start exit task reminder cron', e);
     }
 
+    try {
+      const { startAttendanceCron } = require('./jobs/attendanceCron.job');
+      startAttendanceCron();
+    } catch (e) {
+      logger.error('Failed to start attendance cron', e);
+    }
+
     logger.info(`Socket.io attached on /socket.io`);
   });
 

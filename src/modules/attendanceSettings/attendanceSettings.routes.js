@@ -3,10 +3,14 @@
 const { Router } = require('express');
 const { body } = require('express-validator');
 
-const { authenticate } = require('../../middlewares/auth.middleware');
+const {
+  authenticate,
+  loadAuthContext,
+  requireAnyPermission,
+} = require('../../middlewares/auth.middleware');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
 const validate = require('../../middlewares/validate.middleware');
-const ApiError = require('../../utils/ApiError');
+const { P } = require('../../constants/permissions');
 const controller = require('./attendanceSettings.controller');
 const {
   mergeFlatAttendanceFields,
@@ -20,14 +24,7 @@ const {
 
 const router = Router();
 
-const adminOnly = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return next(new ApiError(403, 'Access denied. Admin role required.'));
-  }
-  next();
-};
-
-router.use(authenticate, tenantResolver, adminOnly);
+router.use(authenticate, tenantResolver, loadAuthContext);
 
 function normalizeBody(req, _res, next) {
   req.body = mergeFlatAttendanceFields(req.body || {});
@@ -53,7 +50,23 @@ const putValidators = [
   body('overtime_eligibility').optional().isBoolean(),
 ];
 
-router.get('/', controller.getAttendanceSettings);
-router.put('/', normalizeBody, putValidators, validate, controller.updateAttendanceSettings);
+router.get(
+  '/',
+  requireAnyPermission(
+    P.ATTENDANCE_SETTINGS_VIEW,
+    P.ATTENDANCE_SETTINGS_MANAGE,
+    P.ATTENDANCE_MANAGE,
+  ),
+  controller.getAttendanceSettings,
+);
+
+router.put(
+  '/',
+  requireAnyPermission(P.ATTENDANCE_SETTINGS_MANAGE, P.ATTENDANCE_MANAGE),
+  normalizeBody,
+  putValidators,
+  validate,
+  controller.updateAttendanceSettings,
+);
 
 module.exports = router;

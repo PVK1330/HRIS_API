@@ -42,14 +42,10 @@ const tenantStaffMayViewLogo = (req, res, next) => {
 
 router.get('/logo', tenantStaffMayViewLogo, controller.getLogo);
 
-const adminOnly = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return next(new ApiError(403, 'Access denied. Admin role required.'));
-  }
-  next();
-};
+const { loadAuthContext } = require('../../middlewares/auth.middleware');
+const { requireOrgSettingsAccess } = require('../../middlewares/orgSettingsAccess.middleware');
 
-router.use(adminOnly);
+router.use(loadAuthContext, requireOrgSettingsAccess);
 
 router.get('/', controller.getAdminSettings);
 router.put('/', controller.updateAdminSettings);

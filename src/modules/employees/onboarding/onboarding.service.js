@@ -18,6 +18,9 @@ const { WORKFLOW_STATUS, WORKFLOW_STATUS_LABELS } = require('./onboarding.workfl
 const { generateOfferLetterPdf } = require('./offerPdf.generator');
 const { resolveCandidatePortalContext, buildCandidateUrls } = require('./candidatePortalUrl');
 const notifService = require('../../notifications/notifications.service');
+const checklistUtils = require('./utils/onboardingChecklist.utils');
+const { getDepartmentRecipients } = require('./utils/onboardingRecipients.utils');
+const { sendHandoverNotification } = require('./onboardingNotification.service');
 
 const _migrationCache = new Map();
 async function ensureMigrated(dbName) {
@@ -490,7 +493,7 @@ async function getOnboardingChecklist(user, employeeId, auth = null) {
   const items = await workflowRepo.listChecklist(pool, employeeId);
   const mandatory = items.filter((i) => i.is_mandatory);
   const uploadedCount = items.filter((i) => i.upload_status === 'Uploaded').length;
-  const approvedCount = mandatory.filter((i) => i.hr_review_status === 'Approved').length;
+  const approvedCount = checklistUtils.getApprovedDocuments(items).length;
   const mandatoryCount = mandatory.length;
 
   const response = {
@@ -550,6 +553,45 @@ async function reviewChecklistItem(
     hrReviewComment,
   });
 
+  // Notify candidate if email exists
+  const personalEmail = String(emp.personal_email || '').trim();
+  if (personalEmail && (normalized === 'Approved' || normalized === 'Rejected')) {
+    try {
+      const companyName = await resolveCompanyName(user);
+      const items = await workflowRepo.listChecklist(pool, employeeId);
+      const targetItem = items.find((i) => String(i.id) === String(itemId));
+      
+      const { base, tenantSlug } = await resolveCandidatePortalContext(user.tenant_id);
+      const token = emp.onboarding_token;
+      const urls = buildCandidateUrls(base, token, tenantSlug);
+
+      if (normalized === 'Approved' && targetItem) {
+        const pendingCount = checklistUtils.getRemainingDocumentCount(items);
+        
+        await mailer.sendDocumentApprovedToCandidate({
+          to: personalEmail,
+          candidateName: emp.full_name || 'Candidate',
+          companyName,
+          documentName: targetItem.document_label,
+          pendingCount,
+          documentsUrl: urls.documentsUrl,
+        });
+      } else if (normalized === 'Rejected' && targetItem) {
+        await mailer.sendDocumentRejectedToCandidate({
+          to: personalEmail,
+          candidateName: emp.full_name || 'Candidate',
+          companyName,
+          documentName: targetItem.document_label,
+          rejectionReason: hrReviewComment,
+          documentsUrl: urls.documentsUrl,
+        });
+      }
+      logger.info(`Candidate notified of document ${normalized} status for item ${itemId}`);
+    } catch (err) {
+      logger.warn(`Failed to notify candidate about document review: ${err.message}`);
+    }
+  }
+
   return { message: 'Document review updated.' };
 }
 
@@ -599,6 +641,19 @@ async function completeOnboardingWorkflow(user, employeeId, auth = null) {
 
   const empService = require('../employees.service');
   const activation = await empService.completeOnboardingActivation(user, employeeId, auth);
+
+  // Send cross-department handover notifications
+  try {
+    const tenant = { dbName: user.db_name, db_name: user.db_name };
+    const departmentUsers = await getDepartmentRecipients(pool, ['assets', 'it', 'finance', 'payroll']);
+    
+    await sendHandoverNotification(tenant, employeeId, emp, departmentUsers);
+  } catch (err) {
+    logger.warn(`Onboarding handover notification failed: ${err.message}`);
+  }
+
+  logger.info(`Onboarding handover notification dispatched for employee ${employeeId}`);
+
   return {
     workflowStatus: WORKFLOW_STATUS.ONBOARDING_COMPLETE,
     workflowStatusLabel: WORKFLOW_STATUS_LABELS[WORKFLOW_STATUS.ONBOARDING_COMPLETE],
@@ -662,6 +717,61 @@ async function uploadSignedOfferByHr(user, employeeId, file, auth = null) {
   };
 }
 
+async function sendPendingDocumentReminder(user, employeeId, auth = null) {
+  const pool = resolvePool(user);
+  await ensureMigrated(user.db_name);
+  
+  const emp = await empRepo.findById(pool, employeeId);
+  if (!emp) throw ApiError.notFound('Employee not found');
+  if (auth) assertEmployeeRecordAccess(auth, emp);
+
+  const personalEmail = String(emp.personal_email || '').trim();
+  if (!personalEmail) {
+    throw ApiError.badRequest('Candidate does not have a personal email to send a reminder');
+  }
+
+  const items = await workflowRepo.listChecklist(pool, employeeId);
+  if (!items || items.length === 0) {
+    throw ApiError.badRequest('Candidate has no onboarding checklist items');
+  }
+
+  const pendingDocs = checklistUtils.getPendingDocuments(items);
+  const rejectedDocs = checklistUtils.getRejectedDocuments(items);
+
+  if (pendingDocs.length === 0 && rejectedDocs.length === 0) {
+    throw ApiError.badRequest('Candidate has no pending or rejected documents to remind about');
+  }
+
+  const companyName = await resolveCompanyName(user);
+  const { base, tenantSlug } = await resolveCandidatePortalContext(user.tenant_id);
+  const token = emp.onboarding_token;
+  if (!token) throw ApiError.badRequest('Candidate does not have an active onboarding token');
+  
+  const urls = buildCandidateUrls(base, token, tenantSlug);
+
+  try {
+    await mailer.sendMissingDocumentsReminderToCandidate({
+      to: personalEmail,
+      candidateName: emp.full_name || 'Candidate',
+      companyName,
+      documentsUrl: urls.documentsUrl,
+      pendingDocuments: pendingDocs.map((d) => d.document_label),
+      rejectedDocuments: rejectedDocs.map((d) => d.document_label),
+    });
+    logger.info(`Missing documents reminder sent to candidate ${employeeId} by user ${user.id}`);
+  } catch (err) {
+    logger.error(`Failed to send missing documents reminder: ${err.message}`);
+    throw ApiError.internal('Failed to send reminder email');
+  }
+
+  return {
+    success: true,
+    message: 'Reminder sent successfully',
+    pendingDocuments: pendingDocs.map((d) => d.document_label),
+    rejectedDocuments: rejectedDocs.map((d) => d.document_label),
+  };
+}
+
 module.exports = {
   notifyStepCompleted,
   setApprovalStatus,
@@ -670,6 +780,7 @@ module.exports = {
   reviewChecklistItem,
   completeOnboardingWorkflow,
   uploadSignedOfferByHr,
+  sendPendingDocumentReminder,
   WORKFLOW_STATUS,
   WORKFLOW_STATUS_LABELS,
 };

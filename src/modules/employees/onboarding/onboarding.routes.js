@@ -104,4 +104,12 @@ router.post(
   ctrl.completeWorkflow,
 );
 
+router.post(
+  '/:id/onboarding/remind-documents',
+  requirePermission(P.EMPLOYEE_EDIT),
+  [param('id').isInt({ min: 1 })],
+  validate,
+  ctrl.remindDocuments,
+);
+
 module.exports = router;

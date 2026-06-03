@@ -113,7 +113,7 @@ function requirePermission(permissionKey) {
       const { user } = req;
       if (!user) return next(ApiError.unauthorized('Authentication required'));
 
-      if (user.role === 'superadmin' || user.role === 'admin') {
+      if (user.role === 'superadmin') {
         return next();
       }
 
@@ -123,7 +123,7 @@ function requirePermission(permissionKey) {
         req.auth = auth;
       }
 
-      if (permissionSatisfied(auth.permissions, permissionKey)) {
+      if (auth.isTenantAdmin || permissionSatisfied(auth.permissions, permissionKey)) {
         return next();
       }
 
@@ -161,7 +161,7 @@ function requireAnyPermission(...permissionKeys) {
     try {
       const { user } = req;
       if (!user) return next(ApiError.unauthorized('Authentication required'));
-      if (user.role === 'superadmin' || user.role === 'admin') {
+      if (user.role === 'superadmin') {
         return next();
       }
 
@@ -171,7 +171,7 @@ function requireAnyPermission(...permissionKeys) {
         req.auth = auth;
       }
 
-      const ok = keys.some((k) => permissionSatisfied(auth.permissions, k));
+      const ok = auth.isTenantAdmin || keys.some((k) => permissionSatisfied(auth.permissions, k));
       if (ok) return next();
 
       return next(

@@ -14,6 +14,8 @@ const { generatePortalPassword } = require("../../utils/generatePortalPassword")
 const { resolvePortalLoginUrl } = require("../../utils/portalUrl");
 const { assertEmployeeRecordAccess } = require("../../utils/applyDataScope");
 const { formatEmpId, parseEmpIdSequence } = require("../../utils/empIdFormat");
+const notificationsService = require("../notifications/notifications.service");
+const onboardingHandoverService = require("../onboardingHandover/onboardingHandover.service");
 
 
 function omitPassword(obj) {
@@ -529,6 +531,66 @@ async function completeOnboardingActivation(user, id, auth = null) {
   }
 
   const full = await repo.findById(pool, id);
+  if (full) {
+    try {
+      // 1. Resolve handover recipients (HR, Assets, IT, etc.)
+      const handoverRecipients = await onboardingHandoverService.getHandoverRecipients({ dbName: user.db_name });
+      const candidateName = full.full_name || full.first_name || 'New Employee';
+      
+      const notifyPromises = [];
+      const notifiedManagers = new Set();
+
+      // Notify designated department heads (from Handover Rules)
+      for (const hr of handoverRecipients) {
+        if (!notifiedManagers.has(hr.id)) {
+          notifiedManagers.add(hr.id);
+          notifyPromises.push(
+            notificationsService.sendSystemNotification({ dbName: user.db_name }, {
+              recipientId: hr.id,
+              recipientRole: 'employee',
+              title: 'New Joinee Asset & Workflow Assignment',
+              message: `${candidateName} has successfully completed onboarding and their account is active. Please prepare and assign their required assets and schedule a session to explain their workflow properly.`,
+              type: 'onboarding_completion',
+              sendEmail: true
+            }).catch(e => logger.warn(`Failed to notify handover recipient ${hr.id}: ${e.message}`))
+          );
+        }
+      }
+
+      // Notify the direct reporting manager if one exists and hasn't been notified yet
+      if (full.reporting_manager_id && !notifiedManagers.has(full.reporting_manager_id)) {
+        notifiedManagers.add(full.reporting_manager_id);
+        notifyPromises.push(
+          notificationsService.sendSystemNotification({ dbName: user.db_name }, {
+            recipientId: full.reporting_manager_id,
+            recipientRole: 'employee',
+            title: 'New Joinee Asset & Workflow Assignment',
+            message: `${candidateName} has successfully completed onboarding and their account is active. Please prepare and assign their required assets and schedule a session to explain their workflow properly.`,
+            type: 'onboarding_completion',
+            sendEmail: true
+          }).catch(e => logger.warn(`Failed to notify reporting manager ${full.reporting_manager_id}: ${e.message}`))
+        );
+      }
+
+      // 2. Notify Candidate
+      notifyPromises.push(
+        notificationsService.sendSystemNotification({ dbName: user.db_name }, {
+          recipientId: full.id,
+          recipientRole: 'employee',
+          title: 'Onboarding Completed - Next Steps',
+          message: `Welcome aboard, ${candidateName}! Your onboarding is now complete. The HR team and your department manager will reach out to you shortly regarding your asset assignments and workflow orientation.`,
+          type: 'onboarding_completion',
+          sendEmail: true
+        }).catch(e => logger.warn(`Failed to notify candidate ${full.id}: ${e.message}`))
+      );
+
+      // Wait for notifications to complete (these are mostly async push emissions & queued emails)
+      await Promise.all(notifyPromises);
+    } catch (notifErr) {
+      logger.error(`Error sending onboarding completion notifications: ${notifErr.message}`);
+    }
+  }
+
   return {
     employee: omitPassword(full || activated),
     emailSent,

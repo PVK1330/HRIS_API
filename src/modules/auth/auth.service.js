@@ -505,10 +505,12 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
   const rbacRoleId = emp.rbac_role_id || null;
 
   let allowedModules = ['dashboard'];
+  let permissions = [];
   if (rbacRoleId) {
     const keys = await rbacRepo.permissionKeysForRole(tenantPool, rbacRoleId);
     const expanded = expandPermissionKeys(keys);
     allowedModules = toAllowedModulesForJwt(expanded);
+    permissions = Array.from(expanded);
   }
 
   const token = jwt.sign(
@@ -540,6 +542,7 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
       rbacRoleId: rbacRoleId || null,
       employeeId: emp.id,
       department: emp.department || null,
+      permissions,
     },
     plan_details: planDetails,
     plan_features: planFeatures,
@@ -550,6 +553,7 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
 
 async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatures, planDetails, planFeatures) {
   const allowedModules = await adminModulesForJwt(tenantPool);
+  const permissions = ['*']; // Admins have all permissions by default
 
   // Try to find a matching employee record by email
   const { rows: empRows } = await tenantPool.query(
@@ -617,6 +621,7 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
       tenantId: tenant.id,
       tenantName: tenant.name,
       employeeId: employeeId,
+      permissions,
     },
     plan_details: planDetails,
     plan_features: planFeatures,
@@ -1062,13 +1067,16 @@ async function getAccessProfile(currentUser) {
   const rbacRepo = require('../rbac/rbac.repository');
 
   let allowedModules = ['dashboard'];
+  let permissions = [];
   const tenantPool = getTenantPool(tenant.db_name);
   if (currentUser.role === 'admin') {
     allowedModules = await adminModulesForJwt(tenantPool);
+    permissions = ['*'];
   } else if (currentUser.rbacRoleId) {
     const keys = await rbacRepo.permissionKeysForRole(tenantPool, currentUser.rbacRoleId);
     const expanded = expandPermissionKeys(keys);
     allowedModules = toAllowedModulesForJwt(expanded);
+    permissions = Array.from(expanded);
   }
 
   return {
@@ -1082,6 +1090,7 @@ async function getAccessProfile(currentUser) {
     plan_details: planDetails ? [planDetails] : [],
     tenant_features: tenantFeatures,
     allowedModules,
+    permissions,
     refreshed_at: new Date().toISOString(),
   };
 }

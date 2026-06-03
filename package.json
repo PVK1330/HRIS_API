@@ -24,7 +24,13 @@
     "test:attendance:settings-rbac": "node src/tests/attendance.settings.rbac.test.js",
     "test:attendance:holidays": "node --test src/tests/holidays.seed.test.js",
     "test:attendance:integrity": "node src/tests/attendance.integrity.test.js",
-    "repair:attendance-permissions": "node src/scripts/repairAttendancePermissions.js"
+    "test:attendance:audit": "node src/tests/attendance.production.audit.test.js",
+    "test:attendance:holiday-dedup": "node src/tests/holiday.notification.dedup.test.js",
+    "repair:attendance-permissions": "node src/scripts/repairAttendancePermissions.js",
+    "repair:attendance-records": "node src/scripts/repairAttendanceRecords.js",
+    "repair:attendance-records:dry": "node src/scripts/repairAttendanceRecords.js --dry-run",
+    "repair:punch-employment-status": "node src/scripts/repairEmploymentStatusForPunch.js",
+    "repair:punch-employment-status:dry": "node src/scripts/repairEmploymentStatusForPunch.js"
   },
   "keywords": [
     "pern",

@@ -67,6 +67,7 @@ async function createHolidayDate(dbName, tenantDb, { calendarId, holidayDate, na
     title: 'Holiday added',
     message: `${name} on ${holidayDate} (${cal.region}) has been added to the calendar.`,
     entityId: row.id,
+    holidayId: row.id,
   });
   await audit.log(pool, {
     action: 'holiday.created',
@@ -87,6 +88,7 @@ async function updateHolidayDate(dbName, tenantDb, id, patch, req) {
     title: 'Holiday updated',
     message: `Holiday on ${row.holiday_date} was updated to "${row.name}".`,
     entityId: row.id,
+    holidayId: row.id,
   });
   await audit.log(pool, {
     action: 'holiday.updated',
@@ -107,6 +109,7 @@ async function deleteHolidayDate(dbName, tenantDb, id, req) {
     title: 'Holiday removed',
     message: `A holiday entry was removed from the calendar.`,
     entityId: id,
+    holidayId: id,
   });
   await audit.log(pool, {
     action: 'holiday.deleted',
@@ -134,6 +137,7 @@ async function sendUpcomingReminders(pool, tenantDb, withinDays = 7) {
       title: 'Upcoming public holiday',
       message: `Reminder: ${h.name} on ${h.holiday_date} (${h.region}).`,
       entityId: h.id,
+      holidayId: h.id,
     });
   }
   return { reminded: rows.length };

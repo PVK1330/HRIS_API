@@ -334,8 +334,9 @@ async function getPayrollSummary(pool, employeeId, year, month) {
   const { rows } = await pool.query(
     `SELECT
        COUNT(*)::int AS working_days,
-       COUNT(*) FILTER (WHERE status IN ('Present','Late','Remote','Work From Home','Field Duty')
-         AND check_in_time IS NOT NULL)::int AS present_days,
+       COUNT(*) FILTER (WHERE status IN ('Present','Late','Remote','Work From Home','Field Duty','Half Day')
+         AND check_in_time IS NOT NULL
+         AND status NOT LIKE 'Missing%')::int AS present_days,
        COUNT(*) FILTER (WHERE status = 'Absent')::int AS absent_days,
        COUNT(*) FILTER (WHERE status = 'Half Day')::int AS half_days,
        COUNT(*) FILTER (WHERE paid_day = true)::int AS paid_days,

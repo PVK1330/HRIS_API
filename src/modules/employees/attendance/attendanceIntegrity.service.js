@@ -18,6 +18,16 @@ const TERMINAL_STATUSES = new Set([
 ]);
 
 /**
+ * Present requires check-in, or approved regularization with at least check-in time.
+ */
+function mayShowAsPresent({ checkInTime, regularizationStatus }) {
+  const hasIn = Boolean(checkInTime);
+  if (hasIn) return true;
+  if (regularizationStatus === 'Approved' && hasIn) return true;
+  return false;
+}
+
+/**
  * Derive canonical display/storage status from punch + regularization state.
  */
 function deriveStatus({
@@ -40,10 +50,6 @@ function deriveStatus({
 
   if (reg === 'Pending') return 'Regularization Pending';
 
-  if (reg === 'Approved' && (hasIn || hasOut)) {
-    base = base.startsWith('Regularization') ? 'Present' : base;
-  }
-
   if (!hasIn && !hasOut) {
     if (reg === 'Approved') return 'Missing Check In';
     return base === 'Absent' ? 'Absent' : 'Missing Check In';
@@ -53,16 +59,21 @@ function deriveStatus({
   if (!hasOut) return 'Missing Check Out';
 
   if (isLate && !hasIn) return 'Missing Check In';
+
+  if (PRESENT_LIKE.has(base) && !mayShowAsPresent({ checkInTime, regularizationStatus: reg })) {
+    return 'Missing Check In';
+  }
+
   if (ot > 0 && hours <= 0) {
-    /* caller should zero OT */
+    /* caller zeros OT in sanitizeMetrics */
   }
 
   if (PRESENT_LIKE.has(base) && hours <= 0 && hasIn && hasOut) {
     return 'Half Day';
   }
 
-  if (PRESENT_LIKE.has(base) && !hasIn) {
-    return reg === 'Approved' ? 'Present' : 'Missing Check In';
+  if (base === 'Regularization Approved' && hasIn) {
+    return hasOut ? 'Present' : 'Missing Check Out';
   }
 
   return base;
@@ -101,7 +112,10 @@ function sanitizeMetrics(computed, checkInTime, checkOutTime, regularizationStat
     isLate,
   });
 
-  const paidPresent = PRESENT_LIKE.has(status)
+  const paidPresent = (PRESENT_LIKE.has(status) && mayShowAsPresent({
+    checkInTime,
+    regularizationStatus,
+  }))
     || status === 'Regularization Approved'
     || (regularizationStatus === 'Approved' && hasIn);
 
@@ -112,7 +126,7 @@ function sanitizeMetrics(computed, checkInTime, checkOutTime, regularizationStat
     total_hours: wh,
     overtime_hours: ot,
     is_late: isLate && hasIn,
-    paid_day: computed.paid_day !== false && status !== 'Absent' && !status.startsWith('Missing'),
+    paid_day: computed.paid_day !== false && status !== 'Absent' && !String(status).startsWith('Missing'),
   };
 }
 
@@ -142,6 +156,7 @@ function assertApprovedHasApprover(regularizationStatus, approvedBy) {
 
 module.exports = {
   PRESENT_LIKE,
+  mayShowAsPresent,
   deriveStatus,
   sanitizeMetrics,
   mapRecordForResponse,

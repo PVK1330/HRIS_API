@@ -1,6 +1,9 @@
 'use strict';
 
-const { pushNotification } = require('../../notifications/notifications.service');
+const {
+  pushNotification,
+  sendSystemNotification,
+} = require('../../notifications/notifications.service');
 
 const TYPES = {
   CHECK_IN: 'attendance.check_in',
@@ -13,6 +16,10 @@ const TYPES = {
   OT_APPROVED: 'attendance.overtime.approved',
 };
 
+function tenantCtx(tenantDb) {
+  return { db_name: tenantDb, dbName: tenantDb };
+}
+
 async function notifyEmployee(pool, tenantDb, {
   employeeId,
   type,
@@ -20,8 +27,12 @@ async function notifyEmployee(pool, tenantDb, {
   message,
   entityId,
   redirectUrl,
+  sendEmail = false,
+  emailSubject,
 }) {
-  await pushNotification(pool, {
+  const tenant = tenantCtx(tenantDb);
+  const payload = {
+    employeeId,
     recipientId: employeeId,
     recipientRole: 'employee',
     type,
@@ -30,8 +41,19 @@ async function notifyEmployee(pool, tenantDb, {
     entityType: 'attendance',
     entityId: entityId ? String(entityId) : null,
     redirectUrl: redirectUrl || '/employee/attendance',
-    tenantDb,
-  });
+  };
+
+  if (sendEmail) {
+    await sendSystemNotification(tenant, {
+      ...payload,
+      emailMessage: message,
+      emailSubject: emailSubject || title,
+      sendEmail: true,
+    });
+    return;
+  }
+
+  await pushNotification(tenant, payload);
 }
 
 async function notifyManagersForRegularization(pool, tenantDb, record) {
@@ -42,7 +64,7 @@ async function notifyManagersForRegularization(pool, tenantDb, record) {
   );
   const mgrId = rows[0]?.manager_id;
   if (!mgrId) return;
-  await pushNotification(pool, {
+  await pushNotification(tenantCtx(tenantDb), {
     recipientId: mgrId,
     recipientRole: 'employee',
     type: TYPES.REG_SUBMITTED,
@@ -51,7 +73,6 @@ async function notifyManagersForRegularization(pool, tenantDb, record) {
     entityType: 'attendance',
     entityId: String(record.id),
     redirectUrl: '/admin/attendance/regularizations',
-    tenantDb,
   });
 }
 

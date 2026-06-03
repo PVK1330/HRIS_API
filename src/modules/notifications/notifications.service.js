@@ -50,20 +50,25 @@ async function sendSystemNotification(tenant, { employeeId, forAdmin, recipientI
   // 2. Automated email delivery if requested
   if (sendEmail) {
     let emailTo = null;
+    const dbName = tenant?.dbName || tenant?.db_name;
     if (forAdmin) {
-      emailTo = tenant.admin_email;
-    } else if (employeeId) {
-      try {
-        const pool = await getTenantPool(tenant.dbName);
-        const { rows } = await pool.query(
-          `SELECT work_email FROM employees WHERE id = $1 AND deleted_at IS NULL`,
-          [employeeId]
-        );
-        if (rows[0]?.work_email) {
-          emailTo = rows[0].work_email;
+      emailTo = tenant?.admin_email || null;
+    } else {
+      const targetEmployeeId = employeeId || recipientId;
+      if (targetEmployeeId && dbName) {
+        try {
+          const pool = await getTenantPool(dbName);
+          const { rows } = await pool.query(
+            `SELECT work_email, personal_email FROM employees WHERE id = $1 AND deleted_at IS NULL`,
+            [targetEmployeeId],
+          );
+          emailTo =
+            String(rows[0]?.work_email || '').trim() ||
+            String(rows[0]?.personal_email || '').trim() ||
+            null;
+        } catch (err) {
+          console.error(`Failed to query employee ${targetEmployeeId} email for notification:`, err);
         }
-      } catch (err) {
-        console.error(`Failed to query employee ${employeeId} email for notification:`, err);
       }
     }
 

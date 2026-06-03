@@ -1,58 +1,69 @@
 'use strict';
 
-const nodemailer = require('nodemailer');
 const env = require('../config/env');
 const logger = require('./logger');
 
+function shouldMockOnFailure() {
+  if (process.env.MAIL_FORCE_SEND === 'true') return false;
+  return env.NODE_ENV === 'development' && process.env.MAIL_MOCK_ON_FAIL !== 'false';
+}
+
+function logMockEmail({ to, subject, text, error }) {
+  logger.warn('--- EMAIL NOT SENT (SMTP failure or not configured) ---');
+  if (error) logger.warn(`Reason: ${error.message || error}`);
+  logger.warn(`To: ${to}`);
+  logger.warn(`Subject: ${subject}`);
+  logger.warn(`Body: ${text || '(HTML)'}`);
+  logger.warn('Configure Settings → Email (SMTP) or MAIL_* in .env. Set MAIL_FORCE_SEND=true to surface errors in dev.');
+  logger.warn('Note: addresses like user@demo.com have no real mailbox unless you use Mailtrap/Mailhog.');
+  logger.warn('--------------------------------------------------------');
+}
+
 /**
- * Mail Utility using Nodemailer
- * Supports MAIL_* and EMAIL_* env vars. Reloads dotenv on each send so .env edits apply without restart.
+ * Send email via tenant SMTP (Settings → Email) with .env fallback.
  * @param {Object} options { to, subject, html, text, attachments? }
  */
 async function sendMail({ to, subject, html, text, attachments }) {
+  require('dotenv').config();
+
+  if (!to) {
+    throw new Error('[mail] Recipient `to` is required');
+  }
+
   try {
-    require('dotenv').config();
+    const { Mailer } = require('../helpers/mailer/mailer');
+    const mailer = await Mailer.getInstance();
 
-    const mailHost = process.env.MAIL_HOST || process.env.EMAIL_HOST || 'smtp.gmail.com';
-    const mailPort = parseInt(process.env.MAIL_PORT || process.env.EMAIL_PORT, 10) || 587;
-    const mailUser = process.env.MAIL_USER || process.env.EMAIL_USER;
-    const mailPass = process.env.MAIL_PASS || process.env.EMAIL_PASS;
-    const mailFromAddr =
-      process.env.MAIL_FROM ||
-      process.env.EMAIL_FROM_ADDRESS ||
-      process.env.EMAIL_USER;
+    if (!mailer.config.host && !mailer.config.username) {
+      const msg = '[mail] SMTP is not configured (Settings → Email or MAIL_USER/MAIL_HOST in .env)';
+      if (shouldMockOnFailure()) {
+        logMockEmail({ to, subject, text, error: new Error(msg) });
+        return { messageId: 'mock-id', mocked: true };
+      }
+      throw new Error(msg);
+    }
 
-    const transporter = nodemailer.createTransport({
-      host: mailHost,
-      port: mailPort,
-      secure: process.env.MAIL_SECURE === 'true' || process.env.EMAIL_SECURE === 'true',
-      auth: {
-        user: mailUser,
-        pass: mailPass,
-      },
-    });
+    const bodyHtml =
+      html ||
+      (text
+        ? `<pre style="font-family:sans-serif;white-space:pre-wrap">${String(text).replace(/</g, '&lt;')}</pre>`
+        : '<p>(no content)</p>');
 
-    const info = await transporter.sendMail({
-      from: `"${process.env.EMAIL_FROM_NAME || process.env.MAIL_FROM_NAME || 'HRIS Support'}" <${mailFromAddr}>`,
+    const result = await mailer.sendRaw({
       to,
       subject,
-      text,
-      html,
+      html: bodyHtml,
       attachments,
     });
 
-    logger.info(`Email sent to ${to}: ${info.messageId}`);
-    return info;
+    logger.info(`[mail] sent to=${to} messageId=${result.messageId}`);
+    return result;
   } catch (error) {
-    logger.error(`Failed to send email to ${to}`, error);
-    // In development, we don't want to crash if email fails
-    if (env.NODE_ENV === 'development') {
-      logger.warn('--- MOCK EMAIL CONTENT ---');
-      logger.warn(`To: ${to}`);
-      logger.warn(`Subject: ${subject}`);
-      logger.warn(`Body: ${text || 'HTML Content'}`);
-      logger.warn('--------------------------');
-      return { messageId: 'mock-id' };
+    logger.error(`[mail] failed to send to ${to}`, error);
+
+    if (shouldMockOnFailure()) {
+      logMockEmail({ to, subject, text, error });
+      return { messageId: 'mock-id', mocked: true, error: error.message };
     }
     throw error;
   }

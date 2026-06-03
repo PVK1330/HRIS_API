@@ -14,27 +14,19 @@ async function ensureMigrated(dbName) {
   return p;
 }
 
-<<<<<<< HEAD
-async function pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId, entityType, entityId, redirectUrl }) {
-=======
 async function pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId, entityType, entityId, redirectUrl }) {
->>>>>>> 39670adc9158e26c5e0b85b318ecf9bd536be59c
   const dbName = tenant?.dbName || tenant?.db_name;
   if (!dbName) return null;
   await ensureMigrated(dbName);
   const pool = await getTenantPool(dbName);
-<<<<<<< HEAD
   return repo.create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId });
 }
 
 async function sendSystemNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, emailMessage, type, sendEmail = true, emailSubject = null }) {
   // 1. Instantly deliver central in-app push notification
-  let notificationRecord = null;
-=======
-  
+
   const notificationRecord = await repo.create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId, entityType, entityId, redirectUrl });
-  
->>>>>>> 39670adc9158e26c5e0b85b318ecf9bd536be59c
+
   try {
     notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId: null });
     const notificationRecord = await repo.create(pool, { employeeId, forAdmin, title, message, type, ticketId, entityType, entityId, redirectUrl });
@@ -63,11 +55,8 @@ async function sendSystemNotification(tenant, { employeeId, forAdmin, recipientI
   // 1. Instantly deliver central in-app push notification
   let notificationRecord = null;
   try {
-<<<<<<< HEAD
     notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, title, message, type, ticketId: null, entityType, entityId, redirectUrl });
-=======
     notificationRecord = await pushNotification(tenant, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId: null, entityType, entityId, redirectUrl });
->>>>>>> 39670adc9158e26c5e0b85b318ecf9bd536be59c
   } catch (err) {
     console.error('Failed to log push notification centrally:', err);
   }

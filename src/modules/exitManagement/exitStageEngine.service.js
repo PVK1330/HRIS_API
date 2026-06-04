@@ -147,6 +147,30 @@ async function seedStageEntry(client, requestId, stage) {
     [requestId, stage.id],
   );
 
+  // If this stage is IT or Asset Clearance, dynamically fetch employee's assigned assets and insert them as checklist items.
+  const stageName = (stage.name || '').toLowerCase();
+  if (stageName.includes('it clearance') || stageName.includes('asset') || stageName.includes('it admin')) {
+    const { rows: reqRows } = await client.query('SELECT employee_id FROM exit_requests WHERE id = $1', [requestId]);
+    if (reqRows.length > 0) {
+      const empId = reqRows[0].employee_id;
+      try {
+        // Query assets assigned to the employee
+        const { rows: assets } = await client.query(`SELECT id, asset_name, asset_code FROM assets WHERE employee_id = $1 AND status = 'ASSIGNED'`, [empId]);
+        for (const asset of assets) {
+          await client.query(
+            `INSERT INTO exit_request_checklist_items
+               (exit_request_id, stage_id, template_item_id, item_type, label, is_mandatory, status)
+             VALUES ($1, $2, NULL, 'COLLECT_ASSET', $3, true, 'PENDING')`,
+            [requestId, stage.id, `Collect Asset: ${asset.asset_name} (${asset.asset_code})`]
+          );
+        }
+      } catch (e) {
+        // Fallback or ignore if assets table does not strictly exist
+        console.error('Error fetching assets for clearance', e);
+      }
+    }
+  }
+
   return deptId;
 }
 

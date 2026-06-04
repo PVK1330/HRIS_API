@@ -229,7 +229,7 @@ async function generate(tenant, requestId, dto, actor) {
   }
 
   // Notify the employee in-app that documents were issued (best-effort).
-  try { require('./exitEvents.service').onDocumentsSent(tenant, Number(requestId), emailed).catch(() => {}); }
+  try { require('./exitEvents.service').onDocumentsSent(tenant, Number(requestId), emailed).catch((e) => console.error('Exit workflow event error:', e)); }
   catch (_) { /* non-blocking */ }
 
   return {

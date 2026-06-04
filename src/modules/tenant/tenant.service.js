@@ -349,6 +349,14 @@ async function createTenant({
     // 7. Run tenant migrations inside the new DB.
     await runTenantMigrations(dbName);
 
+    // 7.5 Seed default enterprise exit workflow
+    try {
+      const seedEnterpriseExitWorkflow = require("../../scripts/seed_enterprise_exit_workflow");
+      await seedEnterpriseExitWorkflow(dbName);
+    } catch (seedErr) {
+      logger.error(`Failed to seed enterprise exit workflow for ${dbName}:`, seedErr.message);
+    }
+
     // 8. Insert admin_users row inside the tenant DB via cached pool.
     const tenantPool = db.getTenantPool(dbName);
     const adminRow = await repo.insertAdminUser(tenantPool, {

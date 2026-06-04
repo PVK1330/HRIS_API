@@ -73,6 +73,14 @@ async function submitExitRequest(tenant, data, exitUser, file = null) {
     if (!exitUser.isOrgExitAdmin && !exitUser.canTerminateExit) {
       throw ApiError.forbidden('Missing required permission: exit.terminate');
     }
+  } else {
+    // For resignations, check if letter is required
+    const tenantSettingsService = require('../tenantSettings/tenantSettings.service');
+    const settings = await tenantSettingsService.getAdminSettings(tenant.dbName, 'exit');
+    const requireLetter = settings.require_resignation_letter === true || settings.require_resignation_letter === 'true';
+    if (requireLetter && !file) {
+      throw ApiError.badRequest('Please upload your signed resignation letter before submitting your resignation request.');
+    }
   }
 
   const workflow = await getDefaultWorkflowFor(pool, exitType);
@@ -105,15 +113,26 @@ async function submitExitRequest(tenant, data, exitUser, file = null) {
     // Enter stage 1 (sets IN_PROGRESS, pointers, PENDING slot, checklist seeding).
     await engine.seedStageEntry(client, requestId, firstStage);
 
-    // Optional scanned resignation letter attached at submission.
+    // Optional or required scanned resignation letter attached at submission.
     if (file) {
       const fileUrl = `/uploads/exit-stage-attachments/${tenant.dbName}/${file.filename}`;
       await client.query(
         `INSERT INTO exit_request_attachments
            (exit_request_id, stage_id, attachment_type, file_url, file_name, mime_type, uploaded_by)
-         VALUES ($1,$2,'GENERIC',$3,$4,$5,$6)`,
+         VALUES ($1,$2,'RESIGNATION_LETTER',$3,$4,$5,$6)`,
         [requestId, firstStage.id, fileUrl, file.originalname, file.mimetype, employeeId],
       );
+      
+      const workflowAudit = require('../workflow/workflowAudit.service');
+      await workflowAudit.log(tenant, {
+        module: 'exit',
+        action: 'uploaded',
+        entityType: 'exit_request',
+        entityId: requestId,
+        actorEmployeeId: employeeId,
+        actorName: empRows[0].full_name,
+        detail: { file_name: file.originalname, type: 'RESIGNATION_LETTER' }
+      });
     }
 
     await client.query('COMMIT');
@@ -130,7 +149,7 @@ async function submitExitRequest(tenant, data, exitUser, file = null) {
         sendEmail: false,
       });
     } catch (_) { /* non-blocking */ }
-    events().onSubmitted(tenant, requestId).catch(() => { });
+    events().onSubmitted(tenant, requestId).catch((e) => console.error('Exit workflow event error:', e));
 
     return getExitRequest(tenant, requestId, exitUser);
   } catch (err) {
@@ -344,7 +363,7 @@ async function approveStage(tenant, id, exitUser, comments) {
         });
       } catch (_) { /* non-blocking */ }
     }
-    events().onApproved(tenant, Number(id), !!result.completed).catch(() => { });
+    events().onApproved(tenant, Number(id), !!result.completed).catch((e) => console.error('Exit workflow event error:', e));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -386,7 +405,7 @@ async function rejectStage(tenant, id, exitUser, reason) {
         sendEmail: false,
       });
     } catch (_) { /* non-blocking */ }
-    events().onRejected(tenant, Number(id), reason).catch(() => { });
+    events().onRejected(tenant, Number(id), reason).catch((e) => console.error('Exit workflow event error:', e));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -427,8 +446,8 @@ async function sendBackStage(tenant, id, exitUser, { target_stage_id, comments }
     events().onSendBack(tenant, Number(id), {
       reason: comments,
       exitUser: { ...exitUser, actorName: exitUser.actorName || exitUser.full_name },
-    }).catch(() => { });
-    events().onStageEntered(tenant, Number(id), { skipBroadcast: true }).catch(() => { });
+    }).catch((e) => console.error('Exit workflow event error:', e));
+    events().onStageEntered(tenant, Number(id), { skipBroadcast: true }).catch((e) => console.error('Exit workflow event error:', e));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -461,7 +480,7 @@ async function reassignStage(tenant, id, exitUser, { department_id, comments }) 
     await recordAction(client, { ...request, current_owner_department_id: department_id }, 'REASSIGN', exitUser, comments);
     await client.query('COMMIT');
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'reassign' });
-    events().onReassigned(tenant, Number(id)).catch(() => { });
+    events().onReassigned(tenant, Number(id)).catch((e) => console.error('Exit workflow event error:', e));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -498,7 +517,7 @@ async function escalateStage(tenant, id, exitUser, comments) {
     );
     await client.query('COMMIT');
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'escalate' });
-    events().onEscalated(tenant, Number(id), stage.escalation_to_user_id || null).catch(() => { });
+    events().onEscalated(tenant, Number(id), stage.escalation_to_user_id || null).catch((e) => console.error('Exit workflow event error:', e));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -521,7 +540,7 @@ async function addComment(tenant, id, exitUser, comments) {
     events().onCommentAdded(tenant, Number(id), {
       comment: comments,
       exitUser: { ...exitUser, actorName: exitUser.actorName || exitUser.full_name },
-    }).catch(() => { });
+    }).catch((e) => console.error('Exit workflow event error:', e));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -556,7 +575,7 @@ async function withdrawExitRequest(tenant, id, exitUser, reason) {
     );
     await client.query('COMMIT');
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'withdraw' });
-    events().onWithdrawn(tenant, Number(id), reason).catch(() => { });
+    events().onWithdrawn(tenant, Number(id), reason).catch((e) => console.error('Exit workflow event error:', e));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -569,11 +588,87 @@ async function withdrawExitRequest(tenant, id, exitUser, reason) {
 async function getAuditLog(tenant, id) {
   const pool = await getTenantPool(tenant.dbName);
   const { rows } = await pool.query(
-    `SELECT a.*, e.full_name AS actor_full_name, s.name AS stage_name
-     FROM exit_approvals a
-     LEFT JOIN employees e ON e.id = a.actor_id
-     LEFT JOIN exit_workflow_stages s ON s.id = a.stage_id
-     WHERE a.exit_request_id = $1 ORDER BY a.created_at DESC`, [id],
+    `
+      SELECT * FROM (
+        -- 1. Stage Movements (exit_approvals)
+        SELECT 
+          'stage_approval' AS source,
+          a.id AS event_id,
+          a.action AS action_type,
+          e.full_name AS actor_name,
+          s.name AS stage_name,
+          NULL::jsonb AS metadata,
+          COALESCE(a.acted_at, a.created_at) AS created_at
+        FROM exit_approvals a
+        LEFT JOIN employees e ON e.id = a.actor_id
+        LEFT JOIN exit_workflow_stages s ON s.id = a.stage_id
+        WHERE a.exit_request_id = $1
+
+        UNION ALL
+
+        -- 2. Audit Logs (workflow_audit_logs)
+        SELECT 
+          'audit_log' AS source,
+          w.id AS event_id,
+          w.action AS action_type,
+          w.actor_name AS actor_name,
+          NULL AS stage_name,
+          w.detail AS metadata,
+          w.created_at AS created_at
+        FROM workflow_audit_logs w
+        WHERE w.module = 'exit' AND w.entity_id = $1
+
+        UNION ALL
+
+        -- 3. Tasks (exit_tasks)
+        SELECT 
+          'task' AS source,
+          t.id AS event_id,
+          CASE WHEN t.status = 'COMPLETED' THEN 'completed' ELSE 'assigned' END AS action_type,
+          e.full_name AS actor_name,
+          s.name AS stage_name,
+          jsonb_build_object('title', t.title, 'status', t.status) AS metadata,
+          COALESCE(t.completed_at, t.created_at) AS created_at
+        FROM exit_tasks t
+        LEFT JOIN employees e ON e.id = t.assigned_to
+        LEFT JOIN exit_workflow_stages s ON s.id = t.stage_id
+        WHERE t.exit_request_id = $1
+
+        UNION ALL
+
+        -- 4. Checklists (exit_request_checklist_items)
+        SELECT 
+          'checklist' AS source,
+          c.id AS event_id,
+          c.status AS action_type,
+          e.full_name AS actor_name,
+          s.name AS stage_name,
+          jsonb_build_object('label', c.label) AS metadata,
+          c.updated_at AS created_at
+        FROM exit_request_checklist_items c
+        LEFT JOIN employees e ON e.id = c.completed_by_id
+        LEFT JOIN exit_workflow_stages s ON s.id = c.stage_id
+        WHERE c.exit_request_id = $1 AND c.status != 'PENDING'
+
+        UNION ALL
+
+        -- 5. Attachments (exit_request_attachments)
+        SELECT 
+          'attachment' AS source,
+          att.id AS event_id,
+          'uploaded' AS action_type,
+          e.full_name AS actor_name,
+          s.name AS stage_name,
+          jsonb_build_object('file_name', att.file_name, 'type', att.attachment_type) AS metadata,
+          att.created_at AS created_at
+        FROM exit_request_attachments att
+        LEFT JOIN employees e ON e.id = att.uploaded_by
+        LEFT JOIN exit_workflow_stages s ON s.id = att.stage_id
+        WHERE att.exit_request_id = $1
+      ) combined_events
+      ORDER BY created_at DESC
+    `,
+    [id],
   );
   return rows;
 }

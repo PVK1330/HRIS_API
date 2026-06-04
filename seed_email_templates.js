@@ -1,0 +1,66 @@
+const fs = require('fs');
+const path = require('path');
+
+const templatesDir = path.join(__dirname, 'src', 'helpers', 'mailer', 'templates');
+if (!fs.existsSync(templatesDir)) {
+  fs.mkdirSync(templatesDir, { recursive: true });
+}
+
+const templates = [
+  'exit_request_submitted',
+  'exit_stage_assigned',
+  'exit_stage_approved',
+  'exit_stage_rejected',
+  'exit_checklist_assigned',
+  'exit_asset_pending',
+  'exit_asset_completed',
+  'exit_settlement_pending',
+  'exit_settlement_ready',
+  'exit_withdrawn',
+  'exit_sla_warning',
+  'exit_sla_escalation',
+  'exit_completed'
+];
+
+const layout = `
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; color: #334155; margin: 0; padding: 20px; }
+    .container { max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+    .header { background: #0F766E; padding: 20px; text-align: center; color: white; font-size: 20px; font-weight: bold; }
+    .content { padding: 30px; line-height: 1.6; }
+    .footer { background: #f1f5f9; padding: 15px; text-align: center; font-size: 12px; color: #64748b; }
+    .btn { display: inline-block; background: #0F766E; color: white; text-decoration: none; padding: 10px 20px; border-radius: 6px; font-weight: 600; margin-top: 20px; }
+    @media (prefers-color-scheme: dark) {
+      body { background-color: #0f172a; color: #cbd5e1; }
+      .container { background: #1e293b; }
+      .header { background: #115e59; }
+      .footer { background: #0f172a; color: #94a3b8; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">{{company_name}}</div>
+    <div class="content">
+      {{{content}}}
+    </div>
+    <div class="footer">
+      &copy; {{year}} {{company_name}}. All rights reserved.
+    </div>
+  </div>
+</body>
+</html>
+`;
+
+for (const t of templates) {
+  const file = path.join(templatesDir, t + '.html');
+  if (!fs.existsSync(file)) {
+    const specificContent = "<p>Hello {{employee_name}},</p><p>This is a notification regarding your exit process: <strong>" + t.replace(/_/g, ' ') + "</strong>.</p><a href=\"{{app_url}}\" class=\"btn\">View Details</a>";
+    const fullHtml = layout.replace('{{{content}}}', specificContent);
+    fs.writeFileSync(file, fullHtml);
+  }
+}
+console.log('Created exit email templates');

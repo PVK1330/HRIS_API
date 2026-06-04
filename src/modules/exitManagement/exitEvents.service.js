@@ -68,10 +68,12 @@ async function emailSafe(tenant, to, templateSlug, variables, dedupMeta) {
 async function loadReq(pool, requestId) {
   const { rows } = await pool.query(
     `SELECT er.id, er.employee_id, er.exit_type, er.status, er.current_stage_id, er.rejection_reason,
-            e.full_name, e.first_name, e.last_name, e.work_email, e.job_title,
+            e.full_name, e.first_name, e.last_name, e.work_email, e.job_title, e.reporting_to,
+            d.manager_id AS dept_head_id,
             s.name AS stage_name
      FROM exit_requests er
      LEFT JOIN employees e ON e.id = er.employee_id
+     LEFT JOIN departments d ON d.id = e.department_id
      LEFT JOIN exit_workflow_stages s ON s.id = er.current_stage_id
      WHERE er.id = $1`,
     [requestId],
@@ -209,7 +211,7 @@ async function onStageEntered(tenant, requestId, options = {}) {
     if (options.skipBroadcast) return;
 
     for (const r of recipients) {
-      await pushSafe(tenant, {
+      await pushSafe(tenant, { priority: 'NORMAL',
         employeeId: r.employee_id,
         title: 'Exit task assigned to you',
         message: `An exit request for ${empName} needs your action at the "${req.stage_name}" stage.`,
@@ -235,7 +237,7 @@ async function onStageEntered(tenant, requestId, options = {}) {
         recipientId: r.employee_id,
       });
     }
-    await pushSafe(tenant, {
+    await pushSafe(tenant, { priority: 'NORMAL',
       forAdmin: true,
       title: 'Exit stage advanced',
       message: `${empName}'s exit request reached the "${req.stage_name}" stage.`,
@@ -262,22 +264,49 @@ async function onSubmitted(tenant, requestId) {
     const company = await getCompany(tenant);
     const empName = fullName(req);
 
-    await pushSafe(tenant, {
-      forAdmin: true, type: 'exit_management',
-      title: 'New exit request submitted',
-      message: `${empName} submitted a ${req.exit_type} request.`,
-      entityType: 'exit_request',
-      entityId: requestId,
-      redirectUrl: `/admin/exit-management/${requestId}`
-    });
-    await pushSafe(tenant, {
-      employeeId: req.employee_id, type: 'exit_management',
+    const hrAdmins = await getHROrAdminRecipients(pool);
+
+    const notifyList = [
+      { id: req.reporting_to, role: 'Manager' },
+      { id: req.dept_head_id, role: 'Department Head' }
+    ].filter(x => x.id && x.id !== req.employee_id);
+
+    // Notify Employee
+    await pushSafe(tenant, { priority: 'NORMAL',
+      employeeId: req.employee_id, type: 'exit_management', priority: 'NORMAL',
       title: 'Exit request submitted',
       message: `Your ${req.exit_type} request has been submitted and is now in progress.`,
       entityType: 'exit_request',
       entityId: requestId,
       redirectUrl: `/admin/exit-management/${requestId}`
     });
+    
+    // Notify Manager and Dept Head
+    for (const recipient of notifyList) {
+      await pushSafe(tenant, { priority: 'NORMAL',
+        employeeId: recipient.id, type: 'exit_management', priority: 'HIGH',
+        title: 'Exit request submitted',
+        message: `${empName} submitted a ${req.exit_type} request.`,
+        entityType: 'exit_request',
+        entityId: requestId,
+        redirectUrl: `/admin/exit-management/${requestId}`
+      });
+    }
+
+    // Notify HR / Admins
+    for (const admin of hrAdmins) {
+      if (admin.id === req.employee_id) continue;
+      await pushSafe(tenant, { priority: 'NORMAL',
+        employeeId: admin.id, type: 'exit_management', priority: 'NORMAL',
+        title: 'New exit request submitted',
+        message: `${empName} submitted a ${req.exit_type} request.`,
+        entityType: 'exit_request',
+        entityId: requestId,
+        redirectUrl: `/admin/exit-management/${requestId}`
+      });
+    }
+
+    // Single email for employee
     await emailSafe(tenant, req.work_email, 'exit_request_submitted', {
       employee_name: empName,
       exit_type: req.exit_type || 'exit',
@@ -359,7 +388,7 @@ async function onCompleted(tenant, requestId) {
       console.error('[onCompleted] Auto-generation of documents failed:', err);
     }
 
-    await pushSafe(tenant, {
+    await pushSafe(tenant, { priority: 'NORMAL',
       employeeId: req.employee_id, type: 'exit_management',
       title: 'Exit process completed', message: 'Your exit process has been completed.',
       entityType: 'exit_request',
@@ -374,7 +403,7 @@ async function onCompleted(tenant, requestId) {
         company_logo: company.companyLogo
       }, attachments);
     }
-    await pushSafe(tenant, {
+    await pushSafe(tenant, { priority: 'NORMAL',
       forAdmin: true,
       title: 'Exit completed',
       message: `${empName}'s exit process is complete.`,
@@ -393,8 +422,22 @@ async function onCompleted(tenant, requestId) {
       action: 'completed',
       entityType: 'exit_request',
       entityId: requestId,
-      detail: {},
     });
+
+    // Epic P3: Employee Deactivation Workflow
+    // Deactivate the employee account immediately on exit completion
+    try {
+      await pool.query(
+        `UPDATE employees 
+         SET status = 'EXITED', 
+             deleted_at = COALESCE(deleted_at, NOW()) 
+         WHERE id = $1`,
+        [req.employee_id]
+      );
+      console.log(`[onCompleted] Deactivated employee ${req.employee_id}`);
+    } catch (e) {
+      console.error('[onCompleted] Failed to deactivate employee account:', e);
+    }
   } catch (_) { /* non-blocking */ }
 }
 
@@ -407,7 +450,7 @@ async function onRejected(tenant, requestId, reason) {
     const empName = fullName(req);
     const reasonText = reason ? `\nReason: ${reason}` : '';
     await closeRequestTasks(pool, requestId);
-    await pushSafe(tenant, {
+    await pushSafe(tenant, { priority: 'NORMAL',
       employeeId: req.employee_id, type: 'exit_management',
       title: 'Exit request rejected', message: `Your exit request was rejected.${reasonText}`,
       entityType: 'exit_request',
@@ -421,7 +464,7 @@ async function onRejected(tenant, requestId, reason) {
       company_logo: company.companyLogo,
       reason: reason || 'Not specified',
     });
-    await pushSafe(tenant, {
+    await pushSafe(tenant, { priority: 'NORMAL',
       forAdmin: true,
       title: 'Exit request rejected',
       message: `${empName}'s exit request was rejected.`,
@@ -455,7 +498,7 @@ async function onWithdrawn(tenant, requestId, reason) {
     const reasonText = reason || 'Withdrawn by request owner';
     await closeRequestTasks(pool, requestId);
 
-    await pushSafe(tenant, {
+    await pushSafe(tenant, { priority: 'NORMAL',
       employeeId: req.employee_id,
       title: 'Exit request withdrawn',
       message: 'Your exit request has been withdrawn.',
@@ -487,7 +530,7 @@ async function onWithdrawn(tenant, requestId, reason) {
     if (stageId) {
       const { recipients } = await resolveResponsibles(pool, stageId);
       for (const r of recipients) {
-        await pushSafe(tenant, {
+        await pushSafe(tenant, { priority: 'NORMAL',
           employeeId: r.employee_id,
           title: 'Exit request withdrawn',
           message: `${empName}'s exit request was withdrawn. ${reasonText}`,
@@ -518,7 +561,7 @@ async function onWithdrawn(tenant, requestId, reason) {
 
     const hrAdmins = await getHROrAdminRecipients(pool);
     for (const admin of hrAdmins) {
-      await pushSafe(tenant, {
+      await pushSafe(tenant, { priority: 'NORMAL',
         employeeId: admin.id,
         title: 'Exit request withdrawn',
         message: `${empName}'s exit request was withdrawn.`,
@@ -533,7 +576,7 @@ async function onWithdrawn(tenant, requestId, reason) {
       });
     }
 
-    await pushSafe(tenant, {
+    await pushSafe(tenant, { priority: 'NORMAL',
       forAdmin: true,
       title: 'Exit request withdrawn',
       message: `${empName}'s exit request was withdrawn.`,
@@ -567,7 +610,7 @@ async function onSendBack(tenant, requestId, { reason, exitUser } = {}) {
     const senderName = exitUser?.actorName || exitUser?.full_name || 'Approver';
     const reasonText = reason || 'Revision required';
 
-    await pushSafe(tenant, {
+    await pushSafe(tenant, { priority: 'NORMAL',
       employeeId: req.employee_id,
       title: 'Your exit request has been sent back for revision.',
       message: `Reason: ${reasonText}. From: ${senderName}`,
@@ -599,7 +642,7 @@ async function onSendBack(tenant, requestId, { reason, exitUser } = {}) {
 
     const { recipients } = await resolveResponsibles(pool, req.current_stage_id);
     for (const r of recipients) {
-      await pushSafe(tenant, {
+      await pushSafe(tenant, { priority: 'NORMAL',
         employeeId: r.employee_id,
         title: 'Exit request sent back for revision',
         message: `${empName}'s request was sent back at "${req.stage_name}". ${reasonText}`,
@@ -651,7 +694,7 @@ async function onCommentAdded(tenant, requestId, { comment, exitUser } = {}) {
     const senderName = exitUser?.actorName || 'User';
     const commentText = String(comment || '').trim();
 
-    await pushSafe(tenant, {
+    await pushSafe(tenant, { priority: 'NORMAL',
       employeeId: req.employee_id,
       title: 'New comment on your exit request',
       message: `${senderName}: ${commentText}`,
@@ -684,7 +727,7 @@ async function onCommentAdded(tenant, requestId, { comment, exitUser } = {}) {
       const { recipients } = await resolveResponsibles(pool, req.current_stage_id);
       for (const r of recipients) {
         if (r.employee_id === exitUser?.employeeId) continue;
-        await pushSafe(tenant, {
+        await pushSafe(tenant, { priority: 'NORMAL',
           employeeId: r.employee_id,
           title: 'New exit request comment',
           message: `${senderName} on ${empName}: ${commentText}`,
@@ -753,7 +796,7 @@ async function onReassigned(tenant, requestId) {
       );
       await createStageTasks(pool, requestId, req.current_stage_id, req.stage_name,
         [{ employee_id: head.manager_id }]);
-      await pushSafe(tenant, {
+      await pushSafe(tenant, { priority: 'NORMAL',
         employeeId: head.manager_id, type: 'exit_management',
         title: 'Exit reassigned to you',
         message: `An exit request for ${empName} at the "${req.stage_name}" stage has been reassigned to your department.`,
@@ -766,7 +809,7 @@ async function onReassigned(tenant, requestId) {
         job_title: req.job_title || '', stage_name: req.stage_name || '', company_name: company.companyName,
       });
     }
-    await pushSafe(tenant, {
+    await pushSafe(tenant, { priority: 'NORMAL',
       forAdmin: true, type: 'exit_management',
       title: 'Exit stage reassigned', message: `${empName}'s exit ("${req.stage_name}") was reassigned.`,
       entityType: 'exit_request',
@@ -784,7 +827,7 @@ async function onEscalated(tenant, requestId, escalationToUserId) {
     if (!req) return;
     const empName = fullName(req);
     if (escalationToUserId) {
-      await pushSafe(tenant, {
+      await pushSafe(tenant, { priority: 'NORMAL',
         employeeId: escalationToUserId, type: 'exit_management',
         title: 'Exit stage escalated to you',
         message: `An exit stage ("${req.stage_name}") for ${empName} has been escalated to you.`,
@@ -793,7 +836,7 @@ async function onEscalated(tenant, requestId, escalationToUserId) {
         redirectUrl: `/admin/exit-management/${requestId}`
       });
     }
-    await pushSafe(tenant, {
+    await pushSafe(tenant, { priority: 'NORMAL',
       forAdmin: true, type: 'exit_management',
       title: 'Exit stage escalated', message: `${empName}'s exit ("${req.stage_name}") was escalated.`,
       entityType: 'exit_request',
@@ -809,7 +852,7 @@ async function onDocumentsSent(tenant, requestId, emailed) {
     const pool = await getTenantPool(tenant.dbName);
     const req = await loadReq(pool, requestId);
     if (!req) return;
-    await pushSafe(tenant, {
+    await pushSafe(tenant, { priority: 'NORMAL',
       employeeId: req.employee_id, type: 'exit_management',
       title: 'Exit documents issued',
       message: emailed ? 'Your exit documents have been generated and emailed to you.'
@@ -904,7 +947,7 @@ async function completeTask(tenant, taskId, exitUser) {
   );
   const completed = upd[0];
   if (completed) {
-    onTaskCompleted(tenant, task).catch(() => {});
+    onTaskCompleted(tenant, task).catch((e) => console.error('Exit workflow event error:', e));
   }
   return completed;
 }
@@ -919,7 +962,7 @@ async function onTaskCompleted(tenant, task) {
     if (task.stage_id) {
       const { recipients } = await resolveResponsibles(pool, task.stage_id);
       for (const r of recipients) {
-        await pushSafe(tenant, {
+        await pushSafe(tenant, { priority: 'NORMAL',
           employeeId: r.employee_id,
           title,
           message: `Task "${task.title}" for ${empName} has been completed.`,
@@ -949,7 +992,7 @@ async function onTaskCompleted(tenant, task) {
     }
 
     if (task.employee_id) {
-      await pushSafe(tenant, {
+      await pushSafe(tenant, { priority: 'NORMAL',
         employeeId: task.employee_id,
         title,
         message: `A task in your exit process ("${task.title}") has been completed.`,

@@ -23,6 +23,21 @@ const router = Router();
 // Base chain: authenticate + resolve tenant + build req.exitUser (NO scope engine).
 router.use(authenticate, tenantResolver, loadUserContext);
 
+/* Shared upload handler — files land under uploads/exit-stage-attachments/<tenant>/. */
+const storage = multer.diskStorage({
+  destination(req, _file, cb) {
+    const dir = path.resolve(env.UPLOAD.dir, 'exit-stage-attachments', req.tenant?.dbName || 'default');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename(_req, file, cb) {
+    const ext = path.extname(file.originalname);
+    const base = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9]/g, '_');
+    cb(null, `${Date.now()}-${base}${ext}`);
+  },
+});
+const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
+
 /* Per-request access chain (loads request + current stage, resolves caller capabilities). */
 const reqChain = [validateWithJoi(v.idParam, 'params'), loadWorkflowContext, resolveExitAccess];
 
@@ -37,7 +52,9 @@ router.put('/tasks/:taskId/delay-reason', validateWithJoi(v.taskIdParam, 'params
 
 /* ---- Exit requests ---- */
 router.get('/', validateWithJoi(v.listingQuery, 'query'), ctrl.list);
-router.post('/', authorizeExitAccess({ action: 'create' }), validateWithJoi(v.createRequestBody, 'body'), ctrl.create);
+// Optional `resignation_letter` file (scanned copy) accepted at submission — multer ignores
+// non-multipart bodies, so plain-JSON submissions keep working unchanged.
+router.post('/', authorizeExitAccess({ action: 'create' }), upload.single('resignation_letter'), validateWithJoi(v.createRequestBody, 'body'), ctrl.create);
 
 router.get('/:id', ...reqChain, authorizeExitAccess({ action: 'view' }), ctrl.getOne);
 router.get('/:id/audit-log', ...reqChain, authorizeExitAccess({ action: 'view' }), ctrl.auditLog);
@@ -70,20 +87,6 @@ router.get('/:id/assets', ...reqChain, authorizeExitAccess({ action: 'view' }), 
 router.put('/:id/assets/:assetId/return', validateWithJoi(v.assetParams, 'params'), loadWorkflowContext, resolveExitAccess, authorizeExitAccess({ action: 'complete_checklist' }), validateWithJoi(v.returnAssetBody, 'body'), ctrl.returnAsset);
 
 /* ---- Attachments ---- */
-const storage = multer.diskStorage({
-  destination(req, _file, cb) {
-    const dir = path.resolve(env.UPLOAD.dir, 'exit-stage-attachments', req.tenant?.dbName || 'default');
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename(_req, file, cb) {
-    const ext = path.extname(file.originalname);
-    const base = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9]/g, '_');
-    cb(null, `${Date.now()}-${base}${ext}`);
-  },
-});
-const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
-
 router.get('/:id/attachments', ...reqChain, authorizeExitAccess({ action: 'view' }), ctrl.listAttachments);
 router.post('/:id/stages/:stageId/attachments', validateWithJoi(v.stageParams, 'params'), loadWorkflowContext, resolveExitAccess, authorizeExitAccess({ action: 'upload' }), upload.single('file'), ctrl.uploadAttachment);
 

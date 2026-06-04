@@ -133,19 +133,39 @@ async function insertRequest(pool, data) {
   return rows[0];
 }
 
-async function updateRequestStatus(pool, id, { status, approvedBy, rejectionReason }) {
+/**
+ * Update a request's lifecycle. `stage` records which approver acted:
+ *   'manager' → sets manager_approved_by/at (status becomes Manager_Approved)
+ *   'hr'      → sets hr_approved_by/at AND approved_by/at (final approval)
+ * Reject/cancel pass no stage and just set status + rejection_reason.
+ */
+async function updateRequestStatus(pool, id, { status, stage, actorId, rejectionReason }) {
+  const sets = ['status = $1::VARCHAR', 'updated_at = NOW()'];
+  const params = [status];
+  let i = 2;
+
+  if (stage === 'manager') {
+    sets.push(`manager_approved_by = $${i}`); params.push(actorId || null); i += 1;
+    sets.push('manager_approved_at = NOW()');
+  } else if (stage === 'hr') {
+    sets.push(`hr_approved_by = $${i}`); params.push(actorId || null); i += 1;
+    sets.push('hr_approved_at = NOW()');
+    sets.push(`approved_by = $${i}`); params.push(actorId || null); i += 1;
+    sets.push('approved_at = NOW()');
+  }
+
+  sets.push(`rejection_reason = $${i}`); params.push(rejectionReason || null); i += 1;
+
+  params.push(id);
   const { rows } = await pool.query(
     `UPDATE leave_requests
-     SET status           = $1::VARCHAR,
-         approved_by      = $2,
-         approved_at      = CASE WHEN $1::VARCHAR = 'Approved' THEN NOW() ELSE NULL END,
-         rejection_reason = $3,
-         updated_at       = NOW()
-     WHERE id = $4
+     SET ${sets.join(', ')}
+     WHERE id = $${i}
      RETURNING id, leave_type, status, total_days,
+               manager_approved_by, hr_approved_by,
                TO_CHAR(from_date, 'YYYY-MM-DD') AS from_date,
                TO_CHAR(to_date,   'YYYY-MM-DD') AS to_date`,
-    [status, approvedBy || null, rejectionReason || null, id]
+    params
   );
   return rows[0] || null;
 }

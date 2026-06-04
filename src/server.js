@@ -83,6 +83,20 @@ async function bootstrap() {
       logger.error('Failed to start attendance cron', e);
     }
 
+    try {
+      const { startLeaveCarryForwardCron } = require('./jobs/leaveCarryForward.job');
+      startLeaveCarryForwardCron();
+    } catch (e) {
+      logger.error('Failed to start leave carry-forward cron', e);
+    }
+
+    try {
+      const { startAttendanceMonthlyReportCron } = require('./jobs/attendanceMonthlyReport.job');
+      startAttendanceMonthlyReportCron();
+    } catch (e) {
+      logger.error('Failed to start attendance monthly report cron', e);
+    }
+
     logger.info(`Socket.io attached on /socket.io`);
   });
 

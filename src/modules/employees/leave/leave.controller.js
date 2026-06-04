@@ -34,4 +34,10 @@ const balances = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, 'Leave balances retrieved');
 });
 
-module.exports = { list, listAll, apply, process, balances };
+// POST /api/v1/leave/carry-forward
+const carryForward = asyncHandler(async (req, res) => {
+  const data = await service.runCarryForward(req.user, req.body);
+  return ApiResponse.ok(res, data, 'Leave carry-forward processed');
+});
+
+module.exports = { list, listAll, apply, process, balances, carryForward };

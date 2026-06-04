@@ -154,7 +154,7 @@ async function processLateRecalc(pool, dateStr) {
   return { updated, skipped: false };
 }
 
-async function processOvertimeRecalc(pool, dateStr) {
+async function processOvertimeRecalc(pool, dateStr, tenantDb = null) {
   const settings = await calc.loadSettings(pool);
   if (!settings?.overtime_eligibility) {
     return { updated: 0, skipped: true };
@@ -191,16 +191,23 @@ async function processOvertimeRecalc(pool, dateStr) {
       },
     });
 
+    // Newly-detected overtime requires manager approval — raise a pending request and
+    // notify the reporting manager (idempotent: markOvertimePending only fires from 'None',
+    // and notifyOtRequested de-dupes). It is NOT auto-approved.
     if (computed.overtime_hours > 0 && computed.overtime_hours !== oldOt) {
       try {
         const notify = require('./attendanceNotifications.service');
-        await notify.notifyOtApproved(pool, null, {
-          employeeId: row.employee_id,
-          date: dateStr,
-          entityId: row.id,
-          hours: computed.overtime_hours
-        });
-      } catch(e) {}
+        const repo = require('./attendance.repository');
+        const flagged = await repo.markOvertimePending(pool, row.id);
+        if (flagged && tenantDb) {
+          await notify.notifyOtRequested(pool, tenantDb, {
+            employeeId: row.employee_id,
+            date: dateStr,
+            entityId: row.id,
+            hours: computed.overtime_hours,
+          });
+        }
+      } catch (e) { /* non-blocking */ }
     }
 
     updated += 1;

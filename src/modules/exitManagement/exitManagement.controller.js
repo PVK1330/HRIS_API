@@ -25,7 +25,7 @@ const getOne = asyncHandler(async (req, res) => {
 });
 
 const create = asyncHandler(async (req, res) => {
-  const record = await service.submitExitRequest(req.tenant, req.body, actor(req));
+  const record = await service.submitExitRequest(req.tenant, req.body, actor(req), req.file);
   return ApiResponse.created(res, record, 'Exit request submitted successfully');
 });
 

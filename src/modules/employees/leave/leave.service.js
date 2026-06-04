@@ -5,6 +5,7 @@ const ApiError = require('../../../utils/ApiError');
 const { runTenantMigrations } = require('../../tenant/tenant.service');
 const empRepo = require('../employees.repository');
 const repo = require('./leave.repository');
+const carryForward = require('./leaveCarryForward.service');
 
 const _cache = new Map();
 async function ensureMigrated(dbName) {
@@ -207,6 +208,19 @@ async function applyLeave(user, data) {
 
 // ─── Admin: PATCH /leave/:id ──────────────────────────────────────────────────
 
+// Roles permitted to give the FINAL (HR) approval. Tenant admins / superadmins act as HR.
+const HR_ROLES = new Set(['admin', 'superadmin', 'hr_admin', 'hr_executive', 'hr']);
+function isHrActor(user) {
+  return HR_ROLES.has(String(user?.role || '').toLowerCase());
+}
+
+/**
+ * Two-stage approval workflow:
+ *   Pending          --approve(manager)-->  Manager_Approved
+ *   Manager_Approved --approve(HR)------->  Approved   (balance deducted here, HR-only)
+ *   Pending | Manager_Approved --reject--> Rejected
+ *   Pending | Manager_Approved | Approved --cancel--> Cancelled (restore balance if was Approved)
+ */
 async function processLeave(user, id, { action, reason }) {
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
@@ -214,31 +228,48 @@ async function processLeave(user, id, { action, reason }) {
   const request = await repo.findRequestById(pool, id);
   if (!request) throw ApiError.notFound('Leave request not found');
 
-  const statusMap = { approve: 'Approved', reject: 'Rejected', cancel: 'Cancelled' };
-  const newStatus = statusMap[action];
-  if (!newStatus) throw ApiError.badRequest('action must be approve, reject, or cancel');
+  if (!['approve', 'reject', 'cancel'].includes(action)) {
+    throw ApiError.badRequest('action must be approve, reject, or cancel');
+  }
 
-  // Pending → Approved / Rejected / Cancelled  ✓
-  // Approved → Cancelled  ✓  (restore balance)
-  // Anything else → block
-  const allowedTransitions = {
-    approve: ['Pending'],
-    reject:  ['Pending'],
-    cancel:  ['Pending', 'Approved'],
-  };
-  if (!allowedTransitions[action].includes(request.status)) {
-    throw ApiError.badRequest(
-      `Cannot ${action} a request with status "${request.status}"`
-    );
+  let newStatus;
+  let stage; // 'manager' | 'hr' | undefined
+
+  if (action === 'approve') {
+    if (request.status === 'Pending') {
+      // Stage 1 — manager approval; routes on to HR, no balance change yet.
+      newStatus = 'Manager_Approved';
+      stage = 'manager';
+    } else if (request.status === 'Manager_Approved') {
+      // Stage 2 — HR final approval. Restricted to HR/admin roles.
+      if (!isHrActor(user)) {
+        throw ApiError.forbidden('Final approval requires an HR or admin role');
+      }
+      newStatus = 'Approved';
+      stage = 'hr';
+    } else {
+      throw ApiError.badRequest(`Cannot approve a request with status "${request.status}"`);
+    }
+  } else if (action === 'reject') {
+    if (!['Pending', 'Manager_Approved'].includes(request.status)) {
+      throw ApiError.badRequest(`Cannot reject a request with status "${request.status}"`);
+    }
+    newStatus = 'Rejected';
+  } else { // cancel
+    if (!['Pending', 'Manager_Approved', 'Approved'].includes(request.status)) {
+      throw ApiError.badRequest(`Cannot cancel a request with status "${request.status}"`);
+    }
+    newStatus = 'Cancelled';
   }
 
   const updated = await repo.updateRequestStatus(pool, id, {
     status:          newStatus,
-    approvedBy:      user.id,
+    stage,
+    actorId:         user.id,
     rejectionReason: reason || null,
   });
 
-  // ── Balance logic ─────────────────────────────────────────────────────────
+  // ── Balance logic — only the FINAL approval consumes balance ────────────────
   const leaveTypeCfg = await repo.findActiveLeaveType(pool, request.leave_type);
   const isUnpaid     = leaveTypeCfg?.paid_or_unpaid === 'Unpaid';
 
@@ -271,7 +302,7 @@ async function processLeave(user, id, { action, reason }) {
         carryForward:   balance.carry_forward,
       });
     }
-    // Rejected from Pending → no balance change (days were never deducted)
+    // Reject, or cancel before final approval → no balance change (never deducted).
   }
 
   return updated;
@@ -296,10 +327,21 @@ async function listBalances(user, query = {}) {
   return { balances: rows, year };
 }
 
+// ─── Admin: POST /leave/carry-forward ─────────────────────────────────────────
+// Manually roll unused balances into a target leave year for this tenant. The same
+// logic runs automatically via the yearly cron; this lets HR trigger / re-run it.
+async function runCarryForward(user, { year } = {}) {
+  const pool = getPool(user);
+  await ensureMigrated(user.db_name);
+  const targetYear = parseInt(year, 10) || new Date().getFullYear();
+  return carryForward.processCarryForward(pool, targetYear);
+}
+
 module.exports = {
   getLeave,
   listLeave,
   applyLeave,
   processLeave,
   listBalances,
+  runCarryForward,
 };

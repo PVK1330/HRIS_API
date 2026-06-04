@@ -62,4 +62,10 @@ adminRouter.patch('/:id', [
   body('reason').optional().isString().trim(),
 ], validate, ctrl.process);
 
+// Roll unused balances into a new leave year (also runs automatically via yearly cron).
+adminRouter.post('/carry-forward', [
+  requirePermission(P.LEAVE_APPROVE),
+  body('year').optional().isInt({ min: 2000, max: 2100 }),
+], validate, ctrl.carryForward);
+
 module.exports = { employeeRouter, adminRouter };

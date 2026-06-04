@@ -49,7 +49,7 @@ async function getDefaultWorkflowFor(pool, exitType) {
 /*  Submit                                                            */
 /* ------------------------------------------------------------------ */
 
-async function submitExitRequest(tenant, data, exitUser) {
+async function submitExitRequest(tenant, data, exitUser, file = null) {
   const pool = await getTenantPool(tenant.dbName);
   const employeeId = data.employee_id || exitUser.employeeId;
   if (!employeeId) throw ApiError.badRequest('employee_id is required');
@@ -104,6 +104,17 @@ async function submitExitRequest(tenant, data, exitUser) {
 
     // Enter stage 1 (sets IN_PROGRESS, pointers, PENDING slot, checklist seeding).
     await engine.seedStageEntry(client, requestId, firstStage);
+
+    // Optional scanned resignation letter attached at submission.
+    if (file) {
+      const fileUrl = `/uploads/exit-stage-attachments/${tenant.dbName}/${file.filename}`;
+      await client.query(
+        `INSERT INTO exit_request_attachments
+           (exit_request_id, stage_id, attachment_type, file_url, file_name, mime_type, uploaded_by)
+         VALUES ($1,$2,'GENERIC',$3,$4,$5,$6)`,
+        [requestId, firstStage.id, fileUrl, file.originalname, file.mimetype, employeeId],
+      );
+    }
 
     await client.query('COMMIT');
 

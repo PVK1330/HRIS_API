@@ -17,6 +17,7 @@ const tenantSettingsService = require('../../tenantSettings/tenantSettings.servi
 const integrity = require('./attendanceIntegrity.service');
 const { hasPermission } = require('../../../services/authz.service');
 const { P } = require('../../../constants/permissions');
+const logger = require('../../../utils/logger');
 
 const _cache = new Map();
 async function ensureMigrated(dbName) {
@@ -465,6 +466,23 @@ async function checkOut(auth, user, body, req) {
     entityId: record.id,
   });
 
+  // Overtime recorded → raise a manager approval request (non-blocking).
+  if (Number(record.overtime_hours) > 0) {
+    try {
+      const flagged = await repo.markOvertimePending(pool, record.id);
+      if (flagged) {
+        await notify.notifyOtRequested(pool, user.db_name, {
+          employeeId,
+          date: dateStr,
+          entityId: record.id,
+          hours: record.overtime_hours,
+        });
+      }
+    } catch (e) {
+      logger.warn(`[attendance] overtime approval request failed for record ${record.id}`, e.message);
+    }
+  }
+
   return record;
 }
 
@@ -544,12 +562,16 @@ async function submitRegularization(auth, user, body, req) {
       ...meta,
     });
 
-    await notify.notifyRegSubmitted(pool, user.db_name, {
-      employeeId: employeeId,
-      date: dateStr,
-      entityId: record.id,
-    });
-    await notify.notifyManagersForRegularization(pool, user.db_name, full);
+    // Post-commit notification — never fail an already-committed regularization on a
+    // notification error. notifyRegSubmitted already alerts the reporting manager (the
+    // first-level approver in the regularization chain).
+    try {
+      await notify.notifyRegSubmitted(pool, user.db_name, {
+        employeeId: employeeId,
+        date: dateStr,
+        entityId: record.id,
+      });
+    } catch (_) { /* non-blocking */ }
 
     return integrity.mapRecordForResponse(full);
   } catch (e) {
@@ -567,6 +589,85 @@ async function getPendingRegularizations(auth, user, query = {}) {
   const offset = (Math.max(1, parseInt(query.page, 10) || 1) - 1) * limit;
   const records = await repo.getPendingRegularizations(pool, { limit, offset }, auth);
   return { records: mapRows(records), total: records.length };
+}
+
+// ─── Overtime approval ────────────────────────────────────────────────────────
+
+async function getPendingOvertime(auth, user, query = {}) {
+  const pool = getPool(user);
+  await ensureMigrated(user.db_name);
+  const limit = Math.min(100, parseInt(query.limit, 10) || 50);
+  const offset = (Math.max(1, parseInt(query.page, 10) || 1) - 1) * limit;
+  const records = await repo.getPendingOvertime(pool, { limit, offset }, auth);
+  return { records, total: records.length };
+}
+
+/**
+ * Manager approve/reject of a pending overtime record. On approval the overtime is
+ * forwarded to the employee's department for further processing.
+ */
+async function processOvertime(auth, user, id, { action, reason }, req) {
+  const pool = getPool(user);
+  await ensureMigrated(user.db_name);
+
+  const record = await repo.findById(pool, id);
+  if (!record) throw ApiError.notFound('Attendance record not found');
+  if (record.overtime_status !== 'Pending') {
+    throw ApiError.badRequest('No pending overtime approval for this record');
+  }
+  await authz.assertCanModifyEmployee(auth, pool, Number(record.employee_id));
+
+  const approverId = actorEmployeeId(user);
+  const newStatus = action === 'approve' ? 'Approved' : 'Rejected';
+
+  const updated = await repo.updateOvertimeStatus(pool, id, {
+    status:          newStatus,
+    approvedBy:      approverId,
+    rejectionReason: action === 'reject' ? (reason || null) : null,
+    forwarded:       action === 'approve',
+  });
+  if (!updated) throw ApiError.badRequest('No pending overtime approval for this record');
+
+  const meta = audit.auditMeta(req);
+  await audit.log(pool, {
+    attendanceId: id,
+    employeeId: record.employee_id,
+    action: action === 'approve' ? 'attendance.overtime.approve' : 'attendance.overtime.reject',
+    oldValue: { overtime_status: 'Pending', overtime_hours: record.overtime_hours },
+    newValue: updated,
+    performedBy: approverId,
+    ...meta,
+  });
+
+  try {
+    if (action === 'approve') {
+      await notify.notifyOtApproved(pool, user.db_name, {
+        employeeId: record.employee_id,
+        date: record.date,
+        entityId: record.id,
+        hours: record.overtime_hours,
+      });
+      // Forward the approved overtime to the department for further processing.
+      await notify.notifyOtForwardedToDept(pool, user.db_name, {
+        employeeId: record.employee_id,
+        date: record.date,
+        entityId: record.id,
+        hours: record.overtime_hours,
+      });
+    } else {
+      await notify.notifyOtRejected(pool, user.db_name, {
+        employeeId: record.employee_id,
+        date: record.date,
+        entityId: record.id,
+        hours: record.overtime_hours,
+        reason,
+      });
+    }
+  } catch (e) {
+    logger.warn(`[attendance] overtime notification failed for record ${id}`, e.message);
+  }
+
+  return updated;
 }
 
 async function regularize(auth, user, id, { action, reason }, req) {
@@ -787,6 +888,8 @@ module.exports = {
   submitRegularization,
   getPendingRegularizations,
   regularize,
+  getPendingOvertime,
+  processOvertime,
   getPayrollSummary,
   getMyToday,
   getDashboard,

@@ -76,6 +76,11 @@ adminRouter.get('/reports/export/pdf', anyViewPermission(), ctrl.exportPdf);
 adminRouter.get('/reports/export/excel', anyViewPermission(), ctrl.exportExcel);
 
 adminRouter.get('/regularizations', anyViewPermission(), ctrl.pendingRegularizations);
+
+adminRouter.get('/overtime/pending', anyViewPermission(), [
+  query('page').optional().isInt({ min: 1 }),
+  query('limit').optional().isInt({ min: 1, max: 100 }),
+], validate, ctrl.pendingOvertime);
 adminRouter.get('/regularizations/history', anyViewPermission(), [
   query('status').optional().isIn(['Pending', 'Approved', 'Rejected']),
   query('page').optional().isInt({ min: 1 }),
@@ -134,5 +139,22 @@ adminRouter.patch('/:id/regularize', (req, res, next) => {
   body('action').isIn(['approve', 'reject']),
   v.optionalReason,
 ], validate, ctrl.regularize);
+
+adminRouter.patch('/:id/overtime', (req, res, next) => {
+  const { hasPermission } = require('../../../services/authz.service');
+  const ok =
+    hasPermission(req.auth, P.ATTENDANCE_APPROVE)
+    || hasPermission(req.auth, P.ATTENDANCE_REJECT)
+    || hasPermission(req.auth, P.ATTENDANCE_MANAGE);
+  if (!ok) {
+    const ApiError = require('../../../utils/ApiError');
+    return next(ApiError.forbidden('Approve or reject permission required'));
+  }
+  return next();
+}, [
+  param('id').isInt({ min: 1 }),
+  body('action').isIn(['approve', 'reject']),
+  v.optionalReason,
+], validate, ctrl.processOvertime);
 
 module.exports = { employeeRouter, adminRouter };

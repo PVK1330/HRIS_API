@@ -53,7 +53,7 @@ async function processTenant(tenant) {
     logger.info(`[attendanceCron] Late recalc updated ${lateResult.updated} for ${yday}`);
   }
 
-  const otResult = await cronService.processOvertimeRecalc(pool, yday);
+  const otResult = await cronService.processOvertimeRecalc(pool, yday, tenant.db_name);
   if (otResult.updated > 0) {
     logger.info(`[attendanceCron] OT recalc updated ${otResult.updated} for ${yday}`);
   }

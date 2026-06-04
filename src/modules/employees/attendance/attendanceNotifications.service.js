@@ -13,7 +13,10 @@ const TYPES = {
   REG_AUTO_REJECTED: 'attendance.regularization.auto_rejected',
   OVERRIDE: 'attendance.override',
   ABSENT: 'attendance.absent',
+  OT_REQUESTED: 'attendance.overtime.requested',
   OT_APPROVED: 'attendance.overtime.approved',
+  OT_REJECTED: 'attendance.overtime.rejected',
+  OT_FORWARDED: 'attendance.overtime.forwarded',
   HOLIDAY_CREATED: 'attendance.holiday.created',
   HOLIDAY_UPDATED: 'attendance.holiday.updated',
   HOLIDAY_DELETED: 'attendance.holiday.deleted',
@@ -99,6 +102,19 @@ async function getHrAuditGroup(pool) {
     `SELECT id FROM employees WHERE role IN ('admin', 'hr_admin', 'superadmin') AND deleted_at IS NULL`
   );
   return rows.map(r => r.id);
+}
+
+// The manager of the employee's department (for forwarding approved overtime onward).
+async function getDepartmentManagerId(pool, employeeId) {
+  const { rows } = await pool.query(
+    `SELECT d.manager_id
+     FROM employees e
+     JOIN departments d ON d.name = e.department AND d.is_active = true
+     WHERE e.id = $1
+     LIMIT 1`,
+    [employeeId]
+  );
+  return rows[0]?.manager_id || null;
 }
 
 // 1. Employee Check In
@@ -286,16 +302,79 @@ async function notifyAbsent(pool, tenantDb, { employeeId, date }) {
   }
 }
 
-// 11. Overtime Approved
+// 11a. Overtime Approval Requested → notify the reporting manager.
+async function notifyOtRequested(pool, tenantDb, { employeeId, date, entityId, hours }) {
+  const tenant = tenantCtx(tenantDb);
+  const { manager_id: mgrId, name: employeeName } = await getEmployeeDetails(pool, employeeId);
+  if (!mgrId) return; // no manager configured — nothing to route to
+  if (!(await checkAndLogHistory(pool, TYPES.OT_REQUESTED, entityId, mgrId))) return;
+
+  const tpl = await getTemplate(
+    pool, TYPES.OT_REQUESTED,
+    `Overtime Approval Required: ${employeeName}`,
+    `${employeeName} recorded ${hours} hour(s) of overtime on ${date} and needs your approval.`,
+    { date, hours, name: employeeName },
+  );
+  await sendSystemNotification(tenant, {
+    recipientId: mgrId, recipientRole: 'employee', type: TYPES.OT_REQUESTED,
+    title: tpl.subject, message: tpl.body, entityType: 'attendance', entityId: String(entityId),
+    sendEmail: true, redirectUrl: '/admin/attendance/overtime',
+  });
+}
+
+// 11b. Overtime Approved → notify the employee.
 async function notifyOtApproved(pool, tenantDb, { employeeId, date, entityId, hours }) {
   if (!(await checkAndLogHistory(pool, TYPES.OT_APPROVED, entityId, employeeId))) return;
   const tenant = tenantCtx(tenantDb);
-  
+
   const empTpl = await getTemplate(pool, TYPES.OT_APPROVED, 'Overtime Approved', `Your overtime of ${hours} hours for ${date} has been approved.`, { date, hours });
   await sendSystemNotification(tenant, {
     employeeId, recipientId: employeeId, recipientRole: 'employee', type: TYPES.OT_APPROVED,
     title: empTpl.subject, message: empTpl.body, entityType: 'attendance', entityId: String(entityId), sendEmail: true
   });
+}
+
+// 11c. Overtime Rejected → notify the employee.
+async function notifyOtRejected(pool, tenantDb, { employeeId, date, entityId, hours, reason }) {
+  if (!(await checkAndLogHistory(pool, TYPES.OT_REJECTED, entityId, employeeId))) return;
+  const tenant = tenantCtx(tenantDb);
+
+  const empTpl = await getTemplate(
+    pool, TYPES.OT_REJECTED, 'Overtime Rejected',
+    `Your overtime of ${hours} hours for ${date} was rejected.${reason ? ` Reason: ${reason}` : ''}`,
+    { date, hours, reason },
+  );
+  await sendSystemNotification(tenant, {
+    employeeId, recipientId: employeeId, recipientRole: 'employee', type: TYPES.OT_REJECTED,
+    title: empTpl.subject, message: empTpl.body, entityType: 'attendance', entityId: String(entityId), sendEmail: true
+  });
+}
+
+// 11d. Overtime forwarded to the department for processing (after manager approval).
+async function notifyOtForwardedToDept(pool, tenantDb, { employeeId, date, entityId, hours }) {
+  const tenant = tenantCtx(tenantDb);
+  const deptManagerId = await getDepartmentManagerId(pool, employeeId);
+  const { name: employeeName } = await getEmployeeDetails(pool, employeeId);
+  const recipients = new Set();
+  if (deptManagerId) recipients.add(deptManagerId);
+  // Fall back to HR/admin so approved overtime is never lost when no dept manager is set.
+  if (!recipients.size) (await getHrAuditGroup(pool)).forEach(id => recipients.add(id));
+  if (!recipients.size) return;
+
+  const tpl = await getTemplate(
+    pool, TYPES.OT_FORWARDED,
+    `Approved Overtime for Processing: ${employeeName}`,
+    `${employeeName}'s overtime of ${hours} hour(s) on ${date} was approved and is forwarded for processing.`,
+    { date, hours, name: employeeName },
+  );
+  for (const rid of recipients) {
+    if (!(await checkAndLogHistory(pool, TYPES.OT_FORWARDED, entityId, rid))) continue;
+    await sendSystemNotification(tenant, {
+      recipientId: rid, recipientRole: 'employee', type: TYPES.OT_FORWARDED,
+      title: tpl.subject, message: tpl.body, entityType: 'attendance', entityId: String(entityId),
+      sendEmail: true, redirectUrl: '/admin/attendance/overtime',
+    });
+  }
 }
 
 // 12-15. Holidays
@@ -331,6 +410,9 @@ module.exports = {
   notifyRegAutoRejected,
   notifyOverride,
   notifyAbsent,
+  notifyOtRequested,
   notifyOtApproved,
+  notifyOtRejected,
+  notifyOtForwardedToDept,
   notifyHolidays
 };

@@ -44,6 +44,16 @@ const regularize = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, { record: data }, 'Regularization processed');
 });
 
+const pendingOvertime = asyncHandler(async (req, res) => {
+  const data = await service.getPendingOvertime(req.auth, req.user, req.query);
+  return ApiResponse.ok(res, data, 'Pending overtime retrieved');
+});
+
+const processOvertime = asyncHandler(async (req, res) => {
+  const data = await service.processOvertime(req.auth, req.user, req.params.id, req.body, req);
+  return ApiResponse.ok(res, { record: data }, 'Overtime processed');
+});
+
 const payrollSummary = asyncHandler(async (req, res) => {
   const data = await service.getPayrollSummary(req.auth, req.user, req.query);
   return ApiResponse.ok(res, data, 'Payroll attendance summary retrieved');
@@ -109,6 +119,8 @@ module.exports = {
   submitRegularization,
   pendingRegularizations,
   regularize,
+  pendingOvertime,
+  processOvertime,
   payrollSummary,
   detail,
   myToday,

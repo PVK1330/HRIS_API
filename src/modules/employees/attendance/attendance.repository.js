@@ -377,6 +377,64 @@ async function markAbsentForDate(pool, dateStr) {
   return rows.length;
 }
 
+// ─── Overtime approval ────────────────────────────────────────────────────────
+
+/** Flag a record as needing overtime approval (idempotent — only from 'None'). */
+async function markOvertimePending(pool, id, client = pool) {
+  const { rows } = await client.query(
+    `UPDATE attendance
+       SET overtime_status = 'Pending', updated_at = NOW()
+     WHERE id = $1
+       AND COALESCE(overtime_hours, 0) > 0
+       AND COALESCE(overtime_status, 'None') = 'None'
+     RETURNING id`,
+    [id],
+  );
+  return rows[0] || null;
+}
+
+/** Manager approve/reject of a pending overtime record. */
+async function updateOvertimeStatus(pool, id, { status, approvedBy, rejectionReason, forwarded }) {
+  const { rows } = await pool.query(
+    `UPDATE attendance
+       SET overtime_status           = $1::VARCHAR,
+           overtime_approved_by      = $2,
+           overtime_approved_at      = NOW(),
+           overtime_rejection_reason = $3,
+           overtime_forwarded_at     = CASE WHEN $4::boolean THEN NOW() ELSE overtime_forwarded_at END,
+           updated_at                = NOW()
+     WHERE id = $5 AND overtime_status = 'Pending'
+     RETURNING id, employee_id, overtime_status, overtime_hours,
+               TO_CHAR(date, 'YYYY-MM-DD') AS date`,
+    [status, approvedBy || null, rejectionReason || null, !!forwarded, id],
+  );
+  return rows[0] || null;
+}
+
+/** Pending overtime requests, scoped to the caller's data scope. */
+async function getPendingOvertime(pool, { limit = 50, offset = 0 }, auth) {
+  const conditions = ["a.overtime_status = 'Pending'", 'e.deleted_at IS NULL'];
+  const params = [];
+  const { appendScopeToConditions } = require('../../../utils/applyDataScope');
+  const scoped = appendScopeToConditions(auth, conditions, params, 'e');
+  scoped.params.push(limit, offset);
+  const { rows } = await pool.query(
+    `SELECT a.id, TO_CHAR(a.date, 'YYYY-MM-DD') AS date,
+            a.overtime_hours, a.overtime_status,
+            a.check_in_time, a.check_out_time,
+            e.id AS employee_id, e.full_name AS employee_name, e.emp_id, e.department,
+            mgr.full_name AS manager_name
+     FROM attendance a
+     JOIN employees e ON e.id = a.employee_id AND e.deleted_at IS NULL
+     LEFT JOIN employees mgr ON mgr.id = e.reporting_manager_id
+     WHERE ${scoped.conditions.join(' AND ')}
+     ORDER BY a.date DESC
+     LIMIT $${scoped.params.length - 1} OFFSET $${scoped.params.length}`,
+    scoped.params,
+  );
+  return rows;
+}
+
 module.exports = {
   findByEmployee,
   findAll,
@@ -390,4 +448,7 @@ module.exports = {
   getPendingRegularizations,
   getPayrollSummary,
   markAbsentForDate,
+  markOvertimePending,
+  updateOvertimeStatus,
+  getPendingOvertime,
 };

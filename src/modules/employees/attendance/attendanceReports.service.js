@@ -258,21 +258,95 @@ async function getDashboard(pool, date, auth) {
   const scoped = appendScopeToConditions(auth, conditions, params, 'e');
   const where = scoped.conditions.join(' AND ');
 
-  const { rows } = await pool.query(
-    `SELECT
-       COUNT(*) FILTER (WHERE a.status IN ('Present','Late'))::int AS present_today,
-       COUNT(*) FILTER (WHERE a.status = 'Absent')::int AS absent_today,
-       COUNT(*) FILTER (WHERE a.is_late = true OR a.status = 'Late')::int AS late_today,
-       COUNT(*) FILTER (WHERE a.status = 'On Leave')::int AS on_leave,
-       COUNT(*) FILTER (WHERE a.work_mode IN ('Remote','Work From Home') OR a.status = 'Work From Home')::int AS work_from_home,
-       COUNT(*) FILTER (WHERE COALESCE(a.overtime_hours, 0) > 0)::int AS overtime_employees,
-       COUNT(*) FILTER (WHERE a.regularization_status = 'Pending')::int AS pending_regularizations
-     FROM attendance a
-     JOIN employees e ON e.id = a.employee_id
-     WHERE ${where}`,
-    scoped.params,
-  );
-  return rows[0] || {};
+  const empScoped = appendScopeToConditions(auth, ['deleted_at IS NULL', "employment_status IN ('Active', 'Probation', 'Notice Period')"], [], '');
+  const empWhere = empScoped.conditions.join(' AND ');
+
+  const [widgetsRes, totalEmpRes, trendRes, deptRes, lateRes, missingRes] = await Promise.all([
+    pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE a.status IN ('Present','Late', 'Half Day'))::int AS present_today,
+         COUNT(*) FILTER (WHERE a.status = 'Absent')::int AS absent_today,
+         COUNT(*) FILTER (WHERE a.is_late = true OR a.status = 'Late')::int AS late_today,
+         COUNT(*) FILTER (WHERE a.status = 'On Leave')::int AS on_leave,
+         COUNT(*) FILTER (WHERE a.work_mode IN ('Remote','Work From Home') OR a.status = 'Work From Home')::int AS work_from_home,
+         COUNT(*) FILTER (WHERE a.status = 'Half Day')::int AS half_day,
+         COUNT(*) FILTER (WHERE COALESCE(a.overtime_hours, 0) > 0)::int AS overtime_employees,
+         COUNT(*) FILTER (WHERE a.overtime_status = 'Pending')::int AS pending_overtime,
+         COUNT(*) FILTER (WHERE a.regularization_status = 'Pending')::int AS pending_regularizations
+       FROM attendance a
+       JOIN employees e ON e.id = a.employee_id
+       WHERE ${where}`,
+      scoped.params,
+    ),
+    pool.query(`SELECT COUNT(*)::int AS total FROM employees e WHERE ${empWhere}`),
+    // Daily Trend (Last 7 Days)
+    pool.query(`
+      SELECT TO_CHAR(a.date, 'YYYY-MM-DD') as date,
+             COUNT(*) FILTER (WHERE a.status IN ('Present','Late','Half Day'))::int as present,
+             COUNT(*) FILTER (WHERE a.status = 'Absent')::int as absent,
+             COUNT(*) FILTER (WHERE a.status = 'On Leave')::int as on_leave
+      FROM attendance a
+      JOIN employees e ON e.id = a.employee_id
+      WHERE a.date >= $1::date - INTERVAL '6 days' AND a.date <= $1::date AND e.deleted_at IS NULL
+      GROUP BY a.date
+      ORDER BY a.date ASC
+    `, [date]),
+    // Department Attendance (Today)
+    pool.query(`
+      SELECT e.department,
+             COUNT(*) FILTER (WHERE a.status IN ('Present','Late','Half Day'))::int as present,
+             COUNT(*) FILTER (WHERE a.status = 'Absent')::int as absent,
+             COUNT(*) FILTER (WHERE a.status = 'On Leave')::int as on_leave
+      FROM attendance a
+      JOIN employees e ON e.id = a.employee_id
+      WHERE ${where} AND e.department IS NOT NULL
+      GROUP BY e.department
+    `, scoped.params),
+    // Top 5 Late Arrivals
+    pool.query(`
+      SELECT e.full_name, e.department, a.late_minutes, a.check_in_time
+      FROM attendance a
+      JOIN employees e ON e.id = a.employee_id
+      WHERE ${where} AND a.is_late = true
+      ORDER BY a.late_minutes DESC NULLS LAST
+      LIMIT 5
+    `, scoped.params),
+    // Missing Checkout
+    pool.query(`
+      SELECT e.full_name, e.department, a.check_in_time
+      FROM attendance a
+      JOIN employees e ON e.id = a.employee_id
+      WHERE ${where} AND a.check_in_time IS NOT NULL AND a.check_out_time IS NULL
+      LIMIT 5
+    `, scoped.params)
+  ]);
+
+  const w = widgetsRes.rows[0] || {};
+  const totalEmployees = totalEmpRes.rows[0]?.total || 0;
+  
+  return {
+    widgets: {
+      total_employees: totalEmployees,
+      present_today: w.present_today || 0,
+      absent_today: w.absent_today || 0,
+      late_today: w.late_today || 0,
+      on_leave: w.on_leave || 0,
+      work_from_home: w.work_from_home || 0,
+      half_day: w.half_day || 0,
+      overtime_employees: w.overtime_employees || 0,
+      pending_overtime: w.pending_overtime || 0,
+      pending_regularizations: w.pending_regularizations || 0,
+      attendance_rate: totalEmployees > 0 ? Math.round(((w.present_today || 0) / totalEmployees) * 100) : 0
+    },
+    charts: {
+      daily_trend: trendRes.rows,
+      department_attendance: deptRes.rows
+    },
+    insights: {
+      top_late: lateRes.rows,
+      missing_checkout: missingRes.rows
+    }
+  };
 }
 
 async function getRegularizationHistory(pool, query, auth) {

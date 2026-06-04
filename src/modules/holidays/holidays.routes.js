@@ -24,6 +24,10 @@ const viewPerm = requireAnyPermission(
 const managePerm = requireAnyPermission(P.ATTENDANCE_SETTINGS_MANAGE, P.ATTENDANCE_MANAGE);
 
 router.get('/', viewPerm, ctrl.list);
+router.post('/', managePerm, [
+  body('year').isInt({ min: 2020, max: 2100 }),
+  body('region').isString().trim().notEmpty(),
+], validate, ctrl.createCalendar);
 router.get('/:calendarId', viewPerm, [param('calendarId').isInt()], validate, ctrl.detail);
 router.post('/seed', managePerm, [
   body('year').optional().isInt({ min: 2020, max: 2100 }),

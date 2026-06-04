@@ -44,6 +44,17 @@ async function seedFromConfig(pool, { year, regions } = {}) {
   return { year: targetYear, seeded: results };
 }
 
+async function createCalendar(dbName, { year, region }) {
+  const pool = getTenantPool(dbName);
+  const cal = await repo.upsertCalendar(pool, {
+    name: `${region} ${year}`,
+    region,
+    year,
+    isActive: true,
+  });
+  return cal;
+}
+
 async function listCalendars(dbName, query) {
   const pool = getTenantPool(dbName);
   return repo.listCalendars(pool, query);
@@ -146,6 +157,7 @@ async function sendUpcomingReminders(pool, tenantDb, withinDays = 7) {
 module.exports = {
   UK_REGIONS: repo.UK_REGIONS,
   seedFromConfig,
+  createCalendar,
   listCalendars,
   getCalendarDetail,
   createHolidayDate,

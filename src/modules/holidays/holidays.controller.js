@@ -9,6 +9,11 @@ const list = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data);
 });
 
+const createCalendar = asyncHandler(async (req, res) => {
+  const data = await service.createCalendar(req.user.db_name, req.body);
+  return ApiResponse.created(res, data);
+});
+
 const detail = asyncHandler(async (req, res) => {
   const data = await service.getCalendarDetail(req.user.db_name, req.params.calendarId);
   return ApiResponse.ok(res, data);
@@ -50,4 +55,4 @@ const removeDate = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data);
 });
 
-module.exports = { list, detail, seed, createDate, updateDate, removeDate };
+module.exports = { list, createCalendar, detail, seed, createDate, updateDate, removeDate };

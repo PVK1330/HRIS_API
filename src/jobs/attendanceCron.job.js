@@ -26,13 +26,15 @@ async function processMissingCheckout(pool, tenantDb, dateStr) {
     [dateStr],
   );
   for (const row of rows) {
-    await notify.notifyEmployee(pool, tenantDb, {
-      employeeId: row.employee_id,
-      type: notify.TYPES.MISSING,
-      title: 'Missing check-out',
-      message: `Please complete check-out for ${dateStr}`,
-      entityId: row.id,
-    });
+    try {
+      await notify.notifyMissingCheckout(pool, tenantDb, {
+        employeeId: row.employee_id,
+        date: dateStr,
+        entityId: row.id,
+      });
+    } catch (e) {
+      logger.warn(`[attendanceCron] missing-checkout notify failed for record ${row.id}`, e.message);
+    }
   }
 }
 

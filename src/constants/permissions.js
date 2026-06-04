@@ -78,7 +78,7 @@ const LEGACY_KEY_TO_ACTIONS = {
   ],
   'shift-management': [P.ATTENDANCE_VIEW_TEAM, P.ATTENDANCE_VIEW_OWN],
   'overtime-management': [P.ATTENDANCE_VIEW_TEAM, P.ATTENDANCE_VIEW_ALL],
-  'leave-absence': [P.LEAVE_VIEW, P.LEAVE_APPROVE],
+  'leave-absence': [P.LEAVE_VIEW, P.LEAVE_APPLY, P.LEAVE_APPROVE],
   'documents-approval': [P.DOCUMENT_VIEW, P.DOCUMENT_UPLOAD],
   'visa-nationality': [P.VISA_VIEW, P.VISA_MANAGE],
   assets: [
@@ -112,6 +112,7 @@ const ACTION_TO_LEGACY_KEYS = {
   [P.EMPLOYEE_EDIT]: ['employee-profiles'],
   [P.EMPLOYEE_DELETE]: ['employee-directory'],
   [P.LEAVE_VIEW]: ['leave-absence'],
+  [P.LEAVE_APPLY]: ['leave-absence'],
   [P.LEAVE_APPROVE]: ['leave-absence'],
   [P.DOCUMENT_VIEW]: ['documents-approval'],
   [P.DOCUMENT_UPLOAD]: ['documents-approval'],

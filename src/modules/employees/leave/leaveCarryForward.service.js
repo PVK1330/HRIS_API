@@ -14,10 +14,10 @@ async function processCarryForward(pool, targetYear) {
   const year = parseInt(targetYear, 10) || new Date().getFullYear();
   const prevYear = year - 1;
 
-  const { rows } = await pool.query(
+   const { rows } = await pool.query(
     `SELECT lb.employee_id, lb.leave_type,
             lb.total_allocated, lb.used, lb.carry_forward,
-            lt.annual_entitlement_days, lt.max_carry_forward_days
+            lt.annual_entitlement_days, lt.carry_forward_allowed, lt.max_carry_forward_days
      FROM leave_balances lb
      JOIN leave_types lt
        ON LOWER(TRIM(lt.name)) = LOWER(TRIM(lb.leave_type))
@@ -30,9 +30,10 @@ async function processCarryForward(pool, targetYear) {
   let carried = 0;
 
   for (const r of rows) {
+    const carryAllowed = r.carry_forward_allowed !== false;
     const remaining = Math.max(0, (r.total_allocated + r.carry_forward) - r.used);
     const cap = Math.max(0, r.max_carry_forward_days || 0);
-    const carry = Math.max(0, Math.min(remaining, cap));
+    const carry = carryAllowed ? Math.max(0, Math.min(remaining, cap)) : 0;
     const annual = Math.max(0, r.annual_entitlement_days || 0);
 
     // Insert a fresh target-year balance, or just refresh its carry-forward if the row

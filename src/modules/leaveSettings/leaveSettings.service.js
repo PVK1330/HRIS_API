@@ -11,11 +11,15 @@ const BASE_APPROVER_OPTIONS = ['Manager', 'HR', 'HR Manager', 'Direct Manager'];
 
 const SNAKE_KEYS = [
   'name',
+  'code',
   'paid_or_unpaid',
   'annual_entitlement_days',
   'entitlement_label',
   'accrual',
+  'carry_forward_allowed',
   'max_carry_forward_days',
+  'notice_period_required',
+  'gender_restriction',
   'loss_of_pay_rule',
   'document_required',
   'auto_approval',
@@ -29,11 +33,15 @@ function mapRow(row) {
   return {
     id: row.id,
     name: row.name,
+    code: row.code,
     paidOrUnpaid: row.paid_or_unpaid,
     annualEntitlementDays: row.annual_entitlement_days,
     entitlementLabel: row.entitlement_label,
     accrual: row.accrual,
+    carryForwardAllowed: row.carry_forward_allowed,
     maxCarryForwardDays: row.max_carry_forward_days,
+    noticePeriodRequired: row.notice_period_required,
+    genderRestriction: row.gender_restriction,
     lossOfPayRule: row.loss_of_pay_rule,
     documentRequired: row.document_required,
     autoApproval: row.auto_approval,
@@ -50,14 +58,20 @@ function mergeLeaveBody(body) {
   if (!body || typeof body !== 'object') return {};
   const merged = { ...body };
 
+  if (body.code !== undefined) merged.code = body.code;
   if (body.paidOrUnpaid !== undefined) merged.paid_or_unpaid = body.paidOrUnpaid;
   if (body.annualEntitlementDays !== undefined) {
     merged.annual_entitlement_days = body.annualEntitlementDays;
   }
   if (body.entitlementLabel !== undefined) merged.entitlement_label = body.entitlementLabel;
+  if (body.carryForwardAllowed !== undefined) merged.carry_forward_allowed = body.carryForwardAllowed;
   if (body.maxCarryForwardDays !== undefined) {
     merged.max_carry_forward_days = body.maxCarryForwardDays;
   }
+  if (body.noticePeriodRequired !== undefined) {
+    merged.notice_period_required = body.noticePeriodRequired;
+  }
+  if (body.genderRestriction !== undefined) merged.gender_restriction = body.genderRestriction;
   if (body.lossOfPayRule !== undefined) merged.loss_of_pay_rule = body.lossOfPayRule;
   if (body.documentRequired !== undefined) merged.document_required = body.documentRequired;
   if (body.autoApproval !== undefined) merged.auto_approval = body.autoApproval;
@@ -202,6 +216,7 @@ async function createLeaveType(dbName, body) {
 
   const insert = {
     name,
+    code: merged.code || null,
     paid_or_unpaid: merged.paid_or_unpaid ?? 'Paid',
     annual_entitlement_days:
       merged.annual_entitlement_days !== undefined && merged.annual_entitlement_days !== null
@@ -212,10 +227,16 @@ async function createLeaveType(dbName, body) {
         ? merged.entitlement_label
         : null,
     accrual: merged.accrual ?? 'Monthly',
+    carry_forward_allowed: merged.carry_forward_allowed ?? true,
     max_carry_forward_days:
       merged.max_carry_forward_days !== undefined && merged.max_carry_forward_days !== null
         ? parseInt(merged.max_carry_forward_days, 10)
         : 0,
+    notice_period_required:
+      merged.notice_period_required !== undefined && merged.notice_period_required !== null
+        ? parseInt(merged.notice_period_required, 10)
+        : 0,
+    gender_restriction: merged.gender_restriction ?? 'Both',
     loss_of_pay_rule: merged.loss_of_pay_rule ?? 'No LOP',
     document_required: merged.document_required ?? false,
     auto_approval: merged.auto_approval ?? false,
@@ -270,6 +291,9 @@ async function updateLeaveType(dbName, id, body) {
   }
   if (patch.max_carry_forward_days !== undefined && patch.max_carry_forward_days !== null) {
     patch.max_carry_forward_days = parseInt(patch.max_carry_forward_days, 10);
+  }
+  if (patch.notice_period_required !== undefined && patch.notice_period_required !== null) {
+    patch.notice_period_required = parseInt(patch.notice_period_required, 10);
   }
 
   const updated = await repository.updateLeaveType(pool, id, patch);

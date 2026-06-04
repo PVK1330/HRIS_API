@@ -6,6 +6,10 @@ const { runTenantMigrations } = require('../../tenant/tenant.service');
 const empRepo = require('../employees.repository');
 const repo = require('./leave.repository');
 const carryForward = require('./leaveCarryForward.service');
+const { sendSystemNotification } = require('../../notifications/notifications.service');
+const { hasPermission } = require('../../../services/authz.service');
+const { P } = require('../../../constants/permissions');
+const { assertEmployeeRecordAccess } = require('../../../utils/applyDataScope');
 
 const _cache = new Map();
 async function ensureMigrated(dbName) {
@@ -74,7 +78,7 @@ async function getLeave(user, employeeId, query = {}) {
 
 // ─── Admin: GET /leave ────────────────────────────────────────────────────────
 
-async function listLeave(user, query = {}) {
+async function listLeave(user, auth, query = {}) {
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
 
@@ -92,9 +96,9 @@ async function listLeave(user, query = {}) {
   };
 
   const [requests, total, stats] = await Promise.all([
-    repo.findAllRequests(pool, filters),
-    repo.countAllRequests(pool, filters),
-    repo.getStats(pool, year),
+    repo.findAllRequests(pool, filters, auth),
+    repo.countAllRequests(pool, filters, auth),
+    repo.getStats(pool, year, auth),
   ]);
 
   return { requests, total, stats, year, limit, page: Math.max(1, parseInt(query.page, 10) || 1) };
@@ -102,25 +106,42 @@ async function listLeave(user, query = {}) {
 
 // ─── Admin: POST /leave ───────────────────────────────────────────────────────
 
-async function applyLeave(user, data) {
+async function applyLeave(user, auth, data) {
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
 
-  // 1. Employee must exist
+  // 1. Employee must exist and be within data scope
   const emp = await empRepo.findById(pool, data.employeeId);
   if (!emp) throw ApiError.notFound('Employee not found');
+  assertEmployeeRecordAccess(auth, emp);
+
+  const canApplyForOthers = hasPermission(auth, P.LEAVE_APPROVE)
+    || auth?.scope === 'ALL'
+    || auth?.isTenantAdmin;
+  if (!canApplyForOthers && auth?.employeeId) {
+    data.employeeId = auth.employeeId;
+  }
 
   // 2. Leave type must be active in this tenant's settings
-  const leaveTypeCfg = await repo.findActiveLeaveType(pool, data.leaveType);
+  let leaveTypeCfg;
+  if (data.leaveTypeId) {
+    leaveTypeCfg = await repo.findActiveLeaveTypeById(pool, data.leaveTypeId);
+  } else if (data.leaveType) {
+    leaveTypeCfg = await repo.findActiveLeaveType(pool, data.leaveType);
+  }
+
   if (!leaveTypeCfg) {
     const validTypes = await repo.getActiveLeaveTypes(pool);
     throw ApiError.badRequest(
-      `Invalid or inactive leave type "${data.leaveType}".` +
+      `Invalid or inactive leave type.` +
       (validTypes.length
         ? ` Valid types: ${validTypes.join(', ')}`
         : ' No active leave types configured — add them in Settings → Leave Settings.')
     );
   }
+  
+  // Normalize the name so the database continues to record the text name properly
+  data.leaveType = leaveTypeCfg.name;
 
   // 3. Date validation
   const fromDate = data.fromDate;
@@ -141,6 +162,48 @@ async function applyLeave(user, data) {
       `Employee already has a ${overlap.status.toLowerCase()} leave request ` +
       `(${overlap.leave_type}) overlapping these dates (${overlap.from_date} – ${overlap.to_date})`
     );
+  }
+
+  // Notice Period Check
+  if (leaveTypeCfg.notice_period_required > 0) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const from = new Date(fromDate);
+    const diffDays = Math.ceil((from - today) / (1000 * 60 * 60 * 24));
+    if (diffDays < leaveTypeCfg.notice_period_required) {
+      throw ApiError.badRequest(
+        `"${leaveTypeCfg.name}" requires at least ${leaveTypeCfg.notice_period_required} days of notice. Please select a later date.`
+      );
+    }
+  }
+
+  // Gender Restriction Check
+  if (leaveTypeCfg.gender_restriction && leaveTypeCfg.gender_restriction !== 'Both') {
+    if (!emp.gender || String(emp.gender).toLowerCase() !== String(leaveTypeCfg.gender_restriction).toLowerCase()) {
+      throw ApiError.badRequest(
+        `"${leaveTypeCfg.name}" is restricted to ${leaveTypeCfg.gender_restriction} employees.`
+      );
+    }
+  }
+
+  // Probation Restriction Check
+  if (leaveTypeCfg.probation_restriction) {
+    if (emp.probation_end_date && new Date(fromDate) < new Date(emp.probation_end_date)) {
+      throw ApiError.badRequest(
+        `"${leaveTypeCfg.name}" cannot be applied for dates during your probation period.`
+      );
+    }
+  }
+
+  // Minimum Service Months Check
+  if (leaveTypeCfg.minimum_service_months > 0 && emp.join_date) {
+    const joinDate = new Date(emp.join_date);
+    const monthsOfService = (new Date(fromDate).getFullYear() - joinDate.getFullYear()) * 12 + (new Date(fromDate).getMonth() - joinDate.getMonth());
+    if (monthsOfService < leaveTypeCfg.minimum_service_months) {
+      throw ApiError.badRequest(
+        `"${leaveTypeCfg.name}" requires a minimum of ${leaveTypeCfg.minimum_service_months} months of service. You will be eligible after completing this tenure.`
+      );
+    }
   }
 
   // 6. Document required check (warn via 400 if flag set and no doc provided)
@@ -169,7 +232,9 @@ async function applyLeave(user, data) {
 
   // 8. Determine initial status — auto_approval skips Pending
   const autoApprove = Boolean(leaveTypeCfg.auto_approval);
-  const initialStatus = autoApprove ? 'Approved' : 'Pending';
+  let initialStatus = 'Pending Manager Approval';
+  if (data.isDraft) initialStatus = 'Draft';
+  else if (autoApprove) initialStatus = 'Approved';
 
   // 9. Insert request
   const request = await repo.insertRequest(pool, {
@@ -192,6 +257,30 @@ async function applyLeave(user, data) {
       used:           balance.used + totalDays,
       carryForward:   balance.carry_forward,
     });
+  }
+
+  // 11. Notifications
+  if (initialStatus === 'Pending Manager Approval') {
+    // Notify Manager
+    await sendSystemNotification(user, {
+      forAdmin: true,
+      title: 'New Leave Request',
+      message: `${emp.full_name || 'An employee'} applied for ${totalDays} day(s) of ${leaveTypeCfg.name}.`,
+      type: 'leave_request',
+      entityType: 'leave',
+      entityId: request.id,
+      redirectUrl: '/admin/attendance/dashboard'
+    }).catch(err => console.error('Failed to notify manager:', err));
+  } else if (initialStatus === 'Approved') {
+    await sendSystemNotification(user, {
+      employeeId: data.employeeId,
+      title: 'Leave Auto-Approved',
+      message: `Your request for ${totalDays} day(s) of ${leaveTypeCfg.name} has been auto-approved.`,
+      type: 'leave_approved',
+      entityType: 'leave',
+      entityId: request.id,
+      redirectUrl: '/attendance'
+    }).catch(err => console.error('Failed to notify employee:', err));
   }
 
   return {
@@ -218,29 +307,50 @@ function isHrActor(user) {
  * Two-stage approval workflow:
  *   Pending          --approve(manager)-->  Manager_Approved
  *   Manager_Approved --approve(HR)------->  Approved   (balance deducted here, HR-only)
- *   Pending | Manager_Approved --reject--> Rejected
- *   Pending | Manager_Approved | Approved --cancel--> Cancelled (restore balance if was Approved)
+ *   Any Stage Before Approved --reject--> Rejected
+ *   Any Stage --cancel--> Cancelled (restore balance if was Approved)
  */
-async function processLeave(user, id, { action, reason }) {
+async function processLeave(user, auth, id, { action, reason }) {
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
 
   const request = await repo.findRequestById(pool, id);
   if (!request) throw ApiError.notFound('Leave request not found');
 
-  if (!['approve', 'reject', 'cancel'].includes(action)) {
-    throw ApiError.badRequest('action must be approve, reject, or cancel');
+  const emp = await empRepo.findById(pool, request.employee_id);
+  if (!emp) throw ApiError.notFound('Employee not found');
+  assertEmployeeRecordAccess(auth, emp);
+
+  if (!['approve', 'reject', 'cancel', 'submit'].includes(action)) {
+    throw ApiError.badRequest('action must be approve, reject, cancel, or submit');
+  }
+
+  const isOwnRequest = Number(auth?.employeeId) === Number(request.employee_id);
+  if (action === 'approve' || action === 'reject') {
+    if (!hasPermission(auth, P.LEAVE_APPROVE)) {
+      throw ApiError.forbidden('Leave approval permission required');
+    }
+  } else if (!isOwnRequest && !hasPermission(auth, P.LEAVE_APPROVE)) {
+    throw ApiError.forbidden('You can only manage your own leave requests');
   }
 
   let newStatus;
   let stage; // 'manager' | 'hr' | undefined
 
-  if (action === 'approve') {
-    if (request.status === 'Pending') {
-      // Stage 1 — manager approval; routes on to HR, no balance change yet.
-      newStatus = 'Manager_Approved';
+  if (action === 'submit') {
+    if (request.status !== 'Draft') {
+      throw ApiError.badRequest(`Cannot submit a request with status "${request.status}"`);
+    }
+    newStatus = 'Pending Manager Approval';
+  } else if (action === 'approve') {
+    if (request.status === 'Pending Manager Approval') {
+      // Stage 1 — manager approval
+      if (user.role === 'manager' && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)) {
+        throw ApiError.forbidden('You can only approve requests for your direct reports.');
+      }
+      newStatus = 'Pending HR Approval';
       stage = 'manager';
-    } else if (request.status === 'Manager_Approved') {
+    } else if (request.status === 'Pending HR Approval') {
       // Stage 2 — HR final approval. Restricted to HR/admin roles.
       if (!isHrActor(user)) {
         throw ApiError.forbidden('Final approval requires an HR or admin role');
@@ -251,58 +361,126 @@ async function processLeave(user, id, { action, reason }) {
       throw ApiError.badRequest(`Cannot approve a request with status "${request.status}"`);
     }
   } else if (action === 'reject') {
-    if (!['Pending', 'Manager_Approved'].includes(request.status)) {
+    if (request.status === 'Pending Manager Approval') {
+      if (user.role === 'manager' && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)) {
+        throw ApiError.forbidden('You can only reject requests for your direct reports.');
+      }
+      newStatus = 'Rejected by Manager';
+    } else if (request.status === 'Pending HR Approval') {
+      if (!isHrActor(user)) {
+        throw ApiError.forbidden('Final rejection requires an HR or admin role');
+      }
+      newStatus = 'Rejected by HR';
+    } else {
       throw ApiError.badRequest(`Cannot reject a request with status "${request.status}"`);
     }
-    newStatus = 'Rejected';
   } else { // cancel
-    if (!['Pending', 'Manager_Approved', 'Approved'].includes(request.status)) {
+    if (!['Pending Manager Approval', 'Pending HR Approval', 'Approved', 'Draft'].includes(request.status)) {
       throw ApiError.badRequest(`Cannot cancel a request with status "${request.status}"`);
     }
     newStatus = 'Cancelled';
   }
 
-  const updated = await repo.updateRequestStatus(pool, id, {
-    status:          newStatus,
-    stage,
-    actorId:         user.id,
-    rejectionReason: reason || null,
-  });
+  // Transaction for updating status and balances atomically
+  const client = await pool.connect();
+  let updated;
+  try {
+    await client.query('BEGIN');
 
-  // ── Balance logic — only the FINAL approval consumes balance ────────────────
-  const leaveTypeCfg = await repo.findActiveLeaveType(pool, request.leave_type);
-  const isUnpaid     = leaveTypeCfg?.paid_or_unpaid === 'Unpaid';
+    updated = await repo.updateRequestStatus(client, id, {
+      status:          newStatus,
+      stage,
+      actorId:         user.id,
+      rejectionReason: reason || null,
+    });
 
-  if (!isUnpaid) {
-    const year       = new Date(request.from_date).getFullYear();
-    const annualDays = leaveTypeCfg?.annual_entitlement_days ?? 0;
-    const balance    = await ensureBalance(
-      pool, request.employee_id, request.leave_type, year, annualDays
-    );
+    // ── Balance logic — only the FINAL approval consumes balance ────────────────
+    const leaveTypeCfg = await repo.findActiveLeaveType(client, request.leave_type);
+    const isUnpaid     = leaveTypeCfg?.paid_or_unpaid === 'Unpaid';
 
-    if (newStatus === 'Approved') {
-      // Deduct days — leave is now consuming the balance
-      await repo.upsertBalance(pool, {
-        employeeId:     request.employee_id,
-        leaveType:      request.leave_type,
-        year,
-        totalAllocated: balance.total_allocated,
-        used:           balance.used + request.total_days,
-        carryForward:   balance.carry_forward,
-      });
-    } else if (newStatus === 'Cancelled' && request.status === 'Approved') {
-      // Restore days — previously approved leave is being cancelled
-      const restored = Math.max(0, balance.used - request.total_days);
-      await repo.upsertBalance(pool, {
-        employeeId:     request.employee_id,
-        leaveType:      request.leave_type,
-        year,
-        totalAllocated: balance.total_allocated,
-        used:           restored,
-        carryForward:   balance.carry_forward,
-      });
+    if (!isUnpaid) {
+      const year       = new Date(request.from_date).getFullYear();
+      const annualDays = leaveTypeCfg?.annual_entitlement_days ?? 0;
+      const balance    = await ensureBalance(
+        client, request.employee_id, request.leave_type, year, annualDays
+      );
+
+      if (newStatus === 'Approved') {
+        // Deduct days — leave is now consuming the balance
+        await repo.upsertBalance(client, {
+          employeeId:     request.employee_id,
+          leaveType:      request.leave_type,
+          year,
+          totalAllocated: balance.total_allocated,
+          used:           balance.used + request.total_days,
+          carryForward:   balance.carry_forward,
+        });
+      } else if (newStatus === 'Cancelled' && request.status === 'Approved') {
+        // Restore days — previously approved leave is being cancelled
+        const restored = Math.max(0, balance.used - request.total_days);
+        await repo.upsertBalance(client, {
+          employeeId:     request.employee_id,
+          leaveType:      request.leave_type,
+          year,
+          totalAllocated: balance.total_allocated,
+          used:           restored,
+          carryForward:   balance.carry_forward,
+        });
+      }
+      // Reject, or cancel before final approval → no balance change (never deducted).
     }
-    // Reject, or cancel before final approval → no balance change (never deducted).
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  // Send Workflow Notifications (Outside transaction)
+  if (action === 'submit') {
+    await sendSystemNotification(user, {
+      forAdmin: true,
+      title: 'New Leave Request',
+      message: `A draft leave request for ${request.leave_type} (${request.total_days} days) has been submitted for manager approval.`,
+      type: 'leave_request',
+      entityType: 'leave',
+      entityId: request.id,
+      redirectUrl: '/admin/attendance/dashboard'
+    }).catch(err => console.error(err));
+  } else if (action === 'approve') {
+    if (newStatus === 'Pending HR Approval') {
+      await sendSystemNotification(user, {
+        forAdmin: true,
+        title: 'Leave Pending HR Approval',
+        message: `Leave request for ${request.leave_type} (${request.total_days} days) has been approved by the manager and awaits HR final approval.`,
+        type: 'leave_request',
+        entityType: 'leave',
+        entityId: request.id,
+        redirectUrl: '/admin/attendance/dashboard'
+      }).catch(err => console.error(err));
+    } else if (newStatus === 'Approved') {
+      await sendSystemNotification(user, {
+        employeeId: request.employee_id,
+        title: 'Leave Approved',
+        message: `Your leave request for ${request.leave_type} (${request.total_days} days) has been fully approved!`,
+        type: 'leave_approved',
+        entityType: 'leave',
+        entityId: request.id,
+        redirectUrl: '/attendance'
+      }).catch(err => console.error(err));
+    }
+  } else if (action === 'reject') {
+    await sendSystemNotification(user, {
+      employeeId: request.employee_id,
+      title: 'Leave Rejected',
+      message: `Your leave request for ${request.leave_type} was rejected. Reason: ${reason || 'Not provided'}`,
+      type: 'leave_rejected',
+      entityType: 'leave',
+      entityId: request.id,
+      redirectUrl: '/attendance'
+    }).catch(err => console.error(err));
   }
 
   return updated;
@@ -310,7 +488,7 @@ async function processLeave(user, id, { action, reason }) {
 
 // ─── Admin: GET /leave/balances ───────────────────────────────────────────────
 
-async function listBalances(user, query = {}) {
+async function listBalances(user, auth, query = {}) {
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
 
@@ -323,7 +501,7 @@ async function listBalances(user, query = {}) {
     search:     query.search     || '',
     limit,
     offset,
-  });
+  }, auth);
   return { balances: rows, year };
 }
 

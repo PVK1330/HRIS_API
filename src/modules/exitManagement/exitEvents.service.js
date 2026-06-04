@@ -57,7 +57,10 @@ async function pushSafe(tenant, payload, dedupMeta) {
       ...payload,
       type: payload.type || 'exit_management',
     }, meta);
-  } catch (_) { /* non-blocking */ }
+    console.log(`[Exit Workflow] Push notification queued: type=${meta.notificationType} recipient=${meta.recipientId} entityId=${meta.entityId}`);
+  } catch (err) {
+    console.error(`[Exit Workflow] pushSafe error:`, err.message);
+  }
 }
 
 async function emailSafe(tenant, to, templateSlug, variables, dedupMeta) {
@@ -68,7 +71,7 @@ async function emailSafe(tenant, to, templateSlug, variables, dedupMeta) {
 async function loadReq(pool, requestId) {
   const { rows } = await pool.query(
     `SELECT er.id, er.employee_id, er.exit_type, er.status, er.current_stage_id, er.rejection_reason,
-            e.full_name, e.first_name, e.last_name, e.work_email, e.job_title, e.reporting_to,
+            e.full_name, e.first_name, e.last_name, e.work_email, e.job_title, e.reporting_manager_id AS reporting_to,
             d.manager_id AS dept_head_id,
             s.name AS stage_name
      FROM exit_requests er
@@ -85,70 +88,99 @@ function fullName(r) {
   return r?.full_name || [r?.first_name, r?.last_name].filter(Boolean).join(' ') || 'the employee';
 }
 
-async function resolveResponsibles(pool, stageId) {
+async function resolveResponsibles(tenant, stageId, requestId) {
   if (!stageId) return { recipients: [], primaryAssignee: null };
-  // Responsible people for a stage = explicit stage users + owning-department heads +
-  // employees holding any of the stage's owning roles (employees.rbac_role_id). Capped so a
-  // broad role assignment cannot create a runaway number of tasks/emails.
-  const { rows: recipients } = await pool.query(
-    `SELECT DISTINCT e.id AS employee_id, e.full_name, e.work_email
-     FROM employees e
-     WHERE e.deleted_at IS NULL AND (
-       e.id IN (SELECT employee_id FROM exit_stage_users WHERE stage_id = $1)
-       OR e.id IN (SELECT d.manager_id FROM exit_stage_departments sd
-                   JOIN departments d ON d.id = sd.department_id
-                   WHERE sd.stage_id = $1 AND d.manager_id IS NOT NULL)
-       OR e.rbac_role_id IN (SELECT role_id FROM exit_stage_roles WHERE stage_id = $1)
-     )
-     ORDER BY e.full_name
-     LIMIT 50`,
-    [stageId],
+  const pool = await getTenantPool(tenant.dbName);
+  
+  let recipients = [];
+  let primaryAssignee = null;
+  let stageName = '';
+
+  const { rows: stageRows } = await pool.query(
+    `SELECT name, dynamic_owner_type FROM exit_workflow_stages WHERE id = $1`, 
+    [stageId]
   );
-  // Single assignee preference: explicit stage user → owning department head → a role holder.
-  const explicit = await pool.query(
-    `SELECT employee_id FROM exit_stage_users WHERE stage_id = $1 ORDER BY id ASC LIMIT 1`, [stageId],
-  );
-  let primaryAssignee = explicit.rows[0]?.employee_id || null;
-  if (!primaryAssignee) {
-    const head = await pool.query(
-      `SELECT d.manager_id FROM exit_stage_departments sd
-       JOIN departments d ON d.id = sd.department_id
-       WHERE sd.stage_id = $1 AND d.manager_id IS NOT NULL
-       ORDER BY sd.is_primary DESC, sd.id ASC LIMIT 1`, [stageId],
-    );
-    primaryAssignee = head.rows[0]?.manager_id || null;
-  }
-  if (!primaryAssignee) {
-    const roleHolder = await pool.query(
-      `SELECT e.id FROM employees e
-       WHERE e.deleted_at IS NULL
-         AND e.rbac_role_id IN (SELECT role_id FROM exit_stage_roles WHERE stage_id = $1)
-       ORDER BY e.id ASC LIMIT 1`, [stageId],
-    );
-    primaryAssignee = roleHolder.rows[0]?.id || null;
+  if (stageRows.length) stageName = stageRows[0].name;
+
+  // 1. Check for dynamic owner (Reporting Manager / Dept Head)
+  if (requestId && stageRows.length) {
+    const ownerType = stageRows[0].dynamic_owner_type;
+    const isReportingManager = ownerType === 'REPORTING_MANAGER' || (!ownerType && stageName.toLowerCase().includes('reporting manager'));
+    const isDeptHead = ownerType === 'DEPT_HEAD' || (!ownerType && stageName.toLowerCase().includes('department head'));
+
+    if (isReportingManager || isDeptHead) {
+      const req = await loadReq(pool, requestId);
+      if (req) {
+        if (isReportingManager && req.reporting_to) {
+          primaryAssignee = req.reporting_to;
+        } else if (isDeptHead && req.dept_head_id) {
+          primaryAssignee = req.dept_head_id;
+        }
+        if (primaryAssignee) {
+          const { rows: p } = await pool.query(`SELECT id AS employee_id, full_name, work_email FROM employees WHERE id = $1`, [primaryAssignee]);
+          if (p.length) recipients = p;
+        }
+      }
+    }
   }
 
-  // Fallback: if workflow stage has no mapped users/dept heads/role holders,
-  // assign to HR/Admin users so submissions still produce actionable tasks.
+  // 2. If no dynamic owner, try standard DB lookup
+  if (!recipients.length) {
+    const { rows: r } = await pool.query(
+      `SELECT DISTINCT e.id AS employee_id, e.full_name, e.work_email
+       FROM employees e
+       WHERE e.deleted_at IS NULL AND (
+         e.id IN (SELECT employee_id FROM exit_stage_users WHERE stage_id = $1)
+         OR e.id IN (SELECT d.manager_id FROM exit_stage_departments sd
+                     JOIN departments d ON d.id = sd.department_id
+                     WHERE sd.stage_id = $1 AND d.manager_id IS NOT NULL)
+         OR e.rbac_role_id IN (SELECT role_id FROM exit_stage_roles WHERE stage_id = $1)
+       )
+       ORDER BY e.full_name LIMIT 50`,
+      [stageId],
+    );
+    recipients = r;
+    
+    if (recipients.length) {
+      const explicit = await pool.query(`SELECT employee_id FROM exit_stage_users WHERE stage_id = $1 ORDER BY id ASC LIMIT 1`, [stageId]);
+      primaryAssignee = explicit.rows[0]?.employee_id || null;
+      if (!primaryAssignee) {
+        const head = await pool.query(`SELECT d.manager_id FROM exit_stage_departments sd JOIN departments d ON d.id = sd.department_id WHERE sd.stage_id = $1 AND d.manager_id IS NOT NULL ORDER BY sd.is_primary DESC, sd.id ASC LIMIT 1`, [stageId]);
+        primaryAssignee = head.rows[0]?.manager_id || null;
+      }
+      if (!primaryAssignee) {
+        const roleHolder = await pool.query(`SELECT e.id FROM employees e WHERE e.deleted_at IS NULL AND e.rbac_role_id IN (SELECT role_id FROM exit_stage_roles WHERE stage_id = $1) ORDER BY e.id ASC LIMIT 1`, [stageId]);
+        primaryAssignee = roleHolder.rows[0]?.id || null;
+      }
+    }
+  }
+
+  // 3. Fallback to HR/Admin + Logging
   if (!recipients.length) {
     const fallback = await pool.query(
       `SELECT DISTINCT e.id AS employee_id, e.full_name, e.work_email
-       FROM employees e
-       LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
-       WHERE e.deleted_at IS NULL
-         AND (
-           LOWER(COALESCE(rr.name, '')) LIKE '%admin%'
-           OR LOWER(COALESCE(rr.name, '')) LIKE '%hr%'
-         )
-       ORDER BY e.id
-       LIMIT 10`,
+       FROM employees e LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
+       WHERE e.deleted_at IS NULL AND (LOWER(COALESCE(rr.name, '')) LIKE '%admin%' OR LOWER(COALESCE(rr.name, '')) LIKE '%hr%')
+       ORDER BY e.id LIMIT 10`,
     );
     const fallbackRecipients = fallback.rows || [];
     if (fallbackRecipients.length) {
-      return {
-        recipients: fallbackRecipients,
-        primaryAssignee: primaryAssignee || fallbackRecipients[0].employee_id || null,
-      };
+      recipients = fallbackRecipients;
+      primaryAssignee = fallbackRecipients[0].employee_id || null;
+
+      if (requestId) {
+        await workflowAudit.log(tenant, {
+          module: 'exit', action: 'owner_resolution_failed', entityType: 'exit_request', entityId: requestId,
+          detail: { stageName, fallback: 'Assigned to HR/Admin' },
+        });
+        await pushSafe(tenant, { priority: 'HIGH', forAdmin: true, type: 'exit_management',
+          title: 'Exit Stage Missing Owner',
+          message: `Stage "${stageName}" had no resolved owners. It was reassigned to the HR/Admin fallback.`,
+          entityType: 'exit_request', entityId: requestId, redirectUrl: `/admin/exit-management/${requestId}`
+        });
+      }
+    } else {
+      throw new Error(`Failed to resolve any responsible owner or fallback for stage ${stageName} (ID: ${stageId}).`);
     }
   }
 
@@ -166,17 +198,40 @@ async function setPendingAssignee(pool, requestId, stageId, employeeId) {
 
 async function createStageTasks(pool, requestId, stageId, stageName, recipients) {
   const dueDays = Number.isFinite(env.EXIT_TASK_DUE_DAYS) ? env.EXIT_TASK_DUE_DAYS : 7;
+  
+  const { rows: checklistItems } = await pool.query(
+    `SELECT id, label, is_mandatory FROM exit_request_checklist_items WHERE exit_request_id = $1 AND stage_id = $2 AND status = 'PENDING'`,
+    [requestId, stageId]
+  );
+
   for (const r of recipients) {
     if (!r.employee_id) continue;
-    await pool.query(
-      `INSERT INTO exit_tasks (exit_request_id, stage_id, assigned_to, title, status, due_at)
-       SELECT $1, $2, $3, $4, 'PENDING', (NOW() + make_interval(days => $5::int))
-       WHERE NOT EXISTS (
-         SELECT 1 FROM exit_tasks
-         WHERE exit_request_id = $1 AND stage_id = $2 AND assigned_to = $3 AND status = 'PENDING'
-       )`,
-      [requestId, stageId, r.employee_id, `Action required: ${stageName || 'Exit stage'}`, dueDays],
-    );
+    
+    if (checklistItems.length > 0) {
+      for (const item of checklistItems) {
+        await pool.query(
+          `INSERT INTO exit_tasks (exit_request_id, stage_id, assigned_to, title, description, status, due_at)
+           SELECT $1, $2, $3, $4, $5, 'PENDING', (NOW() + make_interval(days => $6::int))
+           WHERE NOT EXISTS (
+             SELECT 1 FROM exit_tasks
+             WHERE exit_request_id = $1 AND stage_id = $2 AND assigned_to = $3 AND title = $4 AND status = 'PENDING'
+           )`,
+          [requestId, stageId, r.employee_id, item.label, `Checklist item ID: ${item.id}`, dueDays],
+        );
+        console.log(`[Exit Workflow] Created checklist task (Item ${item.id}) for stage ${stageId}, employee ${r.employee_id}.`);
+      }
+    } else {
+      await pool.query(
+        `INSERT INTO exit_tasks (exit_request_id, stage_id, assigned_to, title, status, due_at)
+         SELECT $1, $2, $3, $4, 'PENDING', (NOW() + make_interval(days => $5::int))
+         WHERE NOT EXISTS (
+           SELECT 1 FROM exit_tasks
+           WHERE exit_request_id = $1 AND stage_id = $2 AND assigned_to = $3 AND status = 'PENDING'
+         )`,
+        [requestId, stageId, r.employee_id, `Review Exit Request: ${stageName || 'Stage'}`, dueDays],
+      );
+      console.log(`[Exit Workflow] Created review task for stage ${stageId}, employee ${r.employee_id}.`);
+    }
   }
 }
 
@@ -201,7 +256,7 @@ async function onStageEntered(tenant, requestId, options = {}) {
     const company = await getCompany(tenant);
     const empName = fullName(req);
 
-    const { recipients, primaryAssignee } = await resolveResponsibles(pool, req.current_stage_id);
+    const { recipients, primaryAssignee } = await resolveResponsibles(tenant, req.current_stage_id, requestId);
     await setPendingAssignee(pool, requestId, req.current_stage_id, primaryAssignee);
     const taskRecipients = recipients.length
       ? recipients
@@ -221,7 +276,7 @@ async function onStageEntered(tenant, requestId, options = {}) {
       }, {
         notificationType: 'exit.stage_entered.owner',
         entityType: 'exit_request',
-        entityId: requestId,
+        entityId: `${requestId}_stage_${req.current_stage_id}`,
         recipientId: r.employee_id,
       });
       await emailSafe(tenant, r.work_email, 'exit_stage_pending', {
@@ -233,7 +288,7 @@ async function onStageEntered(tenant, requestId, options = {}) {
       }, {
         notificationType: 'exit.stage_entered.owner.email',
         entityType: 'exit_request',
-        entityId: requestId,
+        entityId: `${requestId}_stage_${req.current_stage_id}`,
         recipientId: r.employee_id,
       });
     }
@@ -247,7 +302,7 @@ async function onStageEntered(tenant, requestId, options = {}) {
     }, {
       notificationType: 'exit.stage_entered.admin',
       entityType: 'exit_request',
-      entityId: requestId,
+      entityId: `${requestId}_stage_${req.current_stage_id}`,
       recipientId: null,
     });
   } catch (_) { /* non-blocking */ }
@@ -255,81 +310,125 @@ async function onStageEntered(tenant, requestId, options = {}) {
 
 async function onSubmitted(tenant, requestId) {
   // Stage 1 is active — create/assign its tasks + notify owners FIRST so tasks appear promptly
-  // (this runs before the slower subject email below).
   await onStageEntered(tenant, requestId);
-  try {
-    const pool = await getTenantPool(tenant.dbName);
-    const req = await loadReq(pool, requestId);
-    if (!req) return;
-    const company = await getCompany(tenant);
-    const empName = fullName(req);
+  
+  const pool = await getTenantPool(tenant.dbName);
+  const req = await loadReq(pool, requestId);
+  if (!req) return;
+  const company = await getCompany(tenant);
+  const empName = fullName(req);
 
-    const hrAdmins = await getHROrAdminRecipients(pool);
+  const hrAdmins = await getHROrAdminRecipients(pool);
 
-    const notifyList = [
-      { id: req.reporting_to, role: 'Manager' },
-      { id: req.dept_head_id, role: 'Department Head' }
-    ].filter(x => x.id && x.id !== req.employee_id);
+  const notifyList = [
+    { id: req.reporting_manager_id, role: 'Manager' },
+    { id: req.dept_head_id, role: 'Department Head' }
+  ].filter(x => x.id && x.id !== req.employee_id);
 
-    // Notify Employee
-    await pushSafe(tenant, { priority: 'NORMAL',
-      employeeId: req.employee_id, type: 'exit_management', priority: 'NORMAL',
+  // Notify Employee (Push + Email)
+  await pushSafe(tenant, { priority: 'NORMAL',
+    employeeId: req.employee_id, type: 'exit_management', priority: 'NORMAL',
+    title: 'Exit request submitted',
+    message: `Your ${req.exit_type} request has been submitted and is now in progress.`,
+    entityType: 'exit_request',
+    entityId: requestId,
+    redirectUrl: `/admin/exit-management/${requestId}`
+  });
+  
+  await emailSafe(tenant, req.work_email, 'exit_request_submitted', {
+    employee_name: empName,
+    exit_type: req.exit_type || 'exit',
+    company_name: company.companyName,
+  }, {
+    notificationType: 'exit.submitted.employee.email',
+    entityType: 'exit_request',
+    entityId: requestId,
+    recipientId: req.employee_id,
+  });
+
+  // Notify Manager and Dept Head (Push + Email)
+  for (const recipient of notifyList) {
+    await pushSafe(tenant, { priority: 'HIGH',
+      employeeId: recipient.id, type: 'exit_management',
       title: 'Exit request submitted',
-      message: `Your ${req.exit_type} request has been submitted and is now in progress.`,
+      message: `${empName} submitted a ${req.exit_type} request.`,
       entityType: 'exit_request',
       entityId: requestId,
       redirectUrl: `/admin/exit-management/${requestId}`
     });
     
-    // Notify Manager and Dept Head
-    for (const recipient of notifyList) {
-      await pushSafe(tenant, { priority: 'NORMAL',
-        employeeId: recipient.id, type: 'exit_management', priority: 'HIGH',
-        title: 'Exit request submitted',
-        message: `${empName} submitted a ${req.exit_type} request.`,
+    // Fetch their email
+    const { rows: eRows } = await pool.query(`SELECT work_email FROM employees WHERE id = $1`, [recipient.id]);
+    if (eRows.length && eRows[0].work_email) {
+      await emailSafe(tenant, eRows[0].work_email, 'exit_request_submitted', {
+        employee_name: empName,
+        exit_type: req.exit_type || 'exit',
+        company_name: company.companyName,
+      }, {
+        notificationType: 'exit.submitted.manager.email',
         entityType: 'exit_request',
         entityId: requestId,
-        redirectUrl: `/admin/exit-management/${requestId}`
+        recipientId: recipient.id,
       });
     }
+  }
 
-    // Notify HR / Admins
-    for (const admin of hrAdmins) {
-      if (admin.id === req.employee_id) continue;
-      await pushSafe(tenant, { priority: 'NORMAL',
-        employeeId: admin.id, type: 'exit_management', priority: 'NORMAL',
-        title: 'New exit request submitted',
-        message: `${empName} submitted a ${req.exit_type} request.`,
+  // Notify HR / Admins (Push + Email)
+  for (const admin of hrAdmins) {
+    if (admin.id === req.employee_id) continue;
+    await pushSafe(tenant, { priority: 'NORMAL',
+      employeeId: admin.id, type: 'exit_management',
+      title: 'New exit request submitted',
+      message: `${empName} submitted a ${req.exit_type} request.`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`
+    });
+    
+    if (admin.work_email) {
+      await emailSafe(tenant, admin.work_email, 'exit_request_submitted', {
+        employee_name: empName,
+        exit_type: req.exit_type || 'exit',
+        company_name: company.companyName,
+      }, {
+        notificationType: 'exit.submitted.admin.email',
         entityType: 'exit_request',
         entityId: requestId,
-        redirectUrl: `/admin/exit-management/${requestId}`
+        recipientId: admin.id,
       });
     }
+  }
 
-    // Single email for employee
-    await emailSafe(tenant, req.work_email, 'exit_request_submitted', {
-      employee_name: empName,
-      exit_type: req.exit_type || 'exit',
-      company_name: company.companyName,
-    }, {
-      notificationType: 'exit.submitted.email',
-      entityType: 'exit_request',
-      entityId: requestId,
-      recipientId: req.employee_id,
-    });
-
-    await workflowAudit.log(tenant, {
-      module: 'exit',
-      action: 'submitted',
-      entityType: 'exit_request',
-      entityId: requestId,
-      detail: { exitType: req.exit_type },
-    });
-  } catch (_) { /* non-blocking */ }
+  await workflowAudit.log(tenant, {
+    module: 'exit',
+    action: 'submitted',
+    entityType: 'exit_request',
+    entityId: requestId,
+    detail: { exitType: req.exit_type },
+  });
 }
 
 async function onApproved(tenant, requestId, completed) {
   if (completed) return onCompleted(tenant, requestId);
+  const pool = await getTenantPool(tenant.dbName);
+  const req = await loadReq(pool, requestId);
+  
+  if (req) {
+    await pushSafe(tenant, { priority: 'NORMAL',
+      employeeId: req.employee_id, type: 'exit_management',
+      title: 'Exit stage approved',
+      message: `Your exit request has successfully passed the "${req.stage_name}" stage.`,
+      entityType: 'exit_request',
+      entityId: requestId,
+      redirectUrl: `/admin/exit-management/${requestId}`
+    }, {
+      notificationType: 'exit.stage_approved.employee',
+      entityType: 'exit_request',
+      entityId: `${requestId}_stage_${req.current_stage_id}`,
+      recipientId: req.employee_id,
+    });
+  }
+
   return onStageEntered(tenant, requestId);
 }
 
@@ -450,7 +549,7 @@ async function onRejected(tenant, requestId, reason) {
     const empName = fullName(req);
     const reasonText = reason ? `\nReason: ${reason}` : '';
     await closeRequestTasks(pool, requestId);
-    await pushSafe(tenant, { priority: 'NORMAL',
+    await pushSafe(tenant, { priority: 'HIGH',
       employeeId: req.employee_id, type: 'exit_management',
       title: 'Exit request rejected', message: `Your exit request was rejected.${reasonText}`,
       entityType: 'exit_request',
@@ -464,7 +563,7 @@ async function onRejected(tenant, requestId, reason) {
       company_logo: company.companyLogo,
       reason: reason || 'Not specified',
     });
-    await pushSafe(tenant, { priority: 'NORMAL',
+    await pushSafe(tenant, { priority: 'HIGH',
       forAdmin: true,
       title: 'Exit request rejected',
       message: `${empName}'s exit request was rejected.`,
@@ -528,7 +627,7 @@ async function onWithdrawn(tenant, requestId, reason) {
 
     const stageId = req.current_stage_id;
     if (stageId) {
-      const { recipients } = await resolveResponsibles(pool, stageId);
+      const { recipients } = await resolveResponsibles(tenant, stageId, requestId);
       for (const r of recipients) {
         await pushSafe(tenant, { priority: 'NORMAL',
           employeeId: r.employee_id,
@@ -640,7 +739,7 @@ async function onSendBack(tenant, requestId, { reason, exitUser } = {}) {
       });
     }
 
-    const { recipients } = await resolveResponsibles(pool, req.current_stage_id);
+    const { recipients } = await resolveResponsibles(tenant, req.current_stage_id, requestId);
     for (const r of recipients) {
       await pushSafe(tenant, { priority: 'NORMAL',
         employeeId: r.employee_id,
@@ -724,7 +823,7 @@ async function onCommentAdded(tenant, requestId, { comment, exitUser } = {}) {
     }
 
     if (req.current_stage_id) {
-      const { recipients } = await resolveResponsibles(pool, req.current_stage_id);
+      const { recipients } = await resolveResponsibles(tenant, req.current_stage_id, requestId);
       for (const r of recipients) {
         if (r.employee_id === exitUser?.employeeId) continue;
         await pushSafe(tenant, { priority: 'NORMAL',
@@ -820,29 +919,45 @@ async function onReassigned(tenant, requestId) {
 }
 
 /** Current stage was escalated (manually). Notify the escalation target user + admin. */
-async function onEscalated(tenant, requestId, escalationToUserId) {
+async function onEscalated(tenant, requestId, escalationTargetUserId) {
   try {
     const pool = await getTenantPool(tenant.dbName);
     const req = await loadReq(pool, requestId);
-    if (!req) return;
+    if (!req || !req.current_stage_id) return;
     const empName = fullName(req);
-    if (escalationToUserId) {
-      await pushSafe(tenant, { priority: 'NORMAL',
-        employeeId: escalationToUserId, type: 'exit_management',
-        title: 'Exit stage escalated to you',
-        message: `An exit stage ("${req.stage_name}") for ${empName} has been escalated to you.`,
+    
+    // Notify the target user if specified
+    if (escalationTargetUserId) {
+      await pushSafe(tenant, { priority: 'HIGH',
+        employeeId: escalationTargetUserId, type: 'exit_management',
+        title: 'Exit Request Escalated',
+        message: `${empName}'s exit request at stage "${req.stage_name}" has breached SLA and was escalated to you.`,
         entityType: 'exit_request',
         entityId: requestId,
         redirectUrl: `/admin/exit-management/${requestId}`
+      }, {
+        notificationType: 'exit.escalated.target',
+        entityType: 'exit_request',
+        entityId: requestId,
+        recipientId: escalationTargetUserId,
       });
     }
-    await pushSafe(tenant, { priority: 'NORMAL',
-      forAdmin: true, type: 'exit_management',
-      title: 'Exit stage escalated', message: `${empName}'s exit ("${req.stage_name}") was escalated.`,
+
+    // Notify Admins
+    await pushSafe(tenant, { priority: 'HIGH',
+      forAdmin: true,
+      title: 'Exit Request Escalated',
+      message: `${empName}'s exit request at stage "${req.stage_name}" has breached SLA and was escalated.`,
       entityType: 'exit_request',
       entityId: requestId,
-      redirectUrl: `/admin/exit-management/${requestId}`
+      redirectUrl: `/admin/exit-management/${requestId}`,
+    }, {
+      notificationType: 'exit.escalated.admin',
+      entityType: 'exit_request',
+      entityId: requestId,
+      recipientId: null,
     });
+    
   } catch (_) { /* non-blocking */ }
 }
 
@@ -947,6 +1062,15 @@ async function completeTask(tenant, taskId, exitUser) {
   );
   const completed = upd[0];
   if (completed) {
+    const desc = completed.description || '';
+    const match = desc.match(/Checklist item ID:\s*(\d+)/i);
+    if (match) {
+      const itemId = parseInt(match[1], 10);
+      await pool.query(
+        `UPDATE exit_request_checklist_items SET status = 'COMPLETED', updated_at = NOW() WHERE id = $1`,
+        [itemId]
+      );
+    }
     onTaskCompleted(tenant, task).catch((e) => console.error('Exit workflow event error:', e));
   }
   return completed;
@@ -960,7 +1084,7 @@ async function onTaskCompleted(tenant, task) {
     const title = `Exit task completed: ${task.title}`;
 
     if (task.stage_id) {
-      const { recipients } = await resolveResponsibles(pool, task.stage_id);
+      const { recipients } = await resolveResponsibles(tenant, task.stage_id, task.exit_request_id);
       for (const r of recipients) {
         await pushSafe(tenant, { priority: 'NORMAL',
           employeeId: r.employee_id,

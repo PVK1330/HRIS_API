@@ -128,6 +128,7 @@ async function seedStageEntry(client, requestId, stage) {
      WHERE id = $3`,
     [stage.id, deptId, requestId],
   );
+  console.log(`[Exit Workflow] Request ${requestId} current_stage_id updated to ${stage.id}.`);
 
   // Open PENDING slot for the stage occurrence (authoritative SLA clock).
   await client.query(
@@ -204,7 +205,13 @@ async function advanceStage(client, request, stage) {
   }
   // 2. approval-mode satisfaction
   const satisfied = await isStageSatisfied(client, request, stage);
-  if (!satisfied) return { advanced: false, reason: 'approvals_pending' };
+  if (!satisfied) {
+    console.log(`[Exit Workflow] Request ${request.id} Stage ${stage.id} not satisfied (approvals_pending).`);
+    return { advanced: false, reason: 'approvals_pending' };
+  }
+
+  console.log(`[Exit Workflow] Request ${request.id} Stage ${stage.id} COMPLETED.`);
+
 
   // 3. mark stage COMPLETE + close the PENDING slot
   await closePendingSlot(client, request.id, stage.id, 'APPROVE', null);
@@ -217,9 +224,12 @@ async function advanceStage(client, request, stage) {
   // 4/5. next stage or finish
   const next = await getNextStage(client, request.workflow_id, stage.stage_order);
   if (next) {
+    console.log(`[Exit Workflow] Request ${request.id} resolved NEXT STAGE: ${next.id} (${next.name}).`);
     await seedStageEntry(client, request.id, next);
     return { advanced: true, completed: false, nextStageId: next.id };
   }
+  
+  console.log(`[Exit Workflow] Request ${request.id} resolved NEXT STAGE: NONE (Workflow Completed).`);
 
   await client.query(
     `UPDATE exit_requests

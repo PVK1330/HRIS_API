@@ -119,7 +119,7 @@ async function submitExitRequest(tenant, data, exitUser, file = null) {
       await client.query(
         `INSERT INTO exit_request_attachments
            (exit_request_id, stage_id, attachment_type, file_url, file_name, mime_type, uploaded_by)
-         VALUES ($1,$2,'RESIGNATION_LETTER',$3,$4,$5,$6)`,
+         VALUES ($1,$2,'GENERIC',$3,$4,$5,$6)`,
         [requestId, firstStage.id, fileUrl, file.originalname, file.mimetype, employeeId],
       );
       
@@ -274,7 +274,7 @@ async function getExitRequest(tenant, id, exitUser) {
   const request = rows[0];
   if (!request) throw ApiError.notFound('Exit request not found');
 
-  const [stages, approvals, checklist, attachments] = await Promise.all([
+  const [stages, approvals, checklist, attachments, tasks] = await Promise.all([
     buildStageStates(pool, request),
     pool.query(
       `SELECT a.*, e.full_name AS actor_full_name, s.name AS stage_name
@@ -286,6 +286,11 @@ async function getExitRequest(tenant, id, exitUser) {
       `SELECT * FROM exit_request_checklist_items WHERE exit_request_id = $1 ORDER BY stage_id, id`, [id]),
     pool.query(
       `SELECT * FROM exit_request_attachments WHERE exit_request_id = $1 ORDER BY uploaded_at DESC`, [id]),
+    pool.query(
+      `SELECT t.*, e.full_name AS assigned_to_name 
+       FROM exit_tasks t 
+       LEFT JOIN employees e ON e.id = t.assigned_to 
+       WHERE t.exit_request_id = $1 ORDER BY t.created_at DESC`, [id]),
   ]);
 
   // Caller's capabilities on the CURRENT stage (from the resolver).
@@ -305,6 +310,7 @@ async function getExitRequest(tenant, id, exitUser) {
     approvals: approvals.rows,
     checklist_items: checklist.rows,
     attachments: attachments.rows,
+    tasks: tasks.rows,
     my_actions: myActions,
     my_visibility: visibility,
   };
@@ -346,30 +352,39 @@ async function approveStage(tenant, id, exitUser, comments) {
 
     await recordAction(client, request, 'APPROVE', exitUser, comments);
     const result = await engine.advanceStage(client, request, stage);
+    
+    if (!result.advanced && result.reason === 'checklist_incomplete') {
+      throw ApiError.badRequest('Please complete all mandatory checklist items before approving this stage.');
+    }
+    
+    // For multi-approver stages (approval_mode = 'ALL'/'SEQUENTIAL'): the APPROVE row must
+    // be preserved so subsequent approvers can reach the threshold. Commit now and return
+    // without firing onApproved events (those only fire when the stage actually advances).
+    if (!result.advanced && result.reason === 'approvals_pending') {
+      await client.query('COMMIT');
+      return getExitRequest(tenant, id, exitUser);
+    }
+    
     await client.query('COMMIT');
 
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'approve' });
-    emit(tenant, `exit:${id}`, result.completed ? 'exit:request_completed' : 'exit:stage_advanced', { exitRequestId: Number(id) });
-    if (result.completed) {
-      try {
-        await notify().sendSystemNotification(tenant, {
-          employeeId: request.employee_id,
-          recipientId: request.employee_id,
-          recipientRole: 'employee',
-          title: 'Exit Process Completed',
-          message: 'Your exit process has been completed.',
-          type: 'exit_management',
-          sendEmail: false,
-        });
-      } catch (_) { /* non-blocking */ }
+    
+    if (result.advanced) {
+      console.log(`[Exit Workflow] Stage advanced for request ${id}. Completed: ${result.completed}`);
+      emit(tenant, `exit:${id}`, result.completed ? 'exit:request_completed' : 'exit:stage_advanced', { exitRequestId: Number(id) });
+      
+      events().onApproved(tenant, Number(id), !!result.completed)
+        .catch((e) => console.error('Exit workflow event error:', e));
+    } else {
+      console.log(`[Exit Workflow] Request ${id} did not advance. Reason: ${result.reason}`);
     }
-    events().onApproved(tenant, Number(id), !!result.completed).catch((e) => console.error('Exit workflow event error:', e));
+
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (client) await client.query('ROLLBACK');
     throw err;
   } finally {
-    client.release();
+    if (client) client.release();
   }
 }
 
@@ -646,7 +661,7 @@ async function getAuditLog(tenant, id) {
           jsonb_build_object('label', c.label) AS metadata,
           c.updated_at AS created_at
         FROM exit_request_checklist_items c
-        LEFT JOIN employees e ON e.id = c.completed_by_id
+        LEFT JOIN employees e ON e.id = c.completed_by
         LEFT JOIN exit_workflow_stages s ON s.id = c.stage_id
         WHERE c.exit_request_id = $1 AND c.status != 'PENDING'
 

@@ -108,7 +108,9 @@ function initSocket(httpServer) {
     }
 
     addOnline(userId, socket.id);
+    console.log('[SOCKET JOIN]', `user:${userId}`, socket.id);
     socket.join(`user:${userId}`);
+    console.log('[SOCKET JOIN]', `tenant:${user.db_name}`, socket.id);
     socket.join(`tenant:${user.db_name}`);
 
     io.emit('user:online', { userId });

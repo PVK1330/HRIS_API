@@ -23,6 +23,7 @@ async function pushNotification(tenant, {
   title,
   message,
   type,
+  priority,
   ticketId,
   entityType,
   entityId,
@@ -41,18 +42,23 @@ async function pushNotification(tenant, {
     title,
     message,
     type,
+    priority,
     ticketId,
     entityType,
     entityId,
     redirectUrl,
   });
 
+  console.log('[NOTIFICATION CREATED]', notificationRecord);
+
   try {
     const io = getIo();
     if (io && notificationRecord) {
       if (employeeId) {
+        console.log('[SOCKET EMIT]', employeeId, notificationRecord);
         io.to(`user:${employeeId}`).emit('new_notification', notificationRecord);
       } else if (forAdmin) {
+        console.log('[SOCKET EMIT]', 'ADMIN_TENANT', notificationRecord);
         io.to(`tenant:${dbName}`).emit('new_notification', notificationRecord);
       }
     }
@@ -72,6 +78,7 @@ async function sendSystemNotification(tenant, {
   message,
   emailMessage,
   type,
+  priority,
   sendEmail = true,
   emailSubject = null,
   entityType,
@@ -88,6 +95,7 @@ async function sendSystemNotification(tenant, {
       title,
       message,
       type,
+      priority,
       ticketId: null,
       entityType,
       entityId,

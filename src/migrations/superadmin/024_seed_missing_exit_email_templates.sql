@@ -1,0 +1,8 @@
+-- 024_seed_missing_exit_email_templates.sql
+INSERT INTO email_templates (slug, name, subject, body, variables, is_active)
+VALUES
+  ('exit_request_sent_back', 'Exit Request Sent Back', 'Your Exit Request requires revision', '<p>Dear {{recipient_name}},</p><p>Your exit request at the <strong>{{stage_name}}</strong> stage has been sent back for revision.</p><p><strong>Reason:</strong> {{reason}}</p><p>Please review and resubmit.</p><p>Regards,<br>{{company_name}}</p>', '["employee_name", "stage_name", "reason", "company_name", "recipient_name"]', true),
+  ('exit_request_withdrawn', 'Exit Request Withdrawn', 'Exit Request Withdrawn', '<p>Dear {{recipient_name}},</p><p>The exit request for <strong>{{employee_name}}</strong> has been withdrawn.</p><p><strong>Reason:</strong> {{reason}}</p><p>Regards,<br>{{company_name}}</p>', '["employee_name", "reason", "company_name", "recipient_name"]', true),
+  ('exit_comment_added', 'Exit Comment Added', 'New comment on Exit Request', '<p>Dear {{recipient_name}},</p><p>A new comment has been added by {{employee_name}} at the <strong>{{stage_name}}</strong> stage.</p><p><strong>Comment:</strong> {{comment}}</p><p>Regards,<br>{{company_name}}</p>', '["employee_name", "stage_name", "comment", "company_name", "recipient_name"]', true),
+  ('exit_task_completed', 'Exit Task Completed', 'Exit Task Completed: {{task_title}}', '<p>Dear {{recipient_name}},</p><p>The task <strong>{{task_title}}</strong> at the <strong>{{stage_name}}</strong> stage for {{employee_name}} has been completed.</p><p>Regards,<br>{{company_name}}</p>', '["employee_name", "stage_name", "task_title", "company_name", "recipient_name"]', true)
+ON CONFLICT (slug) DO NOTHING;

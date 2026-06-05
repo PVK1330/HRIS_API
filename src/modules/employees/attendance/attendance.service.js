@@ -1013,6 +1013,10 @@ async function getMyToday(auth, user) {
 
   const mapped = record ? integrity.mapRecordForResponse(record) : null;
   const settings = await calc.loadSettings(pool);
+  const { rows: empRows } = await pool.query(
+    `SELECT full_name, profile_image_url FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+    [employeeId],
+  );
   return {
     date: dateStr,
     punchStatus,
@@ -1022,6 +1026,8 @@ async function getMyToday(auth, user) {
     workedHours: mapped?.worked_hours || mapped?.total_hours || 0,
     status: mapped?.display_status || mapped?.status || null,
     locationTrackingEnabled: settings?.attendance_location_tracking === true,
+    employeeName: empRows[0]?.full_name || null,
+    profileImageUrl: empRows[0]?.profile_image_url || null,
   };
 }
 

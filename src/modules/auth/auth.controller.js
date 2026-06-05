@@ -1,6 +1,7 @@
 'use strict';
 
 const authService = require('./auth.service');
+const mfaService = require('./auth.mfa.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const ApiResponse = require('../../utils/ApiResponse');
 
@@ -45,10 +46,46 @@ const getAccessProfile = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, result, 'Access profile fetched successfully.');
 });
 
+/**
+ * Verify a TOTP code to complete an MFA-gated login.
+ */
+const verifyTwoFactor = asyncHandler(async (req, res) => {
+  const { mfaToken, code } = req.body;
+  const result = await authService.verifyMfaLogin(mfaToken, code);
+  return ApiResponse.ok(res, result, 'Login successful.');
+});
+
+/* --- Self-service MFA enrollment (authenticated) --- */
+
+const getMfaStatus = asyncHandler(async (req, res) => {
+  const result = await mfaService.getStatus(req.user);
+  return ApiResponse.ok(res, result, 'MFA status fetched.');
+});
+
+const setupMfa = asyncHandler(async (req, res) => {
+  const result = await mfaService.beginSetup(req.user);
+  return ApiResponse.ok(res, result, 'Scan the QR code with your authenticator app.');
+});
+
+const enableMfa = asyncHandler(async (req, res) => {
+  const result = await mfaService.enable(req.user, req.body.code);
+  return ApiResponse.ok(res, result, 'Two-factor authentication enabled.');
+});
+
+const disableMfa = asyncHandler(async (req, res) => {
+  const result = await mfaService.disable(req.user, req.body.code);
+  return ApiResponse.ok(res, result, 'Two-factor authentication disabled.');
+});
+
 module.exports = {
   login,
   forgotPassword,
   verifyOtp,
   resetPassword,
-  getAccessProfile
+  getAccessProfile,
+  verifyTwoFactor,
+  getMfaStatus,
+  setupMfa,
+  enableMfa,
+  disableMfa,
 };

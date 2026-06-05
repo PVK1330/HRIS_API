@@ -67,6 +67,7 @@ async function notifySlaBreach(tenant, row, companyName) {
       title: 'Exit Workflow SLA Breach',
       message: `Stage "${row.stage_name}" for ${empName} is overdue (${delayHours}h SLA).`,
       type: 'exit_management',
+      priority: 'HIGH',
       sendEmail: true,
       emailSubject: `Exit Workflow SLA Breach — ${row.stage_name}`,
       entityType: 'exit_request',
@@ -83,7 +84,7 @@ async function notifySlaBreach(tenant, row, companyName) {
     if (person.work_email) {
       await delivery.sendDedupedEmailOnly(
         tenantCtx,
-        { to: person.work_email, templateSlug: 'exit_sla_breach', variables },
+        { to: person.work_email, templateSlug: 'exit_sla_escalation', variables },
         {
           tenantId: tenant.id,
           notificationType: 'exit.sla_breach.email',

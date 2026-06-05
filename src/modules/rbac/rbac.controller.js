@@ -19,9 +19,19 @@ const listRoles = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, 'Roles retrieved successfully');
 });
 
+const getRole = asyncHandler(async (req, res) => {
+  const role = await service.getRole(req);
+  return ApiResponse.ok(res, role, 'Role retrieved successfully');
+});
+
 const createRole = asyncHandler(async (req, res) => {
   const role = await service.createRole(req);
   return ApiResponse.created(res, role, 'Role created successfully');
+});
+
+const updateRole = asyncHandler(async (req, res) => {
+  const role = await service.updateRole(req);
+  return ApiResponse.ok(res, role, 'Role updated successfully');
 });
 
 const updateRolePermissions = asyncHandler(async (req, res) => {
@@ -38,7 +48,9 @@ module.exports = {
   listPermissions,
   listAvailablePermissions,
   listRoles,
+  getRole,
   createRole,
+  updateRole,
   updateRolePermissions,
   deleteRole,
 };

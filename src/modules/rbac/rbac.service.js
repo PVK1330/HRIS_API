@@ -125,6 +125,58 @@ async function updateRolePermissions(req) {
   return rbacRepo.findAllRoles(pool).then((rs) => rs.find((r) => r.id === roleId));
 }
 
+async function getRole(req) {
+  const id = Number(req.params.id);
+  const pool = resolvePool(req.user.db_name);
+  await ensureMigrated(req.user.db_name);
+  const role = (await rbacRepo.findAllRoles(pool)).find((r) => r.id === id);
+  if (!role) throw ApiError.notFound('Role not found');
+  return role;
+}
+
+async function updateRole(req) {
+  const id = Number(req.params.id);
+  const { name, description, scope } = req.body;
+  const pool = resolvePool(req.user.db_name);
+  await ensureMigrated(req.user.db_name);
+
+  const existing = (await rbacRepo.findAllRoles(pool)).find((r) => r.id === id);
+  if (!existing) throw ApiError.notFound('Role not found');
+  if (existing.is_system) throw ApiError.badRequest('System roles cannot be edited');
+
+  let updated;
+  try {
+    updated = await rbacRepo.updateRole(pool, id, { name, description });
+  } catch (e) {
+    if (e && e.code === '23505') throw ApiError.conflict('Role name already exists');
+    throw e;
+  }
+  if (!updated) throw ApiError.notFound('Role not found');
+
+  if (scope !== undefined && scope !== null) {
+    try {
+      await rbacRepo.setRoleDataScope(pool, id, scope);
+    } catch (e) {
+      if (e && e.message && e.message.includes('Invalid data scope')) {
+        throw ApiError.badRequest(e.message);
+      }
+      throw e;
+    }
+  }
+
+  notify.pushNotification({ db_name: req.user.db_name }, {
+    forAdmin: true,
+    title: `Role Updated: ${updated.name}`,
+    message: `The "${updated.name}" role has been updated.`,
+    type: 'info',
+    entityType: 'rbac_role',
+    entityId: id,
+    redirectUrl: '/admin/settings/roles',
+  }).catch(() => null);
+
+  return (await rbacRepo.findAllRoles(pool)).find((r) => r.id === id);
+}
+
 async function deleteRole(req) {
   const id = Number(req.params.id);
   const pool = resolvePool(req.user.db_name);
@@ -151,7 +203,9 @@ module.exports = {
   listPermissions,
   listAvailablePermissions,
   listRoles,
+  getRole,
   createRole,
+  updateRole,
   updateRolePermissions,
   deleteRole,
 };

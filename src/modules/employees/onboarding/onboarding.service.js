@@ -75,6 +75,38 @@ async function resolveCompanyName(user) {
   return process.env.COMPANY_NAME || 'Your Company';
 }
 
+/**
+ * Tenant branding for generated letters: company name, logo, address and
+ * contact. Reads tenant_admin_settings (tenant-scoped) and falls back to the
+ * registry tenant name. Shape matches what the PDF generator's header expects.
+ */
+async function resolveCompanyBranding(pool, user) {
+  const companyName = await resolveCompanyName(user);
+  const branding = {
+    company_name: companyName,
+    company_logo_path: null,
+    company_address: null,
+    contact_email: null,
+    dbName: user?.db_name,
+  };
+  try {
+    const { rows } = await pool.query(
+      `SELECT company_name, logo_url, address, contact_details
+         FROM tenant_admin_settings LIMIT 1`,
+    );
+    const s = rows[0];
+    if (s) {
+      if (s.company_name && String(s.company_name).trim()) branding.company_name = String(s.company_name).trim();
+      if (s.logo_url && String(s.logo_url).trim()) branding.company_logo_path = String(s.logo_url).trim();
+      if (s.address && String(s.address).trim()) branding.company_address = String(s.address).trim();
+      if (s.contact_details && String(s.contact_details).trim()) branding.contact_email = String(s.contact_details).trim();
+    }
+  } catch {
+    /* tenant_admin_settings may be absent — use the registry name only */
+  }
+  return branding;
+}
+
 function resolveAttachmentPath(fileUrl) {
   if (!fileUrl) return null;
   const rel = String(fileUrl).replace(/^\/uploads\//, '').replace(/^\//, '');
@@ -401,14 +433,18 @@ async function sendOfferLetter(
     throw ApiError.badRequest('Personal email is required to send the offer letter');
   }
 
-  const companyName = await resolveCompanyName(user);
+  const branding = await resolveCompanyBranding(pool, user);
+  const companyName = branding.company_name;
   const offerDate = dateOfOffer || new Date().toISOString().slice(0, 10);
 
   const pdf = await generateOfferLetterPdf({
     uploadDir: env.UPLOAD.dir,
     employeeId,
+    empId: emp.emp_id,
     companyName,
     candidateName: emp.full_name,
+    candidateEmail: emp.personal_email,
+    candidatePhone: emp.phone_number,
     jobTitle: emp.job_title,
     department: emp.department,
     joinDate: emp.join_date,
@@ -418,9 +454,9 @@ async function sendOfferLetter(
     offerExpiryDate: offerExpiryDate || null,
     employmentType: emp.employment_type,
     managerName: emp.manager_name,
-      pool,
-      tenant: { company_name: companyName, dbName: user.db_name }
-    });
+    pool,
+    tenant: branding,
+  });
 
   const docRow = await docRepo.insertDocument(pool, {
     employee_id: employeeId,
@@ -457,6 +493,21 @@ async function sendOfferLetter(
       : { onboarding_token: token }),
   });
 
+  // Build the candidate's role-based document checklist now (when the offer is
+  // sent), so it's ready and we can show the required documents in the email.
+  // Idempotent — re-seeding on acceptance is a no-op.
+  let requiredDocuments = [];
+  try {
+    await workflowRepo.seedChecklist(pool, employeeId);
+    const items = await workflowRepo.listChecklist(pool, employeeId);
+    requiredDocuments = items
+      .filter((i) => i.is_mandatory !== false)
+      .map((i) => i.document_label)
+      .filter(Boolean);
+  } catch (err) {
+    logger.warn(`Could not seed document checklist at offer send: ${err.message}`);
+  }
+
   const { base, tenantSlug } = await resolveCandidatePortalContext(user.tenant_id);
   const urls = buildCandidateUrls(base, token, tenantSlug);
   const attachments = [
@@ -477,6 +528,7 @@ async function sendOfferLetter(
       offerExpiryDate: offerExpiryDate || null,
       acceptUrl: urls.acceptUrl,
       rejectUrl: urls.rejectUrl,
+      requiredDocuments,
       attachments,
     });
   } catch (err) {
@@ -584,18 +636,14 @@ async function reviewChecklistItem(
       id: user.tenant_id,
       companyName: await resolveCompanyName(user),
     };
-    await onboardingEvents.notifyDocumentReviewed(
-      tenant,
-      pool,
-      emp,
-      targetItem,
-      normalized,
-      hrReviewComment,
-      {
+    // Fire-and-forget: notifications/emails (candidate + every HR owner) are
+    // slow SMTP calls and must not block the HR's Approve/Reject response.
+    onboardingEvents
+      .notifyDocumentReviewed(tenant, pool, emp, targetItem, normalized, hrReviewComment, {
         employeeId: user.employeeId || auth?.employeeId || null,
         actorName: user.full_name || user.name || 'HR',
-      },
-    );
+      })
+      .catch((err) => logger.warn(`[onboarding] document-review notify failed: ${err.message}`));
   }
 
   return { message: 'Document review updated.' };

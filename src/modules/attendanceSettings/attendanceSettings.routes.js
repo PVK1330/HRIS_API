@@ -19,6 +19,7 @@ const {
   APPROVERS,
   OVERTIME_CALC_RULES,
   OVERTIME_APPROVAL,
+  OVERTIME_APPROVERS,
   TIME_RE,
 } = require('./attendanceSettings.service');
 
@@ -44,6 +45,26 @@ const putValidators = [
   body('approver').optional().isIn(APPROVERS),
   body('overtime_calculation_rule').optional().isIn(OVERTIME_CALC_RULES),
   body('overtime_approval_workflow').optional().isIn(OVERTIME_APPROVAL),
+  body('overtime_minimum_threshold_minutes').optional().isInt({ min: 0, max: 720 }),
+  body('overtime_max_per_month_hours').optional().isFloat({ min: 0, max: 744 }),
+  body('overtime_approver').optional().isIn(OVERTIME_APPROVERS),
+  body('overtime_require_reason').optional().isBoolean(),
+  body('overtime_custom_multiplier').optional().isFloat({ min: 1, max: 10 }),
+  // Shift settings
+  body('shift_type_default').optional().isString(),
+  body('shift_allow_employee_view').optional().isBoolean(),
+  body('shift_change_request_enabled').optional().isBoolean(),
+  // Regularisation settings
+  body('regularization_allow_self').optional().isBoolean(),
+  body('regularization_max_per_month').optional().isInt({ min: 0, max: 31 }),
+  body('regularization_auto_approve_enabled').optional().isBoolean(),
+  body('regularization_auto_approve_after_days').optional().isInt({ min: 0, max: 30 }),
+  // General settings
+  body('work_week_days').optional().isString(),
+  body('grace_period_minutes').optional().isInt({ min: 0, max: 120 }),
+  body('half_day_threshold_hours').optional().isFloat({ min: 0, max: 24 }),
+  body('biometric_sync_enabled').optional().isBoolean(),
+  body('wfh_marking_allowed').optional().isBoolean(),
   body('auto_calculate_hours').optional().isBoolean(),
   body('ten_minute_buffer').optional().isBoolean(),
   body('late_mark_auto_calculation').optional().isBoolean(),

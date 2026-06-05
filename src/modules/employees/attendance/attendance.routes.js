@@ -81,6 +81,26 @@ adminRouter.get('/overtime/pending', anyViewPermission(), [
   query('page').optional().isInt({ min: 1 }),
   query('limit').optional().isInt({ min: 1, max: 100 }),
 ], validate, ctrl.pendingOvertime);
+
+// All overtime records (history) for the Overtime Management page.
+adminRouter.get('/overtime', anyViewPermission(), [
+  query('status').optional().isIn(['Pending', 'Approved', 'Rejected']),
+  query('search').optional().isString().trim(),
+  query('page').optional().isInt({ min: 1 }),
+  query('limit').optional().isInt({ min: 1, max: 200 }),
+], validate, ctrl.overtimeRecords);
+
+// Add Overtime — manage/approve gated; data scope is enforced in the service.
+adminRouter.post('/overtime', requireAnyPermission(
+  P.ATTENDANCE_MANAGE,
+  P.ATTENDANCE_APPROVE,
+), [
+  body('employeeId').isInt({ min: 1 }),
+  body('date').isDate(),
+  body('overtimeHours').isFloat({ gt: 0 }),
+  body('description').optional({ nullable: true }).isString().trim(),
+  body('status').optional().isIn(['Pending', 'Approved', 'Rejected']),
+], validate, ctrl.createOvertime);
 adminRouter.get('/regularizations/history', anyViewPermission(), [
   query('status').optional().isIn(['Pending', 'Approved', 'Rejected']),
   query('page').optional().isInt({ min: 1 }),

@@ -258,8 +258,20 @@ async function getDashboard(pool, date, auth) {
   const scoped = appendScopeToConditions(auth, conditions, params, 'e');
   const where = scoped.conditions.join(' AND ');
 
-  const empScoped = appendScopeToConditions(auth, ['deleted_at IS NULL', "employment_status IN ('Active', 'Probation', 'Notice Period')"], [], '');
+  // BUGFIX: alias must be 'e' (not '') so scope fragments render as `e.id = $n`
+  // rather than invalid `.id = $n`, which 500'd for any SELF/TEAM/DEPARTMENT user.
+  const empScoped = appendScopeToConditions(auth, ['e.deleted_at IS NULL', "e.employment_status IN ('Active', 'Probation', 'Notice Period')"], [], 'e');
   const empWhere = empScoped.conditions.join(' AND ');
+
+  // Scope the 7-day trend the same way as every other dashboard query so a limited-scope
+  // user can't read org-wide counts through the trend chart.
+  const trendScoped = appendScopeToConditions(
+    auth,
+    ['e.deleted_at IS NULL', "a.date >= $1::date - INTERVAL '6 days'", 'a.date <= $1::date'],
+    [date],
+    'e',
+  );
+  const trendWhere = trendScoped.conditions.join(' AND ');
 
   const [widgetsRes, totalEmpRes, trendRes, deptRes, lateRes, missingRes] = await Promise.all([
     pool.query(
@@ -278,7 +290,7 @@ async function getDashboard(pool, date, auth) {
        WHERE ${where}`,
       scoped.params,
     ),
-    pool.query(`SELECT COUNT(*)::int AS total FROM employees e WHERE ${empWhere}`),
+    pool.query(`SELECT COUNT(*)::int AS total FROM employees e WHERE ${empWhere}`, empScoped.params),
     // Daily Trend (Last 7 Days)
     pool.query(`
       SELECT TO_CHAR(a.date, 'YYYY-MM-DD') as date,
@@ -287,10 +299,10 @@ async function getDashboard(pool, date, auth) {
              COUNT(*) FILTER (WHERE a.status = 'On Leave')::int as on_leave
       FROM attendance a
       JOIN employees e ON e.id = a.employee_id
-      WHERE a.date >= $1::date - INTERVAL '6 days' AND a.date <= $1::date AND e.deleted_at IS NULL
+      WHERE ${trendWhere}
       GROUP BY a.date
       ORDER BY a.date ASC
-    `, [date]),
+    `, trendScoped.params),
     // Department Attendance (Today)
     pool.query(`
       SELECT e.department,

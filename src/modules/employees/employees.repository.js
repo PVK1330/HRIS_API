@@ -836,12 +836,44 @@ async function getFilterOptions(pool) {
   for (const r of jobsEmp.rows) if (r.job_title) jobSet.add(r.job_title);
   const jobTitles = [...jobSet].sort((a, b) => a.localeCompare(b));
 
+  // Seeded lookup lists (nationalities, work locations). Guarded so this still
+  // works if the lookup_options table hasn't been migrated yet.
+  const [seededNat, seededLoc] = await Promise.all([
+    pool
+      .query(
+        `SELECT value FROM lookup_options
+          WHERE category = 'nationality' AND is_active = true
+          ORDER BY sort_order, value`,
+      )
+      .catch(() => ({ rows: [] })),
+    pool
+      .query(
+        `SELECT value FROM lookup_options
+          WHERE category = 'work_location' AND is_active = true
+          ORDER BY sort_order, value`,
+      )
+      .catch(() => ({ rows: [] })),
+  ]);
+
+  // Work locations: seeded defaults first, then any extra distinct values from
+  // existing employee records (deduped, case-insensitive).
+  const locSeen = new Set();
+  const workLocations = [];
+  for (const r of [...seededLoc.rows.map((x) => x.value), ...locs.rows.map((x) => x.work_location)]) {
+    const v = (r || '').trim();
+    if (v && !locSeen.has(v.toLowerCase())) {
+      locSeen.add(v.toLowerCase());
+      workLocations.push(v);
+    }
+  }
+
   return {
     departments,
     departmentRecords: deptRecordsRes.rows,
     designations: designationRowsRes.rows,
     jobTitles,
-    workLocations: locs.rows.map((r) => r.work_location),
+    nationalities: seededNat.rows.map((r) => r.value),
+    workLocations,
     workModes: modes.rows.map((r) => r.work_mode),
     statuses: statuses.rows.map((r) => r.employment_status),
   };

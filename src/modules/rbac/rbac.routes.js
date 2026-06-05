@@ -15,9 +15,12 @@ router.get('/permissions', ctrl.listPermissions);
 router.get('/permissions/available', ctrl.listAvailablePermissions);
 
 router.get('/roles', ctrl.listRoles);
+router.get('/roles/:id', ctrl.getRole);
 
 router.post('/roles', ctrl.createRole);
 
+// Update a role's name/description/scope (distinct from the permissions route).
+router.put('/roles/:id', ctrl.updateRole);
 router.put('/roles/:roleId/permissions', ctrl.updateRolePermissions);
 
 router.delete('/roles/:id', ctrl.deleteRole);

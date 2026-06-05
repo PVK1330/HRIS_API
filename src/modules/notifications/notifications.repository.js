@@ -1,12 +1,15 @@
 'use strict';
 
-async function create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, ticketId, entityType, entityId, redirectUrl }) {
+const { ensureMessagingEmployeeId } = require('../messages/messagingIdentity');
+
+async function create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, priority, ticketId, entityType, entityId, redirectUrl }) {
   const { rows } = await pool.query(`
-    INSERT INTO notifications (employee_id, for_admin, recipient_id, recipient_role, title, message, type, ticket_id, entity_type, entity_id, redirect_url)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    INSERT INTO notifications (employee_id, for_admin, recipient_id, recipient_role, title, message, type, priority, ticket_id, entity_type, entity_id, redirect_url)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     RETURNING *
   `, [
-    employeeId || null, Boolean(forAdmin), title, message, type || 'info',
+    employeeId || null, Boolean(forAdmin), recipientId || null, recipientRole || null,
+    title, message, type || 'info', priority || 'NORMAL',
     ticketId || null, entityType || null, entityId || null, redirectUrl || null
   ]);
   return rows[0];
@@ -26,6 +29,8 @@ async function listForUser(pool, user) {
   let whereCondition = '';
   let params = [];
 
+  const messagingEmpId = await ensureMessagingEmployeeId(pool, user);
+
   if (isSuperadmin) {
     // Superadmin should only see notifications specifically for superadmin
     // No parameters needed for this query
@@ -34,24 +39,48 @@ async function listForUser(pool, user) {
          OR (for_admin = true AND recipient_role IS NULL)  -- Backward compatibility
     `;
   } else if (isAdminRole) {
-    // Admin should only see:
-    // 1. Notifications specifically for them (recipient_id = admin.id)
-    // 2. Notifications for their role (recipient_role = 'admin')
-    // 3. Their own employee notifications (employee_id = user.id)
+    // Admin should see:
+    // 1. Generic tenant-admin notifications (for_admin = true, no specific role)
+    // 2. Notifications specifically for them (recipient_id = admin.id)
+    // 3. Notifications for the 'admin' role
+    // 4. Their own employee notifications
     whereCondition = `
-      WHERE recipient_id = $1
+      WHERE (for_admin = true AND recipient_role IS NULL)
          OR recipient_role = 'admin'
+         OR recipient_id = $1
          OR employee_id = $1
-         OR employee_id IN (SELECT id FROM employees WHERE work_email = $2)
+         OR ($3::bigint IS NOT NULL AND employee_id = $3)
+         OR ($4::bigint IS NOT NULL AND recipient_id = $4)
+         OR employee_id IN (
+              SELECT id
+              FROM employees
+              WHERE LOWER(work_email) = LOWER($2)
+            )
     `;
-    params = [user.id, user.email || ''];
+    params = [
+      user.id,
+      user.email || '',
+      messagingEmpId || null,
+      Number(user.employeeId) || null
+    ];
   } else {
     // Regular employee: only see their own notifications
     whereCondition = `
       WHERE employee_id = $1
-         OR employee_id IN (SELECT id FROM employees WHERE work_email = $2)
+         OR ($3::bigint IS NOT NULL AND employee_id = $3)
+         OR ($4::bigint IS NOT NULL AND recipient_id = $4)
+         OR employee_id IN (
+              SELECT id
+              FROM employees
+              WHERE LOWER(work_email) = LOWER($2)
+            )
     `;
-    params = [user.id, user.email || ''];
+    params = [
+      user.id,
+      user.email || '',
+      messagingEmpId || null,
+      Number(user.employeeId) || null
+    ];
   }
 
   const query = `
@@ -122,10 +151,11 @@ async function markAllAsRead(pool, user) {
     updateQuery = `
       UPDATE notifications
       SET is_read = true
-      WHERE recipient_id = $1
+      WHERE (for_admin = true AND recipient_role IS NULL)
+         OR recipient_id = $1
          OR recipient_role = 'admin'
          OR employee_id = $1
-         OR employee_id IN (SELECT id FROM employees WHERE work_email = $2)
+         OR employee_id IN (SELECT id FROM employees WHERE LOWER(work_email) = LOWER($2))
     `;
     params = [user.id, user.email || ''];
   } else {

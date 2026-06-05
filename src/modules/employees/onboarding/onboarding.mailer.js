@@ -106,9 +106,17 @@ async function sendOfferLetterToCandidate({
   offerExpiryDate,
   acceptUrl,
   rejectUrl,
+  requiredDocuments = [],
   attachments = [],
 }) {
   const company = companyName || process.env.COMPANY_NAME || 'Your Company';
+  const docsSection = Array.isArray(requiredDocuments) && requiredDocuments.length
+    ? `<p style="margin-top:20px">After you accept, you'll be asked to upload these documents:</p>
+<ul style="margin:12px 0;padding-left:20px;font-size:14px;line-height:1.8">${requiredDocuments
+        .map((d) => `<li>${escapeHtml(d)}</li>`)
+        .join('')}</ul>
+<p style="color:#64748b;font-size:13px">Keep digital copies ready to speed up your onboarding.</p>`
+    : '';
   const html = brandedEmailLayout({
     companyName: company,
     title: 'Your offer of employment',
@@ -123,6 +131,7 @@ async function sendOfferLetterToCandidate({
 <tr><td style="color:#64748b">Date of offer</td><td><strong>${escapeHtml(dateOfOffer || '—')}</strong></td></tr>
 <tr><td style="color:#64748b">Valid until</td><td><strong>${escapeHtml(offerExpiryDate || '—')}</strong></td></tr>
 </table>
+${docsSection}
 ${offerActionButtons({ acceptUrl, rejectUrl })}`,
   });
   await sendMail({

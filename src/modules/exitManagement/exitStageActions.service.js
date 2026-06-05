@@ -138,7 +138,7 @@ async function markAssetReturned(tenant, requestId, assetId, data, actor) {
       employeeId,
       { employeeId: actor?.employeeId, actorName: actor?.actorName },
       { status, notes: data.notes },
-    ).catch(() => null);
+    ).catch((e) => { console.error('Exit workflow event error:', e); return null; });
   }
   return updated;
 }

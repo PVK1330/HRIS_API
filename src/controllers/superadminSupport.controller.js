@@ -169,7 +169,7 @@ async function updateStatus(req, res) {
         const io = getIo();
         if (io && updatedTicket.admin_id) {
           console.log('[SUPERADMIN] Emitting notification event to user:', updatedTicket.admin_id);
-          io.to(`user:${updatedTicket.admin_id}`).emit('notification:new', {
+          io.to(`user:${updatedTicket.admin_id}`).emit('new_notification', {
             id: notification?.id,
             title,
             message,
@@ -266,7 +266,7 @@ async function addReply(req, res) {
         const io = getIo();
         if (io && updatedTicket.admin_id) {
           console.log('[SUPERADMIN] Emitting notification event to user:', updatedTicket.admin_id);
-          io.to(`user:${updatedTicket.admin_id}`).emit('notification:new', {
+          io.to(`user:${updatedTicket.admin_id}`).emit('new_notification', {
             id: notification?.id,
             title,
             message: messageText,
@@ -380,7 +380,7 @@ async function updateTicket(req, res) {
         const io = getIo();
         if (io && refreshedTicket.admin_id) {
           console.log('[SUPERADMIN] Emitting notification event to user:', refreshedTicket.admin_id);
-          io.to(`user:${refreshedTicket.admin_id}`).emit('notification:new', {
+          io.to(`user:${refreshedTicket.admin_id}`).emit('new_notification', {
             id: notification?.id,
             title,
             message: messageNotification,

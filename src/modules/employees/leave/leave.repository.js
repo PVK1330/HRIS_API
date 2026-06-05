@@ -290,6 +290,42 @@ async function getAllBalances(pool, year, { department, search, limit = 50, offs
   return rows;
 }
 
+/**
+ * Concurrency-safe balance access. Seeds the row from the entitlement if absent,
+ * then locks it FOR UPDATE so two concurrent approvals/applies cannot both read a
+ * stale `used` and over/under-deduct. MUST be called inside a transaction (client).
+ */
+async function lockBalanceForUpdate(client, employeeId, leaveType, year, annualDays = 0) {
+  await client.query(
+    `INSERT INTO leave_balances (employee_id, leave_type, year, total_allocated, used, carry_forward)
+     VALUES ($1,$2,$3,$4,0,0)
+     ON CONFLICT (employee_id, leave_type, year) DO NOTHING`,
+    [employeeId, leaveType, year, annualDays ?? 0]
+  );
+  const { rows } = await client.query(
+    `SELECT * FROM leave_balances
+     WHERE employee_id = $1 AND leave_type = $2 AND year = $3
+     FOR UPDATE`,
+    [employeeId, leaveType, year]
+  );
+  return rows[0];
+}
+
+/**
+ * Atomically adjust `used` by deltaDays (positive = consume, negative = restore),
+ * clamped at 0. Pair with lockBalanceForUpdate inside the same transaction.
+ */
+async function incrementUsed(client, employeeId, leaveType, year, deltaDays) {
+  const { rows } = await client.query(
+    `UPDATE leave_balances
+     SET used = GREATEST(0, used + $4), updated_at = NOW()
+     WHERE employee_id = $1 AND leave_type = $2 AND year = $3
+     RETURNING *`,
+    [employeeId, leaveType, year, deltaDays]
+  );
+  return rows[0];
+}
+
 async function upsertBalance(pool, { employeeId, leaveType, year, totalAllocated, used, carryForward }) {
   const { rows } = await pool.query(
     `INSERT INTO leave_balances (employee_id, leave_type, year, total_allocated, used, carry_forward)
@@ -334,5 +370,6 @@ module.exports = {
   getActiveLeaveTypes,
   getBalanceForType, findOverlappingRequest,
   getBalances, getAllBalances, upsertBalance,
+  lockBalanceForUpdate, incrementUsed,
   getStats,
 };

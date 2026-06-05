@@ -128,6 +128,7 @@ async function seedStageEntry(client, requestId, stage) {
      WHERE id = $3`,
     [stage.id, deptId, requestId],
   );
+  console.log(`[Exit Workflow] Request ${requestId} current_stage_id updated to ${stage.id}.`);
 
   // Open PENDING slot for the stage occurrence (authoritative SLA clock).
   await client.query(
@@ -146,6 +147,30 @@ async function seedStageEntry(client, requestId, stage) {
      WHERE t.stage_id = $2 AND t.is_active = true`,
     [requestId, stage.id],
   );
+
+  // If this stage is IT or Asset Clearance, dynamically fetch employee's assigned assets and insert them as checklist items.
+  const stageName = (stage.name || '').toLowerCase();
+  if (stageName.includes('it clearance') || stageName.includes('asset') || stageName.includes('it admin')) {
+    const { rows: reqRows } = await client.query('SELECT employee_id FROM exit_requests WHERE id = $1', [requestId]);
+    if (reqRows.length > 0) {
+      const empId = reqRows[0].employee_id;
+      try {
+        // Query assets assigned to the employee
+        const { rows: assets } = await client.query(`SELECT id, asset_name, asset_code FROM assets WHERE employee_id = $1 AND status = 'ASSIGNED'`, [empId]);
+        for (const asset of assets) {
+          await client.query(
+            `INSERT INTO exit_request_checklist_items
+               (exit_request_id, stage_id, template_item_id, item_type, label, is_mandatory, status)
+             VALUES ($1, $2, NULL, 'COLLECT_ASSET', $3, true, 'PENDING')`,
+            [requestId, stage.id, `Collect Asset: ${asset.asset_name} (${asset.asset_code})`]
+          );
+        }
+      } catch (e) {
+        // Fallback or ignore if assets table does not strictly exist
+        console.error('Error fetching assets for clearance', e);
+      }
+    }
+  }
 
   return deptId;
 }
@@ -180,7 +205,13 @@ async function advanceStage(client, request, stage) {
   }
   // 2. approval-mode satisfaction
   const satisfied = await isStageSatisfied(client, request, stage);
-  if (!satisfied) return { advanced: false, reason: 'approvals_pending' };
+  if (!satisfied) {
+    console.log(`[Exit Workflow] Request ${request.id} Stage ${stage.id} not satisfied (approvals_pending).`);
+    return { advanced: false, reason: 'approvals_pending' };
+  }
+
+  console.log(`[Exit Workflow] Request ${request.id} Stage ${stage.id} COMPLETED.`);
+
 
   // 3. mark stage COMPLETE + close the PENDING slot
   await closePendingSlot(client, request.id, stage.id, 'APPROVE', null);
@@ -193,9 +224,12 @@ async function advanceStage(client, request, stage) {
   // 4/5. next stage or finish
   const next = await getNextStage(client, request.workflow_id, stage.stage_order);
   if (next) {
+    console.log(`[Exit Workflow] Request ${request.id} resolved NEXT STAGE: ${next.id} (${next.name}).`);
     await seedStageEntry(client, request.id, next);
     return { advanced: true, completed: false, nextStageId: next.id };
   }
+  
+  console.log(`[Exit Workflow] Request ${request.id} resolved NEXT STAGE: NONE (Workflow Completed).`);
 
   await client.query(
     `UPDATE exit_requests

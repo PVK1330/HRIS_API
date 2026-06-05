@@ -104,6 +104,83 @@ async function verify2FA({ userId, code }) {
   };
 }
 
+const QRCode = require('qrcode');
+const MFA_ISSUER = process.env.MFA_ISSUER || 'HRIS Platform';
+
+/** Current 2FA status for a superadmin (or sub-admin) account. */
+async function getMfaStatus(userId) {
+  const row = await repo.getMfaState(userId);
+  if (!row) throw ApiError.notFound('Account not found');
+  return {
+    enabled: Boolean(row.two_factor_enabled),
+    pending: Boolean(row.two_factor_pending_secret) && !row.two_factor_enabled,
+  };
+}
+
+/** Begin enrollment: generate + store a pending secret, return QR + manual key. */
+async function beginMfaSetup(userId) {
+  const row = await repo.getMfaState(userId);
+  if (!row) throw ApiError.notFound('Account not found');
+  if (row.two_factor_enabled) {
+    throw ApiError.badRequest('Two-factor authentication is already enabled. Disable it first to re-enroll.');
+  }
+
+  const label = row.email || row.name || `superadmin-${row.id}`;
+  const secret = speakeasy.generateSecret({
+    name: `${MFA_ISSUER} (${label})`,
+    issuer: MFA_ISSUER,
+    length: 20,
+  });
+
+  await repo.setMfaPending(row.id, secret.base32);
+  const qrDataUrl = await QRCode.toDataURL(secret.otpauth_url);
+  return { secret: secret.base32, otpauthUrl: secret.otpauth_url, qrDataUrl };
+}
+
+/** Confirm enrollment by verifying a code against the pending secret. */
+async function enableMfa(userId, code) {
+  if (!code) throw ApiError.badRequest('Verification code is required');
+  const row = await repo.getMfaState(userId);
+  if (!row) throw ApiError.notFound('Account not found');
+  if (row.two_factor_enabled) throw ApiError.badRequest('Two-factor authentication is already enabled.');
+  if (!row.two_factor_pending_secret) {
+    throw ApiError.badRequest('Start the setup first, then enter the code from your authenticator app.');
+  }
+
+  const ok = speakeasy.totp.verify({
+    secret: row.two_factor_pending_secret,
+    encoding: 'base32',
+    token: String(code).trim(),
+    window: 1,
+  });
+  if (!ok) throw ApiError.unauthorized('Invalid verification code. Check your device time and try again.');
+
+  await repo.enableMfa(row.id);
+  return { enabled: true };
+}
+
+/** Disable 2FA after verifying a current code. */
+async function disableMfa(userId, code) {
+  const row = await repo.getMfaState(userId);
+  if (!row) throw ApiError.notFound('Account not found');
+  if (!row.two_factor_enabled) {
+    await repo.disableMfa(row.id);
+    return { enabled: false };
+  }
+  if (!code) throw ApiError.badRequest('Enter a current code from your authenticator app to disable 2FA.');
+
+  const ok = speakeasy.totp.verify({
+    secret: row.two_factor_secret,
+    encoding: 'base32',
+    token: String(code).trim(),
+    window: 1,
+  });
+  if (!ok) throw ApiError.unauthorized('Invalid verification code.');
+
+  await repo.disableMfa(row.id);
+  return { enabled: false };
+}
+
 function normalizeRoleKey(input) {
   return String(input || '')
     .trim()
@@ -387,6 +464,10 @@ async function getAuditLogs() {
 module.exports = {
   login,
   verify2FA,
+  getMfaStatus,
+  beginMfaSetup,
+  enableMfa,
+  disableMfa,
   getAdminUsers,
   createAdminUser,
   updateAdminUser,

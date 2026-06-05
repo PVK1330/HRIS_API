@@ -97,6 +97,20 @@ async function bootstrap() {
       logger.error('Failed to start attendance monthly report cron', e);
     }
 
+    try {
+      const { startTrialExpiryReminderCron } = require('./jobs/trialExpiryReminder.job');
+      startTrialExpiryReminderCron();
+    } catch (e) {
+      logger.error('Failed to start trial expiry reminder cron', e);
+    }
+
+    try {
+      const { startExchangeRatesRefreshCron } = require('./jobs/exchangeRatesRefresh.job');
+      startExchangeRatesRefreshCron();
+    } catch (e) {
+      logger.error('Failed to start exchange rates refresh cron', e);
+    }
+
     logger.info(`Socket.io attached on /socket.io`);
   });
 

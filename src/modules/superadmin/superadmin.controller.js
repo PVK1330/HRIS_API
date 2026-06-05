@@ -45,6 +45,28 @@ const verify2FA = asyncHandler(async (req, res) => {
   );
 });
 
+/* --- Self-service 2FA enrollment for superadmin / sub-admin accounts --- */
+
+const getMfaStatus = asyncHandler(async (req, res) => {
+  const result = await service.getMfaStatus(req.user.id);
+  return ApiResponse.ok(res, result, 'MFA status fetched');
+});
+
+const setupMfa = asyncHandler(async (req, res) => {
+  const result = await service.beginMfaSetup(req.user.id);
+  return ApiResponse.ok(res, result, 'Scan the QR code with your authenticator app');
+});
+
+const enableMfa = asyncHandler(async (req, res) => {
+  const result = await service.enableMfa(req.user.id, req.body.code);
+  return ApiResponse.ok(res, result, 'Two-factor authentication enabled');
+});
+
+const disableMfa = asyncHandler(async (req, res) => {
+  const result = await service.disableMfa(req.user.id, req.body.code);
+  return ApiResponse.ok(res, result, 'Two-factor authentication disabled');
+});
+
 const getAdminUsers = asyncHandler(async (_req, res) => {
   const users = await service.getAdminUsers();
   return ApiResponse.ok(res, { users }, 'Admin users retrieved successfully');
@@ -164,6 +186,10 @@ const getAuditLogs = asyncHandler(async (_req, res) => {
 module.exports = {
   login,
   verify2FA,
+  getMfaStatus,
+  setupMfa,
+  enableMfa,
+  disableMfa,
   getAdminUsers,
   createAdminUser,
   updateAdminUser,

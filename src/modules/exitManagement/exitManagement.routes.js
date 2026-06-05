@@ -43,6 +43,7 @@ const reqChain = [validateWithJoi(v.idParam, 'params'), loadWorkflowContext, res
 
 /* ---- Dashboard + lookups (no :id) ---- */
 router.get('/dashboard/widgets', ctrl.widgets);
+router.get('/stats', ctrl.stats);
 router.get('/termination-types', ctrl.terminationTypes);
 
 /* ---- Personal exit tasks (assigned to the caller) — registered before /:id ---- */

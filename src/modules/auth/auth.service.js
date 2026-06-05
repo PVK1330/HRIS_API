@@ -500,7 +500,22 @@ async function findTenantAdminForLogin(tenantPool, loginId, tenantAdminEmail) {
   return fallback.rows[0] || null;
 }
 
-async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures, planDetails, planFeatures) {
+async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures, planDetails, planFeatures, options = {}) {
+  if (!options.mfaVerified) {
+    const { rows: mfaRows } = await tenantPool.query(
+      'SELECT mfa_enabled FROM employees WHERE id = $1',
+      [emp.id],
+    );
+    if (mfaRows[0]?.mfa_enabled) {
+      return issueMfaChallenge({
+        userType: 'employee',
+        tenant,
+        userId: emp.id,
+        email: emp.work_email,
+      });
+    }
+  }
+
   const rbacRepo = require('../rbac/rbac.repository');
   const rbacRoleId = emp.rbac_role_id || null;
 
@@ -548,10 +563,11 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
     plan_features: planFeatures,
     tenant_features: tenantFeatures,
     allowedModules,
+    billing: await safeBillingState(tenant.id),
   };
 }
 
-async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatures, planDetails, planFeatures) {
+async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatures, planDetails, planFeatures, options = {}) {
   const allowedModules = await adminModulesForJwt(tenantPool);
   const permissions = ['*']; // Admins have all permissions by default
 
@@ -596,6 +612,21 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
     }
   }
 
+  if (!options.mfaVerified) {
+    const { rows: mfaRows } = await tenantPool.query(
+      'SELECT mfa_enabled FROM admin_users WHERE id = $1',
+      [adminUser.id],
+    );
+    if (mfaRows[0]?.mfa_enabled) {
+      return issueMfaChallenge({
+        userType: 'admin',
+        tenant,
+        userId: adminUser.id,
+        email: adminUser.email,
+      });
+    }
+  }
+
   const token = jwt.sign(
     {
       id: adminUser.id,
@@ -627,7 +658,110 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
     plan_features: planFeatures,
     tenant_features: tenantFeatures,
     allowedModules,
+    billing: await safeBillingState(tenant.id),
   };
+}
+
+/** Resolve a tenant's billing/trial/payment state, never throwing on the login path. */
+async function safeBillingState(tenantId) {
+  try {
+    const tenantBilling = require('../billing/tenantBilling.service');
+    return await tenantBilling.getBillingForTenant(tenantId);
+  } catch (err) {
+    logger.error('[auth] failed to compute billing state:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Builds a short-lived (10 min) signed MFA challenge token. The password has already
+ * been verified at this point; the client must exchange this token + a valid TOTP code
+ * at POST /auth/verify-2fa to receive the real session token.
+ */
+function issueMfaChallenge({ userType, tenant, userId, email }) {
+  const mfaToken = jwt.sign(
+    {
+      purpose: 'mfa_login',
+      userType,
+      tenant_id: tenant.id,
+      db_name: tenant.db_name,
+      sub: userId,
+    },
+    env.JWT.secret,
+    { expiresIn: '10m' },
+  );
+  return { mfaRequired: true, mfaToken, email: email || null };
+}
+
+/**
+ * Completes a login that was paused for MFA: verifies the TOTP code against the user's
+ * stored secret and re-issues the full login result.
+ */
+async function verifyMfaLogin(mfaToken, code) {
+  if (!mfaToken) throw ApiError.badRequest('Missing verification session token');
+
+  let payload;
+  try {
+    payload = jwt.verify(mfaToken, env.JWT.secret);
+  } catch (err) {
+    throw ApiError.unauthorized('Your verification session has expired. Please sign in again.');
+  }
+  if (!payload || payload.purpose !== 'mfa_login') {
+    throw ApiError.unauthorized('Invalid verification session');
+  }
+
+  const { getTenantPool } = require('../../config/db');
+  const tenant = await resolveTenantForLogin({ tenantId: payload.tenant_id });
+  if (!tenant) throw ApiError.unauthorized('Organization workspace not found');
+  if (tenant.status !== 'active') throw ApiError.unauthorized('Account is suspended or inactive');
+
+  const tenantPool = getTenantPool(tenant.db_name);
+
+  const secretTable = payload.userType === 'admin' ? 'admin_users' : 'employees';
+  const { rows: secretRows } = await tenantPool.query(
+    `SELECT mfa_secret FROM ${secretTable} WHERE id = $1`,
+    [payload.sub],
+  );
+  const secret = secretRows[0]?.mfa_secret;
+  if (!secret) {
+    throw ApiError.unauthorized('Two-factor authentication is not configured for this account.');
+  }
+
+  const ok = speakeasy.totp.verify({
+    secret,
+    encoding: 'base32',
+    token: String(code || '').trim(),
+    window: 1,
+  });
+  if (!ok) throw ApiError.unauthorized('Invalid verification code');
+
+  const tenantFeatures = await gatherTenantFeatures(tenant.id);
+  const { planDetails, planFeatures } = await fetchPlanBundles(tenant.plan_id);
+
+  if (payload.userType === 'employee') {
+    const { rows } = await tenantPool.query(
+      `SELECT id, full_name, work_email, username, rbac_role_id, employment_status, department
+       FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+      [payload.sub],
+    );
+    if (!rows[0]) throw ApiError.unauthorized('Account not found');
+    if (String(rows[0].employment_status || '').toLowerCase() === 'terminated') {
+      throw ApiError.unauthorized('User account is inactive');
+    }
+    return buildEmployeeLoginResult(
+      rows[0], tenant, tenantPool, tenantFeatures, planDetails, planFeatures, { mfaVerified: true },
+    );
+  }
+
+  const { rows } = await tenantPool.query(
+    'SELECT id, email, password_hash, name, status FROM admin_users WHERE id = $1 LIMIT 1',
+    [payload.sub],
+  );
+  if (!rows[0]) throw ApiError.unauthorized('Account not found');
+  if (rows[0].status !== 'active') throw ApiError.unauthorized('User account is inactive');
+  return buildAdminLoginResult(
+    rows[0], tenant, tenantPool, tenantFeatures, planDetails, planFeatures, { mfaVerified: true },
+  );
 }
 
 /**
@@ -1091,6 +1225,7 @@ async function getAccessProfile(currentUser) {
     tenant_features: tenantFeatures,
     allowedModules,
     permissions,
+    billing: await safeBillingState(tenant.id),
     refreshed_at: new Date().toISOString(),
   };
 }
@@ -1100,6 +1235,7 @@ module.exports = {
   verifyOTP,
   resetPassword,
   verify2FA,
+  verifyMfaLogin,
   login,
   generateImpersonationToken,
   getAccessProfile

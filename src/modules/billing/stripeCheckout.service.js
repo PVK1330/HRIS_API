@@ -3,6 +3,7 @@
 const ApiError = require('../../utils/ApiError');
 const gatewayRepo = require('../paymentGateways/paymentGateways.repository');
 const plansRepo = require('../superadmin/plans.repository');
+const currencyService = require('../currency/currency.service');
 const db = require('../../config/db');
 const { formatDate } = require('../../utils/timezone');
 const {
@@ -36,6 +37,8 @@ async function createCheckoutSession({
   planId,
   billingCycle = 'monthly',
   customerEmail,
+  successUrl,
+  cancelUrl,
 }) {
   const gw = await gatewayRepo.findBySlug('stripe');
   if (!gw || !gw.is_enabled) {
@@ -75,25 +78,47 @@ async function createCheckoutSession({
   const currency = platformCurrency.toLowerCase();
   const invoiceDate = formatDate(new Date(), platformTz, 'DD/MM/YYYY');
 
+  // Billing tax (VAT/GST) is added on top of the plan price as a separate line.
+  const currencySettings = await currencyService.getCurrencySettings().catch(() => null);
+  const taxAmount = currencySettings ? currencyService.taxFor(amount, currencySettings) : 0;
+  const taxLabel = currencySettings?.taxLabel || 'Tax';
+  const taxRate = Number(currencySettings?.taxRate) || 0;
+
+  const lineItems = [
+    {
+      price_data: {
+        currency,
+        unit_amount: Math.round(amount * 100),
+        product_data: {
+          name: `${plan.plan_name} subscription`,
+          description: `${cycle === 'annual' ? 'Annual' : 'Monthly'} billing (${invoiceDate}, ${platformTz})`,
+        },
+      },
+      quantity: 1,
+    },
+  ];
+
+  if (taxAmount > 0) {
+    lineItems.push({
+      price_data: {
+        currency,
+        unit_amount: Math.round(taxAmount * 100),
+        product_data: {
+          name: `${taxLabel} (${taxRate}%)`,
+          description: `${taxLabel} on ${plan.plan_name} subscription`,
+        },
+      },
+      quantity: 1,
+    });
+  }
+
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
     locale: stripeLocaleForTimezone(platformTz),
     customer_email: customerEmail || undefined,
-    line_items: [
-      {
-        price_data: {
-          currency,
-          unit_amount: Math.round(amount * 100),
-          product_data: {
-            name: `${plan.plan_name} subscription`,
-            description: `${cycle === 'annual' ? 'Annual' : 'Monthly'} billing (${invoiceDate}, ${platformTz})`,
-          },
-        },
-        quantity: 1,
-      },
-    ],
-    success_url: `${base}/superadmin/tenants?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${base}/superadmin/tenants?stripe=cancelled`,
+    line_items: lineItems,
+    success_url: successUrl || `${base}/superadmin/tenants?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: cancelUrl || `${base}/superadmin/tenants?stripe=cancelled`,
     metadata: {
       tenant_id: String(tenantId),
       payment_id: paymentId ? String(paymentId) : '',
@@ -101,6 +126,11 @@ async function createCheckoutSession({
       billing_cycle: cycle,
       platform_timezone: platformTz,
       platform_currency: platformCurrency,
+      subtotal: amount.toFixed(2),
+      tax_label: taxLabel,
+      tax_rate: String(taxRate),
+      tax_amount: taxAmount.toFixed(2),
+      total: (amount + taxAmount).toFixed(2),
     },
   });
 
@@ -121,6 +151,27 @@ async function createCheckoutSession({
   };
 }
 
+/**
+ * Retrieve a Checkout Session to confirm payment status (paid / unpaid).
+ * Returns { paid, payment_status, metadata }.
+ */
+async function retrieveSession(sessionId) {
+  const gw = await gatewayRepo.findBySlug('stripe');
+  if (!gw || !gw.is_enabled) {
+    throw ApiError.badRequest('Stripe is not enabled.');
+  }
+  const stripe = getStripeClient(gw.credentials?.secret_key);
+  const session = await stripe.checkout.sessions.retrieve(String(sessionId));
+  return {
+    paid: session.payment_status === 'paid',
+    payment_status: session.payment_status,
+    metadata: session.metadata || {},
+    amount_total: session.amount_total,
+    currency: session.currency,
+  };
+}
+
 module.exports = {
   createCheckoutSession,
+  retrieveSession,
 };

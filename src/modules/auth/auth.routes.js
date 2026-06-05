@@ -75,6 +75,35 @@ router.post(
   controller.resetPassword,
 );
 
+router.post(
+  '/verify-2fa',
+  authLimiter,
+  [
+    body('mfaToken').notEmpty().withMessage('Verification session token is required'),
+    body('code').isLength({ min: 6, max: 6 }).withMessage('Code must be 6 digits'),
+  ],
+  validate,
+  controller.verifyTwoFactor,
+);
+
 router.get('/access-profile', authenticate, controller.getAccessProfile);
+
+/* --- Self-service MFA enrollment --- */
+router.get('/mfa/status', authenticate, controller.getMfaStatus);
+router.post('/mfa/setup', authenticate, controller.setupMfa);
+router.post(
+  '/mfa/enable',
+  authenticate,
+  [body('code').isLength({ min: 6, max: 6 }).withMessage('Code must be 6 digits')],
+  validate,
+  controller.enableMfa,
+);
+router.post(
+  '/mfa/disable',
+  authenticate,
+  [body('code').optional().isLength({ min: 6, max: 6 }).withMessage('Code must be 6 digits')],
+  validate,
+  controller.disableMfa,
+);
 
 module.exports = router;

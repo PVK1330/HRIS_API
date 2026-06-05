@@ -87,6 +87,7 @@ async function insertTenant(
     createdBy,
     planId,
     trialEndsAt,
+    subscriptionStatus = 'trial',
   },
   client = db,
 ) {
@@ -111,7 +112,7 @@ async function insertTenant(
     "active",
     createdBy,
     planId || null,
-    "trial",
+    subscriptionStatus || "trial",
     trialEndsAt || null,
   ];
 

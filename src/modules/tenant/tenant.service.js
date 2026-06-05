@@ -268,11 +268,32 @@ async function createTenant({
       const plansRepo = require("../superadmin/plans.repository");
       planDetails = await plansRepo.findById(plan_id);
     }
-    const trialDays = Number(planDetails?.trial_days) > 0 ? Number(planDetails.trial_days) : 14;
+    // Trial length: per-plan trial_days takes priority, else the superadmin's
+    // global Free Trial setting, else a 14-day fallback.
+    let globalTrialDays = 0;
+    try {
+      const freeTrialRepo = require("../freeTrial/freeTrial.repository");
+      const ft = await freeTrialRepo.findSingleton();
+      if (ft && ft.trial_enabled && Number(ft.trial_days) > 0) {
+        globalTrialDays = Number(ft.trial_days);
+      }
+    } catch {
+      globalTrialDays = 0;
+    }
+    const trialDays =
+      Number(planDetails?.trial_days) > 0
+        ? Number(planDetails.trial_days)
+        : globalTrialDays > 0
+          ? globalTrialDays
+          : 14;
     const trialEndsAt = new Date();
     trialEndsAt.setDate(trialEndsAt.getDate() + trialDays);
     const billingCycle =
       String(billing_cycle || "monthly").toLowerCase() === "annual" ? "annual" : "monthly";
+
+    // If payment was collected upfront, the org starts active (never paywalled).
+    const initialSubscriptionStatus =
+      String(payment_collection || "trial").toLowerCase() === "completed" ? "active" : "trial";
 
     // 5. Insert into public.tenants (registry in hrs_backend).
     let tenantRow;
@@ -286,6 +307,7 @@ async function createTenant({
         createdBy,
         planId: plan_id,
         trialEndsAt: trialEndsAt,
+        subscriptionStatus: initialSubscriptionStatus,
       });
       tenantInserted = true;
     } catch (err) {

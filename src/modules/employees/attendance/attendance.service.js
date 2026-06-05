@@ -622,6 +622,60 @@ async function getPendingOvertime(auth, user, query = {}) {
   return { records, total: records.length };
 }
 
+/** Edit a Pending overtime entry (hours/reason). Approved/Rejected entries are locked. */
+async function updateOvertime(auth, user, id, body) {
+  const pool = getPool(user);
+  await ensureMigrated(user.db_name);
+
+  const record = await repo.findById(pool, id);
+  if (!record) throw ApiError.notFound('Overtime record not found');
+  if (record.overtime_status !== 'Pending') {
+    throw ApiError.badRequest('Only pending overtime can be edited.');
+  }
+  await authz.assertCanModifyEmployee(auth, pool, Number(record.employee_id));
+
+  const settings = await calc.loadSettings(pool);
+  const patch = {};
+  if (body.overtimeHours !== undefined) {
+    const hours = Number(body.overtimeHours);
+    if (!Number.isFinite(hours) || hours <= 0) {
+      throw ApiError.badRequest('overtimeHours must be greater than 0');
+    }
+    const thresholdMinutes = Number(settings.overtime_minimum_threshold_minutes) || 0;
+    if (hours * 60 < thresholdMinutes) {
+      throw ApiError.badRequest(`Overtime must be at least the minimum threshold of ${thresholdMinutes} minute(s).`);
+    }
+    patch.overtimeHours = hours;
+  }
+  if (body.description !== undefined) {
+    if (settings.overtime_require_reason !== false && !String(body.description || '').trim()) {
+      throw ApiError.badRequest('A reason is required for overtime.');
+    }
+    patch.description = body.description;
+  }
+  if (Object.keys(patch).length === 0) throw ApiError.badRequest('Nothing to update');
+
+  const updated = await repo.updateOvertimeFields(pool, id, patch);
+  if (!updated) throw ApiError.badRequest('Overtime could not be updated (already processed?).');
+  return updated;
+}
+
+/** Delete a Pending overtime entry. Approved/Rejected entries are locked. */
+async function deleteOvertime(auth, user, id) {
+  const pool = getPool(user);
+  await ensureMigrated(user.db_name);
+
+  const record = await repo.findById(pool, id);
+  if (!record) throw ApiError.notFound('Overtime record not found');
+  if (record.overtime_status !== 'Pending') {
+    throw ApiError.badRequest('Only pending overtime can be deleted.');
+  }
+  await authz.assertCanModifyEmployee(auth, pool, Number(record.employee_id));
+
+  const result = await repo.deleteOvertimeRecord(pool, id);
+  return result || { id, removed: false };
+}
+
 /** All overtime records (history) for the Overtime Management page, scope-filtered. */
 async function getOvertimeRecords(auth, user, query = {}) {
   const pool = getPool(user);
@@ -721,7 +775,10 @@ async function createOvertime(auth, user, body, req) {
     throw ApiError.badRequest('Overtime is disabled. Enable it in Attendance settings first.');
   }
 
-  const employeeId = body.employeeId;
+  // Default to the caller's own employee record (employee self-service). Managers may
+  // pass another employeeId; assertCanModifyEmployee enforces scope + self-restriction,
+  // so a self-scope employee can only ever add overtime for themselves.
+  const employeeId = body.employeeId || actorEmployeeId(user);
   if (!employeeId) throw ApiError.badRequest('employeeId is required');
   await assertActiveForPunch(pool, Number(employeeId));
   await authz.assertCanModifyEmployee(auth, pool, Number(employeeId)); // enforces data scope
@@ -1040,6 +1097,8 @@ module.exports = {
   getOvertimeRecords,
   processOvertime,
   createOvertime,
+  updateOvertime,
+  deleteOvertime,
   getPayrollSummary,
   getMyToday,
   getDashboard,

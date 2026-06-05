@@ -45,6 +45,26 @@ router.post(
   controller.verify2FA
 );
 
+/* --- Self-service 2FA enrollment (superadmin + sub-admins) --- */
+router.get('/mfa/status', authenticate, requireRole('superadmin'), controller.getMfaStatus);
+router.post('/mfa/setup', authenticate, requireRole('superadmin'), controller.setupMfa);
+router.post(
+  '/mfa/enable',
+  authenticate,
+  requireRole('superadmin'),
+  [body('code').isLength({ min: 6, max: 6 }).withMessage('code must be 6 digits')],
+  validate,
+  controller.enableMfa
+);
+router.post(
+  '/mfa/disable',
+  authenticate,
+  requireRole('superadmin'),
+  [body('code').optional().isLength({ min: 6, max: 6 }).withMessage('code must be 6 digits')],
+  validate,
+  controller.disableMfa
+);
+
 router.get(
   '/admin-users',
   authenticate,

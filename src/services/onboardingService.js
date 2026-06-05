@@ -155,6 +155,19 @@ async function adminSelfOnboard(onboardingData) {
     const tenantSuffix = crypto.randomBytes(6).toString('hex');
     const schemaName = `tenant_${Date.now()}_${tenantSuffix}`;
 
+    // Trial length from the superadmin's Free Trial setting (fallback 14 days).
+    let selfTrialDays = 14;
+    try {
+      const freeTrialRepo = require('../modules/freeTrial/freeTrial.repository');
+      const ft = await freeTrialRepo.findSingleton();
+      if (ft && ft.trial_enabled && Number(ft.trial_days) > 0) {
+        selfTrialDays = Number(ft.trial_days);
+      }
+    } catch {
+      selfTrialDays = 14;
+    }
+    const selfTrialEndsAt = new Date(Date.now() + selfTrialDays * 24 * 60 * 60 * 1000);
+
     // Insert tenant record
     const tenantResult = await client.query(
       `INSERT INTO public.tenants (
@@ -189,7 +202,7 @@ async function adminSelfOnboard(onboardingData) {
         onboardingData.postalCode || null,
         onboardingData.planId,
         'trial',
-        new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+        selfTrialEndsAt,
         onboardingData.timezone || 'UTC',
         onboardingData.dateFormat || 'DD/MM/YYYY',
         onboardingData.timeFormat || '24h'

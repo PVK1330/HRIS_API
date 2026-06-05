@@ -106,6 +106,13 @@ async function createWorkflow(tenant, dto, actor) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    if (dto.is_default) {
+      await client.query(
+        `UPDATE exit_workflows SET is_default = false
+         WHERE COALESCE(exit_type,'*') = COALESCE($1::varchar,'*')`,
+        [dto.exit_type || null],
+      );
+    }
     const { rows } = await client.query(
       `INSERT INTO exit_workflows (name, description, exit_type, is_active, is_default, created_by)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
@@ -113,14 +120,6 @@ async function createWorkflow(tenant, dto, actor) {
        dto.is_active !== false, Boolean(dto.is_default), actor?.employeeId || null],
     );
     const workflowId = rows[0].id;
-
-    if (dto.is_default) {
-      await client.query(
-        `UPDATE exit_workflows SET is_default = false
-         WHERE id <> $1 AND COALESCE(exit_type,'*') = COALESCE($2::varchar,'*')`,
-        [workflowId, dto.exit_type || null],
-      );
-    }
 
     const sorted = [...stages].sort((a, b) => (a.stage_order || 0) - (b.stage_order || 0));
     for (let i = 0; i < sorted.length; i += 1) {
@@ -202,6 +201,7 @@ async function updateWorkflow(tenant, workflowId, dto) {
   // CASCADE) and exit_requests.current_stage_id (ON DELETE SET NULL). Rewriting stages on a
   // workflow that already has requests would destroy approval history and orphan in-flight
   // requests — so structural edits are only allowed while the workflow is unused. Clone instead.
+  let isCloning = false;
   if (editingStages) {
     const stages = dto.stages;
     if (!stages.length) throw ApiError.badRequest('A workflow needs at least one stage');
@@ -212,10 +212,7 @@ async function updateWorkflow(tenant, workflowId, dto) {
       `SELECT 1 FROM exit_requests WHERE workflow_id = $1 LIMIT 1`, [workflowId],
     );
     if (used.length) {
-      throw ApiError.badRequest(
-        'This workflow already has exit requests; its stages cannot be changed. '
-        + 'Edit its name/default flag, or create a new workflow for the revised stages.',
-      );
+      isCloning = true;
     }
   }
 
@@ -230,6 +227,46 @@ async function updateWorkflow(tenant, workflowId, dto) {
   try {
     await client.query('BEGIN');
 
+    if (isCloning) {
+      const { rows: oldWf } = await client.query(`SELECT * FROM exit_workflows WHERE id = $1`, [workflowId]);
+      const old = oldWf[0];
+      const targetExitType = dto.exit_type !== undefined ? dto.exit_type : old.exit_type;
+      
+      if (dto.is_default || (dto.is_default === undefined && old.is_default)) {
+        await client.query(`UPDATE exit_workflows SET is_default = false WHERE COALESCE(exit_type,'*') = COALESCE($1::varchar,'*')`, [targetExitType]);
+      }
+      
+      const { rows: newWf } = await client.query(
+        `INSERT INTO exit_workflows (name, description, exit_type, is_active, is_default)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+        [dto.name !== undefined ? dto.name : old.name, 
+         dto.description !== undefined ? dto.description : old.description, 
+         targetExitType,
+         dto.is_active !== undefined ? dto.is_active : old.is_active,
+         dto.is_default !== undefined ? dto.is_default : old.is_default]
+      );
+      const newId = newWf[0].id;
+      
+      const sorted = [...dto.stages].sort((a, b) => (a.stage_order || 0) - (b.stage_order || 0));
+      for (let i = 0; i < sorted.length; i += 1) {
+        await insertStage(client, newId, sorted[i], i + 1);
+      }
+      
+      await client.query(`UPDATE exit_workflows SET is_active = false, is_default = false WHERE id = $1`, [workflowId]);
+      await client.query('COMMIT');
+      return getWorkflow(tenant, newId);
+    }
+
+    if (dto.is_default) {
+      const { rows: wfInfo } = await client.query(`SELECT exit_type FROM exit_workflows WHERE id = $1`, [workflowId]);
+      const targetExitType = dto.exit_type !== undefined ? dto.exit_type : (wfInfo[0]?.exit_type || null);
+      await client.query(
+        `UPDATE exit_workflows SET is_default = false 
+         WHERE id <> $1 AND COALESCE(exit_type,'*') = COALESCE($2::varchar,'*')`, 
+        [workflowId, targetExitType]
+      );
+    }
+
     if (fields.length) {
       fields.push('updated_at = NOW()');
       params.push(workflowId);
@@ -240,11 +277,6 @@ async function updateWorkflow(tenant, workflowId, dto) {
     } else {
       const { rowCount } = await client.query(`SELECT 1 FROM exit_workflows WHERE id = $1`, [workflowId]);
       if (!rowCount) throw ApiError.notFound('Workflow not found');
-    }
-
-    if (dto.is_default) {
-      await client.query(`UPDATE exit_workflows SET is_default = false WHERE id <> $1`, [workflowId]);
-      await client.query(`UPDATE exit_workflows SET is_default = true WHERE id = $1`, [workflowId]);
     }
 
     if (editingStages) {

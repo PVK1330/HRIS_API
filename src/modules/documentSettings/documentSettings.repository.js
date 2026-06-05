@@ -11,6 +11,7 @@ const ALL_COLUMNS = [
   'visibility',
   'sort_order',
   'is_active',
+  'applies_to_roles',
 ];
 
 async function getAllDocumentTypes(pool) {

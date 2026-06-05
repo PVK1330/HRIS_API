@@ -16,7 +16,10 @@ function ensureSchema() {
       ALTER TABLE public.superadmins
       ADD COLUMN IF NOT EXISTS role VARCHAR(64) NOT NULL DEFAULT 'superadmin',
       ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'active',
-      ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+      ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS two_factor_secret TEXT,
+      ADD COLUMN IF NOT EXISTS two_factor_pending_secret TEXT;
     `).catch((err) => {
       schemaEnsurePromise = null;
       throw err;
@@ -174,6 +177,50 @@ async function touchLastLogin(id) {
     WHERE id = $1
   `;
   await db.query(sql, [id]);
+}
+
+/* --- Two-factor (TOTP) enrollment state --- */
+
+async function getMfaState(id) {
+  await ensureSchema();
+  const { rows } = await db.query(
+    `SELECT id, email, name, two_factor_enabled, two_factor_secret, two_factor_pending_secret
+     FROM public.superadmins WHERE id = $1 LIMIT 1`,
+    [id],
+  );
+  return rows[0] || null;
+}
+
+async function setMfaPending(id, secret) {
+  await ensureSchema();
+  await db.query(
+    `UPDATE public.superadmins SET two_factor_pending_secret = $1 WHERE id = $2`,
+    [secret, id],
+  );
+}
+
+async function enableMfa(id) {
+  await ensureSchema();
+  await db.query(
+    `UPDATE public.superadmins
+       SET two_factor_secret = two_factor_pending_secret,
+           two_factor_pending_secret = NULL,
+           two_factor_enabled = true
+     WHERE id = $1`,
+    [id],
+  );
+}
+
+async function disableMfa(id) {
+  await ensureSchema();
+  await db.query(
+    `UPDATE public.superadmins
+       SET two_factor_secret = NULL,
+           two_factor_pending_secret = NULL,
+           two_factor_enabled = false
+     WHERE id = $1`,
+    [id],
+  );
 }
 
 async function listAdminUsers() {
@@ -455,6 +502,10 @@ module.exports = {
   findById,
   create,
   touchLastLogin,
+  getMfaState,
+  setMfaPending,
+  enableMfa,
+  disableMfa,
   listAdminUsers,
   createAdminUser,
   updateAdminUser,

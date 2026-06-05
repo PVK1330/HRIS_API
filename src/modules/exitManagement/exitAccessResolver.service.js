@@ -150,6 +150,36 @@ async function resolveExitAccess(pool, userCtx, wfCtx) {
     Number(userCtx.employeeId) === Number(wfCtx.employeeId),
   );
 
+  // Grant read access to the employee's Reporting Manager, Dept Head, and global HR
+  let isHierarchyOrHR = false;
+  if (!isSubject && userCtx.employeeId && wfCtx.employeeId) {
+    const { rows: hierarchy } = await pool.query(
+      `SELECT e.reporting_manager_id, d.manager_id AS dept_head_id 
+       FROM employees e 
+       LEFT JOIN departments d ON d.id = e.department_id 
+       WHERE e.id = $1`, [wfCtx.employeeId]
+    );
+    if (hierarchy.length > 0) {
+      if (hierarchy[0].reporting_manager_id == userCtx.employeeId || hierarchy[0].dept_head_id == userCtx.employeeId) {
+        isHierarchyOrHR = true;
+      }
+    }
+  }
+
+  if (!isSubject && !isHierarchyOrHR && userCtx.rbacRoleId) {
+    const { rows: hrCheck } = await pool.query(
+      `SELECT 1 FROM rbac_roles rr
+       LEFT JOIN rbac_role_permissions rp ON rp.role_id = rr.id
+       LEFT JOIN rbac_permissions p ON p.id = rp.permission_id
+       WHERE rr.id = $1 AND (
+         LOWER(COALESCE(rr.name, '')) LIKE '%hr%' OR
+         LOWER(COALESCE(rr.name, '')) LIKE '%admin%' OR
+         p.key IN ('onboarding', 'onboarding.manage', 'tasks', 'system-settings')
+       ) LIMIT 1`, [userCtx.rbacRoleId]
+    );
+    if (hrCheck.length > 0) isHierarchyOrHR = true;
+  }
+
   // Visibility derivation (§3, §4). Fail-closed default 'hidden'.
   let visibility = 'hidden';
   if (userCtx.isOrgExitAdmin) {
@@ -160,6 +190,8 @@ async function resolveExitAccess(pool, userCtx, wfCtx) {
     visibility = 'previous_readonly';
   } else if (isSubject) {
     visibility = 'subject_readonly';
+  } else if (isHierarchyOrHR) {
+    visibility = 'hierarchy_readonly';
   } else if (wfCtx.workflowId && wfCtx.currentStageOrder != null) {
     // future-stage preview — only computed when the cheaper checks failed
     const belongsFuture = await userBelongsToFutureStage(pool, userCtx, wfCtx);
@@ -231,13 +263,30 @@ function permittedActionsFor(accessCtx) {
 /* ------------------------------------------------------------------ */
 
 async function listVisibleExitRequestIds(pool, userCtx /*, filters */) {
+  let isHR = false;
+  if (userCtx.rbacRoleId) {
+    const { rows: hrCheck } = await pool.query(
+      `SELECT 1 FROM rbac_roles rr
+       LEFT JOIN rbac_role_permissions rp ON rp.role_id = rr.id
+       LEFT JOIN rbac_permissions p ON p.id = rp.permission_id
+       WHERE rr.id = $1 AND (
+         LOWER(COALESCE(rr.name, '')) LIKE '%hr%' OR
+         LOWER(COALESCE(rr.name, '')) LIKE '%admin%' OR
+         p.key IN ('onboarding', 'onboarding.manage', 'tasks', 'system-settings')
+       ) LIMIT 1`, [userCtx.rbacRoleId]
+    );
+    isHR = hrCheck.length > 0;
+  }
+
   const { rows } = await pool.query(
     `SELECT er.id
      FROM exit_requests er
      LEFT JOIN exit_workflow_stages cur ON cur.id = er.current_stage_id
      WHERE
        $4 = true
+       OR $5 = true                      -- HR sees all requests
        OR er.employee_id = $1            -- the data subject sees their own request
+       OR EXISTS ( SELECT 1 FROM employees emp LEFT JOIN departments dept ON dept.id = emp.department_id WHERE emp.id = er.employee_id AND (emp.reporting_manager_id = $1 OR dept.manager_id = $1) ) -- Hierarchy managers
        OR EXISTS ( SELECT 1 FROM exit_stage_departments sd
                    WHERE sd.stage_id = er.current_stage_id
                      AND sd.department_id = $2
@@ -268,7 +317,7 @@ async function listVisibleExitRequestIds(pool, userCtx /*, filters */) {
                      AND fs.allow_future_visibility = true
                      AND (fsd.department_id = $2 OR fsr.role_id = $3 OR fsu.employee_id = $1) )`,
     [userCtx.employeeId || null, userCtx.departmentId || null,
-     userCtx.rbacRoleId || null, Boolean(userCtx.isOrgExitAdmin)],
+     userCtx.rbacRoleId || null, Boolean(userCtx.isOrgExitAdmin), isHR],
   );
   return rows.map((r) => Number(r.id));
 }

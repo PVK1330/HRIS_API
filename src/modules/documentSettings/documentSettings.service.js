@@ -19,6 +19,7 @@ const SNAKE_KEYS = [
   'visibility',
   'sort_order',
   'is_active',
+  'applies_to_roles',
 ];
 
 function mapRow(row) {
@@ -35,6 +36,7 @@ function mapRow(row) {
     visibility: row.visibility,
     sortOrder: row.sort_order,
     isActive: row.is_active,
+    appliesToRoles: Array.isArray(row.applies_to_roles) ? row.applies_to_roles : [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -58,6 +60,10 @@ function mergeDocumentBody(body) {
   }
   if (body.sortOrder !== undefined) merged.sort_order = body.sortOrder;
   if (body.isActive !== undefined) merged.is_active = body.isActive;
+  if (body.appliesToRoles !== undefined) {
+    const arr = Array.isArray(body.appliesToRoles) ? body.appliesToRoles.map((x) => String(x)) : [];
+    merged.applies_to_roles = JSON.stringify(arr); // jsonb column
+  }
 
   return merged;
 }

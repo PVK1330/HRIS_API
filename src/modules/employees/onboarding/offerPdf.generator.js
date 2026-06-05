@@ -8,8 +8,11 @@ const { generatePdfFromHtml, replacePlaceholders } = require('../../../utils/pdf
 async function generateOfferLetterPdf({
   uploadDir,
   employeeId,
+  empId,
   companyName,
   candidateName,
+  candidateEmail,
+  candidatePhone,
   jobTitle,
   department,
   joinDate,
@@ -28,17 +31,42 @@ async function generateOfferLetterPdf({
   const filePath = path.join(dir, fileName);
   const relativeUrl = `/uploads/onboarding/${employeeId}/${fileName}`;
 
+  const fmtDate = (d) => {
+    if (!d) return '';
+    const dt = new Date(d);
+    return Number.isNaN(dt.getTime()) ? String(d) : dt.toISOString().slice(0, 10);
+  };
+
+  const today = new Date().toISOString().slice(0, 10);
+  const joinDateStr = fmtDate(joinDate) || 'TBD';
+  const compensation = annualCtc != null ? `${currency || ''} ${annualCtc}`.trim() : 'TBD';
+  const offerDateStr = fmtDate(dateOfOffer) || today;
+
   const placeholders = {
-    company_name: companyName || 'Your Company',
+    company_name: tenant?.company_name || companyName || 'Your Company',
+    company_address: tenant?.company_address || '',
+    company_email: tenant?.contact_email || '',
     candidate_name: candidateName || 'Candidate',
+    candidate_email: candidateEmail || '',
+    candidate_phone: candidatePhone || '',
     job_title: jobTitle || 'an employee',
     department: department || '',
-    join_date: joinDate || 'TBD',
+    join_date: joinDateStr,
     employment_type: employmentType || 'Full-time',
     manager_name: managerName || 'Manager',
-    annual_ctc: annualCtc != null ? `${currency || ''} ${annualCtc}`.trim() : 'TBD',
-    offer_expiry_date: offerExpiryDate || 'TBD',
-    date_of_offer: dateOfOffer || new Date().toISOString().slice(0, 10),
+    currency: currency || '',
+    annual_ctc: compensation,
+    offer_expiry_date: fmtDate(offerExpiryDate) || 'TBD',
+    date_of_offer: offerDateStr,
+
+    // Aliases so saved letter templates (which use these canonical tags) also resolve.
+    employee_name: candidateName || 'Candidate',
+    employee_id: empId || '',
+    designation: jobTitle || 'an employee',
+    position: jobTitle || 'an employee',
+    joining_date: joinDateStr,
+    salary: compensation,
+    today_date: today,
   };
 
   let htmlBody = '';

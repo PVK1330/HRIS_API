@@ -127,8 +127,8 @@ async function sendInAppNotifications(tenant, announcement, recipients) {
     const io = getIo();
     if (io) {
       for (const recipient of recipients) {
-        io.to(`user:${recipient.id}`).emit('notification:new', {
-          title: announcement.title,
+        io.to(`user:${recipient.id}`).emit('new_notification', {
+          id: `announcement-${announcement.id}`,
           type: 'announcement',
         });
       }

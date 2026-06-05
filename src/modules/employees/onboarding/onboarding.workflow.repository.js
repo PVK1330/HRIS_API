@@ -70,8 +70,70 @@ async function issueOnboardingToken(pool, employeeId) {
   return { token, expiresAt: expires };
 }
 
+function slugifyDocKey(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 60) || 'document';
+}
+
+/**
+ * Builds the onboarding document checklist dynamically from the tenant's
+ * configured Document Types, filtered to the documents the candidate must
+ * upload and to those that apply to the candidate's assigned role.
+ * Falls back to DEFAULT_CHECKLIST if no document types are configured/match.
+ */
+async function buildChecklistItems(pool, employeeId) {
+  try {
+    const { rows: empRows } = await pool.query(
+      `SELECT e.rbac_role_id, r.name AS role_name
+         FROM employees e
+         LEFT JOIN rbac_roles r ON r.id = e.rbac_role_id
+        WHERE e.id = $1`,
+      [employeeId],
+    );
+    const roleId = empRows[0]?.rbac_role_id != null ? String(empRows[0].rbac_role_id) : null;
+    const roleName = empRows[0]?.role_name ? String(empRows[0].role_name) : null;
+
+    const { rows: types } = await pool.query(
+      `SELECT name, mandatory_or_optional, is_required, who_must_upload,
+              applies_to_roles, sort_order
+         FROM document_types
+        WHERE COALESCE(is_active, true) = true
+          AND (who_must_upload IS NULL
+               OR LOWER(who_must_upload) IN ('employee', 'candidate', 'both'))
+        ORDER BY sort_order ASC NULLS LAST, name ASC`,
+    );
+
+    const matches = types.filter((t) => {
+      const roles = Array.isArray(t.applies_to_roles) ? t.applies_to_roles.map(String) : [];
+      if (roles.length === 0) return true; // applies to all roles
+      return (roleId && roles.includes(roleId)) || (roleName && roles.includes(roleName));
+    });
+
+    return matches.map((t, i) => ({
+      document_key: slugifyDocKey(t.name),
+      document_label: t.name,
+      is_mandatory:
+        String(t.mandatory_or_optional || '').toLowerCase() === 'mandatory' || t.is_required === true,
+      sort_order: t.sort_order ?? i + 1,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 async function seedChecklist(pool, employeeId, extraItems = []) {
-  const items = [...DEFAULT_CHECKLIST, ...extraItems];
+  const dynamicItems = await buildChecklistItems(pool, employeeId);
+  const base = dynamicItems.length > 0 ? dynamicItems : DEFAULT_CHECKLIST;
+  // De-dupe by document_key (dynamic + any explicit extras).
+  const byKey = new Map();
+  for (const item of [...base, ...extraItems]) {
+    if (item && item.document_key && !byKey.has(item.document_key)) byKey.set(item.document_key, item);
+  }
+  const items = [...byKey.values()];
   for (const item of items) {
     await pool.query(
       `INSERT INTO onboarding_checklist (

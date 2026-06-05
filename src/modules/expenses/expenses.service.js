@@ -2,6 +2,7 @@
 
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
+const notify = require('../notifications/notifications.service');
 
 const STATUSES = new Set([
   'Draft',
@@ -252,7 +253,22 @@ async function createExpense(tenant, data, receiptFile) {
   ];
 
   const { rows } = await pool.query(query, values);
-  return getExpense(tenant, rows[0].id);
+  const created = await getExpense(tenant, rows[0].id);
+
+  // Submitted (non-draft) claim → alert admins for approval.
+  if (created.status === 'Pending') {
+    notify.pushNotification(tenant, {
+      forAdmin: true,
+      title: `New Expense Claim: ${created.expense_title}`,
+      message: `${created.employee_name || 'An employee'} submitted an expense claim of ${created.currency || 'INR'} ${created.amount} for "${created.expense_title}".`,
+      type: 'info',
+      entityType: 'expense',
+      entityId: created.id,
+      redirectUrl: '/admin/expenses',
+    }).catch(() => null);
+  }
+
+  return created;
 }
 
 async function updateExpenseClaim(tenant, id, data, user) {
@@ -349,7 +365,22 @@ async function updateExpenseClaim(tenant, id, data, user) {
     ],
   );
 
-  return getExpense(tenant, id);
+  const result = await getExpense(tenant, id);
+
+  // Draft/Rejected claim re-submitted for approval → alert admins.
+  if (nextStatus === 'Pending' && String(existing.status) !== 'Pending') {
+    notify.pushNotification(tenant, {
+      forAdmin: true,
+      title: `Expense Claim Submitted: ${result.expense_title}`,
+      message: `${result.employee_name || 'An employee'} submitted an expense claim of ${result.currency || 'INR'} ${result.amount} for approval.`,
+      type: 'info',
+      entityType: 'expense',
+      entityId: id,
+      redirectUrl: '/admin/expenses',
+    }).catch(() => null);
+  }
+
+  return result;
 }
 
 async function updateExpenseStatus(tenant, id, payload, userId) {
@@ -416,7 +447,49 @@ async function updateExpenseStatus(tenant, id, payload, userId) {
 
   const { rows } = await pool.query(query, values);
   if (!rows.length) throw new ApiError(404, 'Expense claim not found');
-  return getExpense(tenant, id);
+  const result = await getExpense(tenant, id);
+
+  // Notify the claim owner of the decision (approval / rejection / payment).
+  const empId = result.employee_id ? Number(result.employee_id) : null;
+  if (empId) {
+    const amountLabel = `${result.currency || 'INR'} ${result.amount}`;
+    if (isApprove) {
+      notify.sendSystemNotification(tenant, {
+        employeeId: empId,
+        title: `Expense Approved: ${result.expense_title}`,
+        message: `Your expense claim of ${amountLabel} for "${result.expense_title}" has been approved.`,
+        type: 'success',
+        entityType: 'expense',
+        entityId: id,
+        redirectUrl: '/employee/expenses',
+        sendEmail: true,
+      }).catch(() => null);
+    } else if (isReject) {
+      notify.sendSystemNotification(tenant, {
+        employeeId: empId,
+        title: `Expense Rejected: ${result.expense_title}`,
+        message: `Your expense claim of ${amountLabel} for "${result.expense_title}" was rejected.${rejectionReason ? ` Reason: ${rejectionReason}` : ''}`,
+        type: 'warning',
+        entityType: 'expense',
+        entityId: id,
+        redirectUrl: '/employee/expenses',
+        sendEmail: true,
+      }).catch(() => null);
+    } else if (isPaid) {
+      notify.sendSystemNotification(tenant, {
+        employeeId: empId,
+        title: `Expense Reimbursed: ${result.expense_title}`,
+        message: `Your expense claim of ${amountLabel} for "${result.expense_title}" has been marked as ${status}.`,
+        type: 'success',
+        entityType: 'expense',
+        entityId: id,
+        redirectUrl: '/employee/expenses',
+        sendEmail: true,
+      }).catch(() => null);
+    }
+  }
+
+  return result;
 }
 
 async function deleteExpense(tenant, id, user) {
@@ -441,7 +514,23 @@ async function deleteExpense(tenant, id, user) {
 
   const { rows } = await pool.query(query, [id]);
   if (!rows.length) throw new ApiError(404, 'Expense claim not found');
-  return rows[0];
+  const deleted = rows[0];
+
+  // An admin removed someone's claim → let the owner know.
+  if (deleted?.employee_id && user?.role !== 'employee') {
+    notify.sendSystemNotification(tenant, {
+      employeeId: Number(deleted.employee_id),
+      title: `Expense Claim Removed: ${deleted.expense_title}`,
+      message: `Your expense claim "${deleted.expense_title}" (${deleted.currency || 'INR'} ${deleted.amount}) was removed by an administrator.`,
+      type: 'warning',
+      entityType: 'expense',
+      entityId: id,
+      redirectUrl: '/employee/expenses',
+      sendEmail: false,
+    }).catch(() => null);
+  }
+
+  return deleted;
 }
 
 async function getExpensesStats(tenant, query = {}) {

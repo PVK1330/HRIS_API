@@ -2,6 +2,7 @@
 
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
+const notify = require('../notifications/notifications.service');
 
 const SORT_COL = {
   created_at: 'd.created_at',
@@ -298,6 +299,30 @@ async function createDepartment(tenant, data) {
       data.createdBy ?? data.created_by ?? null,
     ],
   );
+
+  notify.pushNotification(tenant, {
+    forAdmin: true,
+    title: `Department Created: ${data.name.trim()}`,
+    message: `A new department "${data.name.trim()}" has been created.`,
+    type: 'info',
+    entityType: 'department',
+    entityId: rows[0].id,
+    redirectUrl: '/admin/departments',
+  }).catch(() => null);
+
+  if (Number.isInteger(managerId) && managerId > 0) {
+    notify.sendSystemNotification(tenant, {
+      employeeId: managerId,
+      title: `You are now Manager of ${data.name.trim()}`,
+      message: `You have been assigned as the manager of the "${data.name.trim()}" department.`,
+      type: 'info',
+      entityType: 'department',
+      entityId: rows[0].id,
+      redirectUrl: '/admin/departments',
+      sendEmail: true,
+    }).catch(() => null);
+  }
+
   return getDepartment(tenant, rows[0].id);
 }
 
@@ -367,16 +392,60 @@ async function updateDepartment(tenant, id, data) {
     params,
   );
   if (!rows.length) throw new ApiError(404, 'Department not found');
-  return getDepartment(tenant, id);
+  const result = await getDepartment(tenant, id);
+
+  notify.pushNotification(tenant, {
+    forAdmin: true,
+    title: `Department Updated: ${result.name}`,
+    message: `The "${result.name}" department has been updated.`,
+    type: 'info',
+    entityType: 'department',
+    entityId: id,
+    redirectUrl: '/admin/departments',
+  }).catch(() => null);
+
+  // Manager (re)assigned in this update → tell the new manager.
+  if (managerRaw !== undefined && managerRaw !== null && String(managerRaw).trim() !== '') {
+    const newManagerId = parseInt(String(managerRaw), 10);
+    if (Number.isInteger(newManagerId) && newManagerId > 0) {
+      notify.sendSystemNotification(tenant, {
+        employeeId: newManagerId,
+        title: `You are now Manager of ${result.name}`,
+        message: `You have been assigned as the manager of the "${result.name}" department.`,
+        type: 'info',
+        entityType: 'department',
+        entityId: id,
+        redirectUrl: '/admin/departments',
+        sendEmail: true,
+      }).catch(() => null);
+    }
+  }
+
+  return result;
 }
 
 async function deleteDepartment(tenant, id) {
   const pool = await getTenantPool(tenant.dbName);
+  const { rows: existingRows } = await pool.query(
+    `SELECT name FROM departments WHERE id = $1`,
+    [id],
+  );
   const { rowCount } = await pool.query(
     `UPDATE departments SET is_active = false, status = 'inactive', updated_at = NOW() WHERE id = $1`,
     [id],
   );
   if (!rowCount) throw new ApiError(404, 'Department not found');
+
+  notify.pushNotification(tenant, {
+    forAdmin: true,
+    title: `Department Deleted: ${existingRows[0]?.name || 'Department'}`,
+    message: `The "${existingRows[0]?.name || 'department'}" department has been deactivated.`,
+    type: 'warning',
+    entityType: 'department',
+    entityId: id,
+    redirectUrl: '/admin/departments',
+  }).catch(() => null);
+
   return true;
 }
 

@@ -5,6 +5,7 @@ const ApiError = require('../../utils/ApiError');
 const logger   = require('../../utils/logger');
 const repo     = require('./letters.repository');
 const { runTenantMigrations } = require('../tenant/tenant.service');
+const notify   = require('../notifications/notifications.service');
 
 /**
  * Resolve the tenant pool from the authenticated user's JWT payload.
@@ -113,6 +114,20 @@ async function dispatchLetter(user, { templateId, employeeId, sentBy }) {
 
   // Increment usage counter on the template
   await repo.incrementUsageCount(pool, templateId);
+
+  // Notify the recipient employee that a letter was issued to them.
+  if (employeeId) {
+    notify.sendSystemNotification({ db_name: user.db_name }, {
+      employeeId: Number(employeeId),
+      title: `New Letter: ${template.name}`,
+      message: `A document "${template.name}" has been issued to you. You can view it in your letters inbox.`,
+      type: 'info',
+      entityType: 'letter',
+      entityId: dispatch.id,
+      redirectUrl: '/employee/letters',
+      sendEmail: true,
+    }).catch(() => null);
+  }
 
   return dispatch;
 }

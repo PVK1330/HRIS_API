@@ -17,6 +17,11 @@ const ApiError = require('../../utils/ApiError');
 const logger = require('../../utils/logger');
 const repo = require('./performanceCycles.repository');
 const { runTenantMigrations } = require('../tenant/tenant.service');
+const notify = require('../notifications/notifications.service');
+
+function cycleLabel(cycle, data) {
+  return cycle?.name || cycle?.cycle_name || data?.cycleName || data?.name || 'Performance cycle';
+}
 
 // Migration cache to avoid running migrations multiple times
 const _migrationCache = new Map();
@@ -68,6 +73,16 @@ async function createCycle(user, cycleData) {
 
     // Data will be validated by validator middleware before reaching here
     const cycle = await repo.create(pool, cycleData, user.id);
+
+    notify.pushNotification({ db_name: user.db_name }, {
+      forAdmin: true,
+      title: `Performance Cycle Created: ${cycleLabel(cycle, cycleData)}`,
+      message: `A new performance review cycle "${cycleLabel(cycle, cycleData)}" has been created.`,
+      type: 'info',
+      entityType: 'performance_cycle',
+      entityId: cycle.id,
+      redirectUrl: '/admin/performance',
+    }).catch(() => null);
 
     logger.info(`Performance cycle created: ${cycle.id} by user ${user.id}`);
     return cycle;
@@ -175,6 +190,16 @@ async function updateCycle(user, id, updateData) {
 
     const updatedCycle = await repo.update(pool, id, updateData, user.id);
 
+    notify.pushNotification({ db_name: user.db_name }, {
+      forAdmin: true,
+      title: `Performance Cycle Updated: ${cycleLabel(updatedCycle, updateData)}`,
+      message: `The performance review cycle "${cycleLabel(updatedCycle, existingCycle)}" has been updated.`,
+      type: 'info',
+      entityType: 'performance_cycle',
+      entityId: id,
+      redirectUrl: '/admin/performance',
+    }).catch(() => null);
+
     logger.info(`Performance cycle ${id} updated by user ${user.id}`);
     return updatedCycle;
   } catch (error) {
@@ -203,6 +228,16 @@ async function deleteCycle(user, id) {
     }
 
     const deletedCycle = await repo.softDelete(pool, id, user.id);
+
+    notify.pushNotification({ db_name: user.db_name }, {
+      forAdmin: true,
+      title: `Performance Cycle Deleted: ${cycleLabel(existingCycle, null)}`,
+      message: `The performance review cycle "${cycleLabel(existingCycle, null)}" has been deleted.`,
+      type: 'warning',
+      entityType: 'performance_cycle',
+      entityId: id,
+      redirectUrl: '/admin/performance',
+    }).catch(() => null);
 
     logger.info(`Performance cycle ${id} deleted by user ${user.id}`);
     return deletedCycle;

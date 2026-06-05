@@ -1,6 +1,7 @@
 'use strict';
 
 const { getTenantPool } = require('../../config/db');
+const notify = require('../notifications/notifications.service');
 
 class PayrollService {
     /**
@@ -60,6 +61,21 @@ class PayrollService {
         `;
         
         const result = await pool.query(query, [employee_id, net_salary, earnings, deductions || '{}']);
+
+        // Inform the employee their compensation record changed (no amounts in the
+        // message; salary is sensitive — in-app only, no email).
+        if (employee_id) {
+            notify.pushNotification({ dbName }, {
+                employeeId: Number(employee_id),
+                title: 'Compensation Updated',
+                message: 'Your salary / compensation details have been updated by HR.',
+                type: 'info',
+                entityType: 'salary',
+                entityId: Number(employee_id),
+                redirectUrl: '/employee/payroll',
+            }).catch(() => null);
+        }
+
         return result.rows[0];
     }
 
@@ -92,6 +108,17 @@ class PayrollService {
             RETURNING *
         `;
         const result = await pool.query(query, [name, type, category, amount]);
+
+        notify.pushNotification({ dbName }, {
+            forAdmin: true,
+            title: `Payroll Item Created: ${name}`,
+            message: `A new payroll ${type || 'item'} "${name}"${category ? ` (${category})` : ''} was added to the payroll configuration.`,
+            type: 'info',
+            entityType: 'payroll_item',
+            entityId: result.rows[0]?.id ?? null,
+            redirectUrl: '/admin/payroll',
+        }).catch(() => null);
+
         return result.rows[0];
     }
 }

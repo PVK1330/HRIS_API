@@ -4,6 +4,7 @@ const repo = require('./assets.repository');
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
 const delivery = require('../notifications/notificationDelivery.service');
+const notify = require('../notifications/notifications.service');
 const workflowAudit = require('../workflow/workflowAudit.service');
 
 async function handleAssetAssignmentNotifications(tenant, assetId, actor = {}) {
@@ -107,6 +108,91 @@ async function handleAssetAssignmentNotifications(tenant, assetId, actor = {}) {
   }
 }
 
+// Notify a previously-assigned employee (and admin) that an asset is no longer
+// allocated to them — used for both un-assignment and re-assignment to someone else.
+// `asset` is the full row as it was BEFORE the change (so it still carries the holder).
+async function notifyAssetUnassigned(tenant, asset) {
+  try {
+    if (!asset || !asset.employee_id) return;
+    const label = asset.type || 'Hardware Equipment';
+    const message = `Corporate asset ${asset.asset_id} (${asset.type || ''}), Serial Number: ${asset.serial_number || 'N/A'}, is no longer allocated to you. Please ensure it has been physically returned to IT/Admin.`;
+
+    await notify.sendSystemNotification(tenant, {
+      employeeId: asset.employee_id,
+      title: `Asset Returned: ${label}`,
+      message,
+      type: 'info',
+      entityType: 'asset',
+      entityId: asset.id,
+      redirectUrl: '/employee/assets',
+      sendEmail: true,
+    });
+
+    await notify.pushNotification(tenant, {
+      forAdmin: true,
+      title: `Asset Return Recorded: ${asset.asset_id}`,
+      message: `Asset ${asset.asset_id} (${asset.type || ''}) previously held by ${asset.assigned_to_name || 'an employee'} has been returned to inventory.`,
+      type: 'info',
+      entityType: 'asset',
+      entityId: asset.id,
+      redirectUrl: '/admin/assets',
+    });
+  } catch (err) {
+    console.error('Failed to dispatch asset return notifications', err);
+  }
+}
+
+// Notify the currently-assigned employee that the asset's status/condition changed
+// (e.g. moved to Under Maintenance, Lost, Damaged) while still allocated to them.
+async function notifyAssetStatusChange(tenant, asset, fromStatus, toStatus) {
+  try {
+    if (!asset || !asset.employee_id) return;
+    const label = asset.type || 'Hardware Equipment';
+    await notify.sendSystemNotification(tenant, {
+      employeeId: asset.employee_id,
+      title: `Asset Status Updated: ${label}`,
+      message: `The status of your assigned asset ${asset.asset_id} (${asset.type || ''}) changed from "${fromStatus || 'N/A'}" to "${toStatus}".`,
+      type: 'info',
+      entityType: 'asset',
+      entityId: asset.id,
+      redirectUrl: '/employee/assets',
+      sendEmail: false,
+    });
+  } catch (err) {
+    console.error('Failed to dispatch asset status-change notification', err);
+  }
+}
+
+// Notify the previously-assigned employee (and admin) that an asset record was deleted.
+async function notifyAssetDeleted(tenant, asset) {
+  try {
+    if (!asset) return;
+    if (asset.employee_id) {
+      await notify.sendSystemNotification(tenant, {
+        employeeId: asset.employee_id,
+        title: `Asset Removed: ${asset.type || 'Hardware Equipment'}`,
+        message: `Corporate asset ${asset.asset_id} (${asset.type || ''}) that was assigned to you has been removed from the inventory ledger.`,
+        type: 'warning',
+        entityType: 'asset',
+        entityId: asset.id,
+        redirectUrl: '/employee/assets',
+        sendEmail: false,
+      });
+    }
+    await notify.pushNotification(tenant, {
+      forAdmin: true,
+      title: `Asset Deleted: ${asset.asset_id}`,
+      message: `Asset ${asset.asset_id} (${asset.type || ''}) has been permanently removed from the inventory ledger.`,
+      type: 'warning',
+      entityType: 'asset',
+      entityId: asset.id,
+      redirectUrl: '/admin/assets',
+    });
+  } catch (err) {
+    console.error('Failed to dispatch asset deletion notifications', err);
+  }
+}
+
 async function logAssetReturned(tenant, assetId, employeeId, actor = {}, detail = {}) {
   await workflowAudit.log(tenant, {
     module: 'assets',
@@ -163,19 +249,45 @@ async function updateAsset(tenant, id, data, actor = {}) {
   const previous = await repo.findById(pool, id);
   const updated = await repo.update(pool, id, data);
   if (!updated) throw new ApiError(404, 'Asset not found');
-  if (data.employeeId) {
-    if (previous?.employee_id && Number(previous.employee_id) !== Number(data.employeeId)) {
-      logAssetReassigned(tenant, id, previous.employee_id, data.employeeId, actor).catch(() => null);
+
+  const prevEmp = previous?.employee_id ? Number(previous.employee_id) : null;
+  const assignmentChanged = Object.prototype.hasOwnProperty.call(data, 'employeeId');
+  const newEmp = assignmentChanged
+    ? (data.employeeId ? Number(data.employeeId) : null)
+    : prevEmp;
+
+  // Asset taken away from its previous holder (re-assignment or un-assignment).
+  if (prevEmp && prevEmp !== newEmp) {
+    if (newEmp) {
+      logAssetReassigned(tenant, id, prevEmp, newEmp, actor).catch(() => null);
+    } else {
+      logAssetReturned(tenant, id, prevEmp, actor, { assetTag: previous.asset_id }).catch(() => null);
     }
+    // Inform the previous holder; `previous` still carries their details.
+    notifyAssetUnassigned(tenant, previous).catch(() => null);
+  }
+
+  // Asset assigned to a (new) holder.
+  if (newEmp && newEmp !== prevEmp) {
     handleAssetAssignmentNotifications(tenant, id, actor).catch(() => null);
   }
+
+  // Status/condition changed while the asset stays with the same employee.
+  if (newEmp && newEmp === prevEmp && data.status && data.status !== previous?.status) {
+    notifyAssetStatusChange(tenant, previous, previous?.status, data.status).catch(() => null);
+  }
+
   return updated;
 }
 
 async function deleteAsset(tenant, id) {
   const pool = await getTenantPool(tenant.dbName);
+  const existing = await repo.findById(pool, id);
   const deleted = await repo.remove(pool, id);
   if (!deleted) throw new ApiError(404, 'Asset not found');
+  if (existing) {
+    notifyAssetDeleted(tenant, existing).catch(() => null);
+  }
   return true;
 }
 

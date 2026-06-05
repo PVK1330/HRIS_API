@@ -11,6 +11,7 @@ const {
   appendScopeToConditions,
   assertEmployeeRecordAccess,
 } = require('../../utils/applyDataScope');
+const notify = require('../notifications/notifications.service');
 
 const SORT = {
   visa_expiry_date: 'evr.visa_expiry_date',
@@ -340,6 +341,17 @@ async function createVisaRecord(tenant, body, files, userId) {
       userId || null,
     ],
   );
+
+  notify.pushNotification(tenant, {
+    employeeId: Number(emp.id),
+    title: 'Visa Record Added',
+    message: `A visa record (${vt.name || 'visa'}) has been added to your profile.`,
+    type: 'info',
+    entityType: 'visa_record',
+    entityId: rows[0].id,
+    redirectUrl: '/employee/profile',
+  }).catch(() => null);
+
   return getVisaRecord(tenant, rows[0].id);
 }
 
@@ -415,6 +427,18 @@ async function updateVisaRecord(tenant, id, body, files, userId) {
       `UPDATE employee_visa_records SET ${fields.join(', ')} WHERE id = $${idPh}`,
       params,
     );
+
+    if (employeeId) {
+      notify.pushNotification(tenant, {
+        employeeId: Number(employeeId),
+        title: 'Visa Record Updated',
+        message: 'Your visa record has been updated. Please review the details in your profile.',
+        type: 'info',
+        entityType: 'visa_record',
+        entityId: id,
+        redirectUrl: '/employee/profile',
+      }).catch(() => null);
+    }
   }
 
   return getVisaRecord(tenant, id);
@@ -422,11 +446,29 @@ async function updateVisaRecord(tenant, id, body, files, userId) {
 
 async function deleteVisaRecord(tenant, id) {
   const pool = await getTenantPool(tenant.dbName);
+  const { rows: existingRows } = await pool.query(
+    `SELECT employee_id FROM employee_visa_records WHERE id = $1 AND is_active = true`,
+    [id],
+  );
   const { rowCount } = await pool.query(
     `UPDATE employee_visa_records SET is_active = false, updated_at = NOW() WHERE id = $1 AND is_active = true`,
     [id],
   );
   if (!rowCount) throw new ApiError(404, 'Record not found');
+
+  const employeeId = existingRows[0]?.employee_id;
+  if (employeeId) {
+    notify.pushNotification(tenant, {
+      employeeId: Number(employeeId),
+      title: 'Visa Record Removed',
+      message: 'A visa record has been removed from your profile.',
+      type: 'warning',
+      entityType: 'visa_record',
+      entityId: id,
+      redirectUrl: '/employee/profile',
+    }).catch(() => null);
+  }
+
   return true;
 }
 

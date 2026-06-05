@@ -297,6 +297,22 @@ async function updateLeaveType(dbName, id, body) {
   }
 
   const updated = await repository.updateLeaveType(pool, id, patch);
+
+  // Propagate allocation/name changes into existing employee balances for the current
+  // leave year so an entitlement edit isn't silently ignored until next year's seed.
+  const nameChanged = patch.name !== undefined && patch.name !== existing.name;
+  const allocationChanged =
+    patch.annual_entitlement_days !== undefined &&
+    patch.annual_entitlement_days !== existing.annual_entitlement_days;
+  if (nameChanged || allocationChanged) {
+    await repository.reconcileBalancesForLeaveType(pool, {
+      oldName: existing.name,
+      newName: updated.name,
+      year: new Date().getFullYear(),
+      totalAllocated: allocationChanged ? updated.annual_entitlement_days : undefined,
+    });
+  }
+
   return { leaveType: mapRow(updated) };
 }
 

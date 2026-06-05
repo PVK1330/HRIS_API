@@ -2,6 +2,7 @@
 
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
+const { runTenantMigrations } = require('../tenant/tenant.service');
 const repository = require('./attendanceSettings.repository');
 const settingsAuth = require('./attendanceSettingsAuth.service');
 const settingsAudit = require('./attendanceSettingsAudit.service');
@@ -11,9 +12,23 @@ const {
   APPROVERS,
   OVERTIME_CALC_RULES,
   OVERTIME_APPROVAL,
+  OVERTIME_APPROVERS,
 } = require('./attendanceSettings.options');
 
 const TIME_RE = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+
+// Apply pending tenant migrations before touching attendance_settings, so newly added
+// columns (overtime/shift/regularisation/general settings) exist. Cached per process.
+const _migrated = new Map();
+async function ensureMigrated(dbName) {
+  if (_migrated.has(dbName)) return _migrated.get(dbName);
+  const p = runTenantMigrations(dbName).catch((err) => {
+    _migrated.delete(dbName);
+    throw err;
+  });
+  _migrated.set(dbName, p);
+  return p;
+}
 
 const CAMEL_TO_SNAKE = {
   workStartTime: 'work_start_time',
@@ -31,6 +46,9 @@ const CAMEL_TO_SNAKE = {
   overtimeEligibility: 'overtime_eligibility',
   overtimeCalculationRule: 'overtime_calculation_rule',
   overtimeApprovalWorkflow: 'overtime_approval_workflow',
+  overtimeMinimumThresholdMinutes: 'overtime_minimum_threshold_minutes',
+  overtimeMaxPerMonthHours: 'overtime_max_per_month_hours',
+  overtimeApprover: 'overtime_approver',
   approvalWorkflowType: 'approval_workflow_type',
   weekendMode: 'weekend_mode',
   customWeekOffDays: 'custom_week_off_days',
@@ -56,11 +74,26 @@ const COLUMN_KEYS = new Set([
   'overtime_eligibility',
   'overtime_calculation_rule',
   'overtime_approval_workflow',
+  'overtime_minimum_threshold_minutes',
+  'overtime_max_per_month_hours',
+  'overtime_approver',
+  'overtime_require_reason',
   'approval_workflow_type',
   'weekend_mode',
   'custom_week_off_days',
   'uk_holiday_region',
   'shift_type_default',
+  'shift_allow_employee_view',
+  'shift_change_request_enabled',
+  'regularization_allow_self',
+  'regularization_max_per_month',
+  'regularization_auto_approve_enabled',
+  'regularization_auto_approve_after_days',
+  'work_week_days',
+  'grace_period_minutes',
+  'half_day_threshold_hours',
+  'biometric_sync_enabled',
+  'wfh_marking_allowed',
   'overtime_custom_multiplier',
   'attendance_location_tracking',
 ]);
@@ -101,6 +134,24 @@ function mapToResponse(row) {
       approver: row.approver,
       autoRejectionAfterDays: row.auto_rejection_after_days,
       approvalWorkflowType: row.approval_workflow_type,
+      allowSelf: row.regularization_allow_self !== false,
+      maxPerMonth: row.regularization_max_per_month ?? 3,
+      autoApproveEnabled: row.regularization_auto_approve_enabled === true,
+      autoApproveAfterDays: row.regularization_auto_approve_after_days ?? 3,
+    },
+    shiftSettings: {
+      defaultShift: row.shift_type_default || 'General',
+      allowEmployeeView: row.shift_allow_employee_view !== false,
+      changeRequestEnabled: row.shift_change_request_enabled === true,
+    },
+    generalSettings: {
+      workWeekDays: row.work_week_days || 'Mon,Tue,Wed,Thu,Fri',
+      gracePeriodMinutes: row.grace_period_minutes ?? 10,
+      halfDayThresholdHours: row.half_day_threshold_hours != null
+        ? parseFloat(row.half_day_threshold_hours)
+        : 4,
+      biometricSyncEnabled: row.biometric_sync_enabled === true,
+      wfhMarkingAllowed: row.wfh_marking_allowed !== false,
     },
     weekendSettings: {
       weekendMode: row.weekend_mode,
@@ -119,6 +170,17 @@ function mapToResponse(row) {
         ? parseFloat(row.overtime_custom_multiplier)
         : 1,
       approvalWorkflow: row.overtime_approval_workflow,
+      minimumThresholdMinutes: row.overtime_minimum_threshold_minutes != null
+        ? parseInt(row.overtime_minimum_threshold_minutes, 10)
+        : 30,
+      maxPerMonthHours: row.overtime_max_per_month_hours != null
+        ? parseFloat(row.overtime_max_per_month_hours)
+        : 0,
+      approver: row.overtime_approver || 'HR Department',
+      payMultiplier: row.overtime_custom_multiplier != null
+        ? parseFloat(row.overtime_custom_multiplier)
+        : 1.5,
+      requireReason: row.overtime_require_reason !== false,
     },
     locationTracking: {
       enabled: row.attendance_location_tracking === true,
@@ -140,6 +202,8 @@ function mergeFlatAttendanceFields(body) {
   const ar = body.attendanceRules;
   const rs = body.regularizationSettings;
   const os = body.overtimeSettings;
+  const ss = body.shiftSettings;
+  const gs = body.generalSettings;
 
   if (wh && typeof wh === 'object') {
     if (wh.startTime !== undefined) patch.work_start_time = wh.startTime;
@@ -163,6 +227,14 @@ function mergeFlatAttendanceFields(body) {
     if (rs.autoRejectionAfterDays !== undefined) {
       patch.auto_rejection_after_days = rs.autoRejectionAfterDays;
     }
+    if (rs.allowSelf !== undefined) patch.regularization_allow_self = rs.allowSelf;
+    if (rs.maxPerMonth !== undefined) patch.regularization_max_per_month = rs.maxPerMonth;
+    if (rs.autoApproveEnabled !== undefined) {
+      patch.regularization_auto_approve_enabled = rs.autoApproveEnabled;
+    }
+    if (rs.autoApproveAfterDays !== undefined) {
+      patch.regularization_auto_approve_after_days = rs.autoApproveAfterDays;
+    }
   }
   if (os && typeof os === 'object') {
     if (os.overtimeEligibility !== undefined) patch.overtime_eligibility = os.overtimeEligibility;
@@ -171,6 +243,31 @@ function mergeFlatAttendanceFields(body) {
     if (os.approvalWorkflow !== undefined) {
       patch.overtime_approval_workflow = os.approvalWorkflow;
     }
+    if (os.minimumThresholdMinutes !== undefined) {
+      patch.overtime_minimum_threshold_minutes = os.minimumThresholdMinutes;
+    }
+    if (os.maxPerMonthHours !== undefined) {
+      patch.overtime_max_per_month_hours = os.maxPerMonthHours;
+    }
+    if (os.approver !== undefined) patch.overtime_approver = os.approver;
+    if (os.payMultiplier !== undefined) patch.overtime_custom_multiplier = os.payMultiplier;
+    if (os.requireReason !== undefined) patch.overtime_require_reason = os.requireReason;
+  }
+  if (ss && typeof ss === 'object') {
+    if (ss.defaultShift !== undefined) patch.shift_type_default = ss.defaultShift;
+    if (ss.allowEmployeeView !== undefined) patch.shift_allow_employee_view = ss.allowEmployeeView;
+    if (ss.changeRequestEnabled !== undefined) {
+      patch.shift_change_request_enabled = ss.changeRequestEnabled;
+    }
+  }
+  if (gs && typeof gs === 'object') {
+    if (gs.workWeekDays !== undefined) patch.work_week_days = gs.workWeekDays;
+    if (gs.gracePeriodMinutes !== undefined) patch.grace_period_minutes = gs.gracePeriodMinutes;
+    if (gs.halfDayThresholdHours !== undefined) {
+      patch.half_day_threshold_hours = gs.halfDayThresholdHours;
+    }
+    if (gs.biometricSyncEnabled !== undefined) patch.biometric_sync_enabled = gs.biometricSyncEnabled;
+    if (gs.wfhMarkingAllowed !== undefined) patch.wfh_marking_allowed = gs.wfhMarkingAllowed;
   }
 
   for (const [camel, snake] of Object.entries(CAMEL_TO_SNAKE)) {
@@ -205,6 +302,7 @@ function validateEnums(patch) {
   const approverSet = new Set(APPROVERS);
   const calcSet = new Set(OVERTIME_CALC_RULES);
   const apprSet = new Set(OVERTIME_APPROVAL);
+  const otApproverSet = new Set(OVERTIME_APPROVERS);
 
   if (patch.early_departure_rule !== undefined && patch.early_departure_rule !== null) {
     if (!earlySet.has(String(patch.early_departure_rule))) {
@@ -232,6 +330,11 @@ function validateEnums(patch) {
   ) {
     if (!apprSet.has(String(patch.overtime_approval_workflow))) {
       throw new ApiError(400, 'Invalid overtime_approval_workflow');
+    }
+  }
+  if (patch.overtime_approver !== undefined && patch.overtime_approver !== null) {
+    if (!otApproverSet.has(String(patch.overtime_approver))) {
+      throw new ApiError(400, 'Invalid overtime_approver');
     }
   }
 }
@@ -277,6 +380,26 @@ function validateTimesAndRanges(patch) {
   }
 
   if (
+    patch.overtime_minimum_threshold_minutes !== undefined &&
+    patch.overtime_minimum_threshold_minutes !== null
+  ) {
+    const n = Number(patch.overtime_minimum_threshold_minutes);
+    if (!Number.isInteger(n) || n < 0 || n > 720) {
+      throw new ApiError(400, 'overtime_minimum_threshold_minutes must be an integer from 0 to 720');
+    }
+  }
+
+  if (
+    patch.overtime_max_per_month_hours !== undefined &&
+    patch.overtime_max_per_month_hours !== null
+  ) {
+    const n = parseFloat(patch.overtime_max_per_month_hours);
+    if (Number.isNaN(n) || n < 0 || n > 744) {
+      throw new ApiError(400, 'overtime_max_per_month_hours must be between 0 and 744');
+    }
+  }
+
+  if (
     patch.auto_rejection_after_days !== undefined &&
     patch.auto_rejection_after_days !== null
   ) {
@@ -285,6 +408,27 @@ function validateTimesAndRanges(patch) {
       throw new ApiError(400, 'auto_rejection_after_days must be an integer from 1 to 30');
     }
   }
+
+  const intRange = (key, min, max) => {
+    if (patch[key] === undefined || patch[key] === null) return;
+    const n = Number(patch[key]);
+    if (!Number.isInteger(n) || n < min || n > max) {
+      throw new ApiError(400, `${key} must be an integer from ${min} to ${max}`);
+    }
+  };
+  const floatRange = (key, min, max) => {
+    if (patch[key] === undefined || patch[key] === null) return;
+    const n = parseFloat(patch[key]);
+    if (Number.isNaN(n) || n < min || n > max) {
+      throw new ApiError(400, `${key} must be between ${min} and ${max}`);
+    }
+  };
+
+  intRange('regularization_max_per_month', 0, 31);
+  intRange('regularization_auto_approve_after_days', 0, 30);
+  intRange('grace_period_minutes', 0, 120);
+  floatRange('half_day_threshold_hours', 0, 24);
+  floatRange('overtime_custom_multiplier', 1, 10);
 }
 
 function validateCrossField(existingRow, patch) {
@@ -325,6 +469,7 @@ function validateCrossField(existingRow, patch) {
 async function getAttendanceSettings(dbName, auth, req = null) {
   settingsAuth.assertCanViewSettings(auth);
 
+  await ensureMigrated(dbName);
   const pool = getTenantPool(dbName);
   let row = await repository.getSettings(pool);
   if (!row) {
@@ -343,6 +488,7 @@ async function getAttendanceSettings(dbName, auth, req = null) {
 async function updateAttendanceSettings(dbName, body, auth, req = null) {
   settingsAuth.assertCanManageSettings(auth);
 
+  await ensureMigrated(dbName);
   const pool = getTenantPool(dbName);
   let existingRow = await repository.getSettings(pool);
   if (!existingRow) {
@@ -389,5 +535,6 @@ module.exports = {
   APPROVERS,
   OVERTIME_CALC_RULES,
   OVERTIME_APPROVAL,
+  OVERTIME_APPROVERS,
   TIME_RE,
 };

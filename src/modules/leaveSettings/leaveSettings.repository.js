@@ -112,6 +112,29 @@ async function deleteLeaveType(pool, id) {
   return rows[0] || null;
 }
 
+/**
+ * Keep existing employee balances in sync when a leave type's allocation (or name)
+ * changes. Balances are keyed by the leave_type *name*, so a rename must migrate rows,
+ * and an entitlement change must refresh total_allocated for the current leave year
+ * (past years are left as historical record). `used`/`carry_forward` are preserved.
+ */
+async function reconcileBalancesForLeaveType(pool, { oldName, newName, year, totalAllocated }) {
+  if (oldName && newName && oldName.trim() !== newName.trim()) {
+    await pool.query(
+      `UPDATE leave_balances SET leave_type = $1, updated_at = NOW()
+       WHERE LOWER(TRIM(leave_type)) = LOWER(TRIM($2))`,
+      [newName, oldName]
+    );
+  }
+  if (totalAllocated !== undefined && totalAllocated !== null && newName) {
+    await pool.query(
+      `UPDATE leave_balances SET total_allocated = $1, updated_at = NOW()
+       WHERE LOWER(TRIM(leave_type)) = LOWER(TRIM($2)) AND year = $3`,
+      [totalAllocated, newName, year]
+    );
+  }
+}
+
 async function getRoles(pool) {
   /* Tenant roles table has no is_active column (002_create_roles_table); list all names. */
   const { rows } = await pool.query('SELECT name FROM roles ORDER BY name ASC');
@@ -126,5 +149,6 @@ module.exports = {
   createLeaveType,
   updateLeaveType,
   deleteLeaveType,
+  reconcileBalancesForLeaveType,
   getRoles,
 };

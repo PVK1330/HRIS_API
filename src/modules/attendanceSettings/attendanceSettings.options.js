@@ -7,4 +7,5 @@ module.exports = {
   APPROVERS: ['HR', 'Manager', 'Direct Manager', 'HR Manager'],
   OVERTIME_CALC_RULES: ['1.5x hourly', '2x hourly', 'Flat rate', 'Custom'],
   OVERTIME_APPROVAL: ['Manager → HR', 'HR only', 'Manager only', 'Auto-approve'],
+  OVERTIME_APPROVERS: ['HR Department', 'Direct Manager', 'HOD', 'Manager + HR'],
 };

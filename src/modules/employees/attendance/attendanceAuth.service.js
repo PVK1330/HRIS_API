@@ -102,9 +102,9 @@ function isInManagedDepartment(auth, employeeRow) {
   return false;
 }
 
-function assertNotSelfApproval(auth, record) {
+function assertNotSelfApproval(auth, record, what = 'regularization request') {
   if (Number(record.employee_id) === Number(auth.employeeId)) {
-    throw ApiError.forbidden('You cannot approve your own regularization request');
+    throw ApiError.forbidden(`You cannot approve your own ${what}`);
   }
 }
 
@@ -226,6 +226,7 @@ module.exports = {
   canViewOwn,
   hasHrApprovalScope,
   canOverrideApproval,
+  assertNotSelfApproval,
   assertCanViewEmployee,
   assertCanModifyEmployee,
   assertCanActOnPendingStep,

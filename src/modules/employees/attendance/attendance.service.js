@@ -48,6 +48,28 @@ function actorEmployeeId(user) {
   return user?.employeeId || null;
 }
 
+/**
+ * Resolve the acting employee's id. Prefers an explicit body id, then the JWT's
+ * employeeId, and finally falls back to matching the user's account email against
+ * employees.work_email. This covers tokens issued before the employee profile was
+ * linked, so check-in/out works without forcing the user to log out and back in.
+ */
+async function resolveEmployeeId(pool, user, explicitId) {
+  let employeeId = explicitId || actorEmployeeId(user);
+  if (!employeeId && user?.email) {
+    try {
+      const { rows } = await pool.query(
+        `SELECT id FROM employees
+         WHERE LOWER(work_email) = LOWER($1) AND deleted_at IS NULL
+         LIMIT 1`,
+        [user.email],
+      );
+      if (rows[0]) employeeId = rows[0].id;
+    } catch { /* lookup is best-effort */ }
+  }
+  return employeeId;
+}
+
 function canManageOverride(auth) {
   return auth?.isTenantAdmin || hasPermission(auth, P.ATTENDANCE_MANAGE);
 }
@@ -371,9 +393,8 @@ async function assertActiveForPunch(pool, employeeId) {
 async function checkIn(auth, user, body, req) {
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
-  const employeeId = body.employeeId || actorEmployeeId(user);
-  if (!employeeId) throw ApiError.badRequest('Employee profile required');
-  await assertActiveForPunch(pool, Number(employeeId));
+  const employeeId = await resolveEmployeeId(pool, user, body.employeeId);
+  if (employeeId) await assertActiveForPunch(pool, Number(employeeId));
   await authz.assertCanModifyEmployee(auth, pool, Number(employeeId));
 
   if (!canManageOverride(auth)) {
@@ -423,9 +444,8 @@ async function checkIn(auth, user, body, req) {
 async function checkOut(auth, user, body, req) {
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
-  const employeeId = body.employeeId || actorEmployeeId(user);
-  if (!employeeId) throw ApiError.badRequest('Employee profile required');
-  await assertActiveForPunch(pool, Number(employeeId));
+  const employeeId = await resolveEmployeeId(pool, user, body.employeeId);
+  if (employeeId) await assertActiveForPunch(pool, Number(employeeId));
   await authz.assertCanModifyEmployee(auth, pool, Number(employeeId));
 
   if (!canManageOverride(auth)) {
@@ -602,6 +622,20 @@ async function getPendingOvertime(auth, user, query = {}) {
   return { records, total: records.length };
 }
 
+/** All overtime records (history) for the Overtime Management page, scope-filtered. */
+async function getOvertimeRecords(auth, user, query = {}) {
+  const pool = getPool(user);
+  await ensureMigrated(user.db_name);
+  const limit = Math.min(200, parseInt(query.limit, 10) || 100);
+  const offset = (Math.max(1, parseInt(query.page, 10) || 1) - 1) * limit;
+  const records = await repo.getOvertimeRecords(
+    pool,
+    { status: query.status || '', search: query.search || '', limit, offset },
+    auth,
+  );
+  return { records, total: records.length };
+}
+
 /**
  * Manager approve/reject of a pending overtime record. On approval the overtime is
  * forwarded to the employee's department for further processing.
@@ -615,6 +649,9 @@ async function processOvertime(auth, user, id, { action, reason }, req) {
   if (record.overtime_status !== 'Pending') {
     throw ApiError.badRequest('No pending overtime approval for this record');
   }
+  // SECURITY: segregation of duties — no one may approve/reject their own overtime,
+  // even tenant admins / managers (mirrors the regularization workflow guard).
+  authz.assertNotSelfApproval(auth, record, 'overtime request');
   await authz.assertCanModifyEmployee(auth, pool, Number(record.employee_id));
 
   const approverId = actorEmployeeId(user);
@@ -668,6 +705,105 @@ async function processOvertime(auth, user, id, { action, reason }, req) {
   }
 
   return updated;
+}
+
+/**
+ * Manually add an overtime entry for an employee (Add Overtime). Gated by the tenant's
+ * overtime-eligibility setting, the configured minimum threshold, and the caller's data
+ * scope. Only approvers may directly set Approved/Rejected; otherwise it lands as Pending.
+ */
+async function createOvertime(auth, user, body, req) {
+  const pool = getPool(user);
+  await ensureMigrated(user.db_name);
+
+  const settings = await calc.loadSettings(pool);
+  if (!settings?.overtime_eligibility) {
+    throw ApiError.badRequest('Overtime is disabled. Enable it in Attendance settings first.');
+  }
+
+  const employeeId = body.employeeId;
+  if (!employeeId) throw ApiError.badRequest('employeeId is required');
+  await assertActiveForPunch(pool, Number(employeeId));
+  await authz.assertCanModifyEmployee(auth, pool, Number(employeeId)); // enforces data scope
+
+  const date = body.date;
+  if (!date) throw ApiError.badRequest('date is required');
+
+  if (settings.overtime_require_reason !== false && !String(body.description || '').trim()) {
+    throw ApiError.badRequest('A reason is required for overtime.');
+  }
+
+  const hours = Number(body.overtimeHours);
+  if (!Number.isFinite(hours) || hours <= 0) {
+    throw ApiError.badRequest('overtimeHours must be greater than 0');
+  }
+  const thresholdMinutes = Number(settings.overtime_minimum_threshold_minutes) || 0;
+  if (hours * 60 < thresholdMinutes) {
+    throw ApiError.badRequest(
+      `Overtime must be at least the minimum threshold of ${thresholdMinutes} minute(s).`,
+    );
+  }
+
+  // Monthly cap (0 = unlimited): existing Pending+Approved OT this month (excluding this
+  // date, which is being upserted) + the new hours must not exceed the configured cap.
+  const maxPerMonth = Number(settings.overtime_max_per_month_hours) || 0;
+  if (maxPerMonth > 0) {
+    const [y, m] = String(date).split('-').map((x) => parseInt(x, 10));
+    const existing = await repo.getMonthlyOvertimeHours(pool, Number(employeeId), y, m, date);
+    if (existing + hours > maxPerMonth) {
+      throw ApiError.badRequest(
+        `This exceeds the monthly overtime cap of ${maxPerMonth} hour(s) ` +
+        `(${existing} already recorded this month).`,
+      );
+    }
+  }
+
+  // Only approvers/managers may directly finalize; everyone else creates a Pending request.
+  const canApprove = authz.canOverrideApproval(auth) || hasPermission(auth, P.ATTENDANCE_APPROVE);
+  let status = String(body.status || 'Pending');
+  if (!['Pending', 'Approved', 'Rejected'].includes(status)) status = 'Pending';
+  if ((status === 'Approved' || status === 'Rejected') && !canApprove) status = 'Pending';
+  // Segregation of duties: cannot self-approve.
+  if (status === 'Approved' && Number(auth?.employeeId) === Number(employeeId)) status = 'Pending';
+
+  const approverId = actorEmployeeId(user);
+  const record = await repo.upsertOvertime(pool, {
+    employeeId,
+    date,
+    overtimeHours: hours,
+    status,
+    description: body.description,
+    approvedBy: status === 'Approved' ? approverId : null,
+    forwarded: status === 'Approved',
+  });
+
+  try {
+    if (status === 'Approved') {
+      await notify.notifyOtApproved(pool, user.db_name, { employeeId, date, entityId: record.id, hours });
+      await notify.notifyOtForwardedToDept(pool, user.db_name, { employeeId, date, entityId: record.id, hours });
+    } else if (status === 'Rejected') {
+      await notify.notifyOtRejected(pool, user.db_name, { employeeId, date, entityId: record.id, hours, reason: body.description });
+    } else {
+      await notify.notifyOtRequested(pool, user.db_name, { employeeId, date, entityId: record.id, hours });
+    }
+  } catch (e) {
+    logger.warn(`[attendance] overtime notification failed for record ${record.id}`, e.message);
+  }
+
+  try {
+    const meta = audit.auditMeta(req);
+    await audit.log(pool, {
+      attendanceId: record.id,
+      employeeId,
+      action: 'attendance.overtime.create',
+      oldValue: null,
+      newValue: record,
+      performedBy: approverId,
+      ...meta,
+    });
+  } catch { /* audit is best-effort */ }
+
+  return record;
 }
 
 async function regularize(auth, user, id, { action, reason }, req) {
@@ -796,11 +932,23 @@ async function getPayrollSummary(auth, user, query) {
 async function getMyToday(auth, user) {
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
-  const employeeId = actorEmployeeId(user);
-  if (!employeeId) throw ApiError.badRequest('Employee profile required');
-  await authz.assertCanViewEmployee(auth, pool, Number(employeeId));
-
+  const employeeId = await resolveEmployeeId(pool, user);
   const dateStr = todayStr();
+  if (!employeeId) {
+    // No linked employee profile — return an empty day rather than erroring so the
+    // portal renders cleanly.
+    return {
+      date: dateStr,
+      punchStatus: 'Not Checked In',
+      record: null,
+      isLate: false,
+      overtimeHours: 0,
+      workedHours: 0,
+      status: 'Not Checked In',
+      locationTrackingEnabled: false,
+    };
+  }
+  await authz.assertCanViewEmployee(auth, pool, Number(employeeId));
   const record = await repo.findByEmployeeAndDate(pool, employeeId, dateStr);
   let punchStatus = 'Not Checked In';
   if (record?.check_in_time && !record?.check_out_time) punchStatus = 'Checked In';
@@ -889,7 +1037,9 @@ module.exports = {
   getPendingRegularizations,
   regularize,
   getPendingOvertime,
+  getOvertimeRecords,
   processOvertime,
+  createOvertime,
   getPayrollSummary,
   getMyToday,
   getDashboard,

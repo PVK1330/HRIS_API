@@ -6,6 +6,7 @@ const { runTenantMigrations } = require('../tenant/tenant.service');
 const { getTenantPool } = require('../../config/db');
 
 const rbacRepo = require('./rbac.repository');
+const notify = require('../notifications/notifications.service');
 
 function resolvePool(dbName) {
   if (!dbName) throw ApiError.unauthorized('Tenant database not found');
@@ -44,7 +45,17 @@ async function createRole(req) {
   const pool = resolvePool(req.user.db_name);
   await ensureMigrated(req.user.db_name);
   try {
-    return await rbacRepo.insertRole(pool, { name, description, scope });
+    const role = await rbacRepo.insertRole(pool, { name, description, scope });
+    notify.pushNotification({ db_name: req.user.db_name }, {
+      forAdmin: true,
+      title: `Role Created: ${role?.name || name}`,
+      message: `A new role "${role?.name || name}" has been created.`,
+      type: 'info',
+      entityType: 'rbac_role',
+      entityId: role?.id ?? null,
+      redirectUrl: '/admin/settings/roles',
+    }).catch(() => null);
+    return role;
   } catch (e) {
     if (e && e.code === '23505') throw ApiError.conflict('Role name already exists');
     if (e && e.message && e.message.includes('Invalid data scope')) {
@@ -80,6 +91,37 @@ async function updateRolePermissions(req) {
   }
 
   await rbacRepo.setRolePermissions(pool, roleId, Array.isArray(permissionIds) ? permissionIds : []);
+
+  const tenant = { db_name: req.user.db_name };
+  notify.pushNotification(tenant, {
+    forAdmin: true,
+    title: `Role Updated: ${role.name}`,
+    message: `Permissions for the "${role.name}" role have been updated.`,
+    type: 'info',
+    entityType: 'rbac_role',
+    entityId: roleId,
+    redirectUrl: '/admin/settings/roles',
+  }).catch(() => null);
+
+  // Tell each employee holding this role that their access changed.
+  try {
+    const { rows: affected } = await pool.query(
+      `SELECT id FROM employees WHERE rbac_role_id = $1 AND deleted_at IS NULL`,
+      [roleId],
+    );
+    for (const emp of affected) {
+      notify.pushNotification(tenant, {
+        employeeId: Number(emp.id),
+        title: 'Your Access Was Updated',
+        message: 'Your access permissions have been updated by an administrator.',
+        type: 'info',
+        entityType: 'rbac_role',
+        entityId: roleId,
+        redirectUrl: '/employee/dashboard',
+      }).catch(() => null);
+    }
+  } catch (_) { /* non-blocking */ }
+
   return rbacRepo.findAllRoles(pool).then((rs) => rs.find((r) => r.id === roleId));
 }
 
@@ -87,8 +129,21 @@ async function deleteRole(req) {
   const id = Number(req.params.id);
   const pool = resolvePool(req.user.db_name);
   await ensureMigrated(req.user.db_name);
+  const roles = await rbacRepo.findAllRoles(pool);
+  const role = roles.find((r) => r.id === id);
   const ok = await rbacRepo.deleteRole(pool, id);
   if (!ok) throw ApiError.badRequest('Cannot delete system role or role not found');
+
+  notify.pushNotification({ db_name: req.user.db_name }, {
+    forAdmin: true,
+    title: `Role Deleted: ${role?.name || 'Role'}`,
+    message: `The "${role?.name || 'role'}" role has been deleted.`,
+    type: 'warning',
+    entityType: 'rbac_role',
+    entityId: id,
+    redirectUrl: '/admin/settings/roles',
+  }).catch(() => null);
+
   return null;
 }
 

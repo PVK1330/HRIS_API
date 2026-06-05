@@ -1,5 +1,7 @@
 'use strict';
 
+const { appendScopeToConditions } = require('../../../utils/applyDataScope');
+
 // ─── Leave Requests ───────────────────────────────────────────────────────────
 
 async function findRequests(pool, employeeId, { status, year, limit = 20, offset = 0 } = {}) {
@@ -28,7 +30,7 @@ async function findRequests(pool, employeeId, { status, year, limit = 20, offset
   return rows;
 }
 
-async function findAllRequests(pool, { status, year, department, search, limit = 50, offset = 0 } = {}) {
+async function findAllRequests(pool, { status, year, department, search, limit = 50, offset = 0 } = {}, auth = null) {
   const conditions = ['e.deleted_at IS NULL'];
   const params = [];
 
@@ -41,7 +43,8 @@ async function findAllRequests(pool, { status, year, department, search, limit =
     conditions.push(`(e.full_name ILIKE $${n} OR e.emp_id ILIKE $${n})`);
   }
 
-  params.push(limit, offset);
+  const scoped = appendScopeToConditions(auth, conditions, params, 'e');
+  scoped.params.push(limit, offset);
   const { rows } = await pool.query(
     `SELECT lr.id, lr.leave_type, lr.reason, lr.total_days, lr.status,
             lr.rejection_reason,
@@ -63,15 +66,15 @@ async function findAllRequests(pool, { status, year, department, search, limit =
             ON lb.employee_id = lr.employee_id
            AND lb.leave_type  = lr.leave_type
            AND lb.year        = EXTRACT(YEAR FROM lr.from_date)::int
-     WHERE ${conditions.join(' AND ')}
+     WHERE ${scoped.conditions.join(' AND ')}
      ORDER BY lr.created_at DESC
-     LIMIT $${params.length - 1} OFFSET $${params.length}`,
-    params
+     LIMIT $${scoped.params.length - 1} OFFSET $${scoped.params.length}`,
+    scoped.params
   );
   return rows;
 }
 
-async function countAllRequests(pool, { status, year, department, search } = {}) {
+async function countAllRequests(pool, { status, year, department, search } = {}, auth = null) {
   const conditions = ['e.deleted_at IS NULL'];
   const params = [];
 
@@ -84,12 +87,13 @@ async function countAllRequests(pool, { status, year, department, search } = {})
     conditions.push(`(e.full_name ILIKE $${n} OR e.emp_id ILIKE $${n})`);
   }
 
+  const scoped = appendScopeToConditions(auth, conditions, params, 'e');
   const { rows } = await pool.query(
     `SELECT COUNT(*)::int AS total
      FROM leave_requests lr
      JOIN employees e ON e.id = lr.employee_id AND e.deleted_at IS NULL
-     WHERE ${conditions.join(' AND ')}`,
-    params
+     WHERE ${scoped.conditions.join(' AND ')}`,
+    scoped.params
   );
   return rows[0].total;
 }
@@ -99,7 +103,7 @@ async function findRequestById(pool, id) {
     `SELECT lr.*,
             TO_CHAR(lr.from_date,  'YYYY-MM-DD') AS from_date,
             TO_CHAR(lr.to_date,    'YYYY-MM-DD') AS to_date,
-            e.full_name AS employee_name, e.emp_id, e.department
+            e.full_name AS employee_name, e.emp_id, e.department, e.reporting_manager_id
      FROM leave_requests lr
      JOIN employees e ON e.id = lr.employee_id AND e.deleted_at IS NULL
      WHERE lr.id = $1`,
@@ -112,7 +116,7 @@ async function insertRequest(pool, data) {
   const {
     employeeId, leaveType, fromDate, toDate, totalDays,
     reason, handoverNote, alternatContact, supportingDocumentUrl,
-    status = 'Pending',
+    status = 'Pending Manager Approval',
   } = data;
 
   const { rows } = await pool.query(
@@ -176,11 +180,26 @@ async function findActiveLeaveType(pool, name) {
   const { rows } = await pool.query(
     `SELECT id, name, paid_or_unpaid, annual_entitlement_days,
             max_carry_forward_days, accrual, loss_of_pay_rule,
-            document_required, auto_approval, approver, is_active
+            document_required, auto_approval, approver, is_active,
+            notice_period_required, gender_restriction
      FROM leave_types
      WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) AND is_active = true
      LIMIT 1`,
     [name]
+  );
+  return rows[0] || null;
+}
+
+async function findActiveLeaveTypeById(pool, id) {
+  const { rows } = await pool.query(
+    `SELECT id, name, paid_or_unpaid, annual_entitlement_days,
+            max_carry_forward_days, accrual, loss_of_pay_rule,
+            document_required, auto_approval, approver, is_active,
+            notice_period_required, gender_restriction
+     FROM leave_types
+     WHERE id = $1 AND is_active = true
+     LIMIT 1`,
+    [id]
   );
   return rows[0] || null;
 }
@@ -211,7 +230,7 @@ async function findOverlappingRequest(pool, employeeId, fromDate, toDate) {
             TO_CHAR(to_date,   'YYYY-MM-DD') AS to_date
      FROM leave_requests
      WHERE employee_id = $1
-       AND status IN ('Pending', 'Approved')
+       AND status IN ('Pending Manager Approval', 'Pending HR Approval', 'Approved')
        AND from_date <= $3::date
        AND to_date   >= $2::date
      LIMIT 1`,
@@ -232,7 +251,7 @@ async function getBalances(pool, employeeId, year) {
   return rows;
 }
 
-async function getAllBalances(pool, year, { department, search, limit = 50, offset = 0 } = {}) {
+async function getAllBalances(pool, year, { department, search, limit = 50, offset = 0 } = {}, auth = null) {
   const conditions = ['e.deleted_at IS NULL'];
   const params = [year];
 
@@ -243,7 +262,8 @@ async function getAllBalances(pool, year, { department, search, limit = 50, offs
     conditions.push(`(e.full_name ILIKE $${n} OR e.emp_id ILIKE $${n})`);
   }
 
-  params.push(limit, offset);
+  const scoped = appendScopeToConditions(auth, conditions, params, 'e');
+  scoped.params.push(limit, offset);
   const { rows } = await pool.query(
     `SELECT e.id AS employee_id, e.full_name AS employee_name,
             e.emp_id, e.department, e.job_title,
@@ -261,11 +281,11 @@ async function getAllBalances(pool, year, { department, search, limit = 50, offs
             ) AS balances
      FROM employees e
      LEFT JOIN leave_balances lb ON lb.employee_id = e.id AND lb.year = $1
-     WHERE ${conditions.join(' AND ')}
+     WHERE ${scoped.conditions.join(' AND ')}
      GROUP BY e.id, e.full_name, e.emp_id, e.department, e.job_title
      ORDER BY e.full_name ASC
-     LIMIT $${params.length - 1} OFFSET $${params.length}`,
-    params
+     LIMIT $${scoped.params.length - 1} OFFSET $${scoped.params.length}`,
+    scoped.params
   );
   return rows;
 }
@@ -287,16 +307,21 @@ async function upsertBalance(pool, { employeeId, leaveType, year, totalAllocated
 
 // ─── Stats ────────────────────────────────────────────────────────────────────
 
-async function getStats(pool, year) {
+async function getStats(pool, year, auth = null) {
+  const conditions = ['EXTRACT(YEAR FROM lr.from_date) = $1', 'e.deleted_at IS NULL'];
+  const params = [year];
+  const scoped = appendScopeToConditions(auth, conditions, params, 'e');
+
   const { rows } = await pool.query(
     `SELECT
-       COUNT(*) FILTER (WHERE status = 'Pending')::int  AS pending,
-       COUNT(*) FILTER (WHERE status = 'Approved')::int AS approved,
-       COUNT(*) FILTER (WHERE status = 'Rejected')::int AS rejected,
-       COUNT(*)::int                                    AS total
-     FROM leave_requests
-     WHERE EXTRACT(YEAR FROM from_date) = $1`,
-    [year]
+       COUNT(*) FILTER (WHERE lr.status IN ('Pending Manager Approval', 'Pending HR Approval'))::int AS pending,
+       COUNT(*) FILTER (WHERE lr.status = 'Approved')::int AS approved,
+       COUNT(*) FILTER (WHERE lr.status LIKE 'Rejected%')::int AS rejected,
+       COUNT(*)::int AS total
+     FROM leave_requests lr
+     JOIN employees e ON e.id = lr.employee_id
+     WHERE ${scoped.conditions.join(' AND ')}`,
+    scoped.params
   );
   return rows[0];
 }
@@ -304,7 +329,9 @@ async function getStats(pool, year) {
 module.exports = {
   findRequests, findAllRequests, countAllRequests, findRequestById,
   insertRequest, updateRequestStatus,
-  findActiveLeaveType, getActiveLeaveTypes,
+  findActiveLeaveType,
+  findActiveLeaveTypeById,
+  getActiveLeaveTypes,
   getBalanceForType, findOverlappingRequest,
   getBalances, getAllBalances, upsertBalance,
   getStats,

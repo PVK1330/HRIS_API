@@ -2,6 +2,7 @@
 
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
+const notify = require('../notifications/notifications.service');
 
 const SORT_COL = {
   created_at: 'ds.created_at',
@@ -285,6 +286,17 @@ async function createDesignation(tenant, data) {
       data.createdBy ?? data.created_by ?? null,
     ],
   );
+
+  notify.pushNotification(tenant, {
+    forAdmin: true,
+    title: `Designation Created: ${data.name.trim()}`,
+    message: `A new designation "${data.name.trim()}" has been created.`,
+    type: 'info',
+    entityType: 'designation',
+    entityId: rows[0].id,
+    redirectUrl: '/admin/designations',
+  }).catch(() => null);
+
   return getDesignation(tenant, rows[0].id);
 }
 
@@ -334,13 +346,37 @@ async function updateDesignation(tenant, id, data) {
     params,
   );
   if (!rows.length) throw new ApiError(404, 'Designation not found');
-  return getDesignation(tenant, id);
+  const result = await getDesignation(tenant, id);
+
+  notify.pushNotification(tenant, {
+    forAdmin: true,
+    title: `Designation Updated: ${result.name}`,
+    message: `The "${result.name}" designation has been updated.`,
+    type: 'info',
+    entityType: 'designation',
+    entityId: id,
+    redirectUrl: '/admin/designations',
+  }).catch(() => null);
+
+  return result;
 }
 
 async function deleteDesignation(tenant, id) {
   const pool = await getTenantPool(tenant.dbName);
+  const { rows: existingRows } = await pool.query(`SELECT name FROM designations WHERE id = $1`, [id]);
   const { rowCount } = await pool.query(`DELETE FROM designations WHERE id = $1`, [id]);
   if (!rowCount) throw new ApiError(404, 'Designation not found');
+
+  notify.pushNotification(tenant, {
+    forAdmin: true,
+    title: `Designation Deleted: ${existingRows[0]?.name || 'Designation'}`,
+    message: `The "${existingRows[0]?.name || 'designation'}" designation has been removed.`,
+    type: 'warning',
+    entityType: 'designation',
+    entityId: id,
+    redirectUrl: '/admin/designations',
+  }).catch(() => null);
+
   return true;
 }
 

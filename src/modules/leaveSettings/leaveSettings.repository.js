@@ -2,17 +2,29 @@
 
 const UPDATABLE_COLUMNS = [
   'name',
+  'code',
   'paid_or_unpaid',
   'annual_entitlement_days',
   'entitlement_label',
   'accrual',
+  'carry_forward_allowed',
   'max_carry_forward_days',
+  'notice_period_required',
+  'gender_restriction',
   'loss_of_pay_rule',
   'document_required',
   'auto_approval',
   'approver',
   'is_active',
   'sort_order',
+  'description',
+  'encashment_allowed',
+  'document_mandatory_after_days',
+  'applicable_departments',
+  'applicable_designations',
+  'applicable_employment_types',
+  'probation_restriction',
+  'minimum_service_months',
 ];
 
 const INSERT_COLUMNS = [...UPDATABLE_COLUMNS, 'is_custom'];

@@ -28,7 +28,7 @@ function requireEmployeeScopeAccess(paramName = 'employeeId') {
 
       const pool = getTenantPool(dbName);
       const { rows } = await pool.query(
-        `SELECT id, department, reporting_manager_id
+        `SELECT id, department, department_id, reporting_manager_id
          FROM employees
          WHERE id = $1 AND deleted_at IS NULL
          LIMIT 1`,

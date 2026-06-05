@@ -9,31 +9,43 @@ async function tenantResolver(req, _res, next) {
   try {
     let tenantIdentifier;
 
+    // SECURITY: For an authenticated, non-superadmin caller the tenant is derived
+    // STRICTLY from the verified JWT. Client-supplied host/header inputs are NOT
+    // trusted here — otherwise a tenant admin could target another tenant by sending
+    // an x-tenant-id / x-tenant-domain header (cross-tenant read/write). Superadmins
+    // are cross-tenant by design and fall through to the host/header strategies.
+    const isAuthedTenantUser = req.user && req.user.role !== 'superadmin';
+    if (isAuthedTenantUser && req.user.tenant_id) {
+      tenantIdentifier = req.user.tenant_id;
+    }
+
     // Strategy 1: Subdomain (incl. org.localhost for Vite dev)
-    const host = (req.headers.host || '').split(':')[0];
-    if (host.includes('.')) {
-      const parts = host.split('.').filter(Boolean);
-      const last = parts[parts.length - 1];
-      const isLocalDev = last === 'localhost' || last === '127.0.0.1';
-      if (isLocalDev && parts.length >= 2) {
-        const subdomain = parts[0];
-        if (subdomain && subdomain !== 'www' && subdomain !== 'api') {
-          tenantIdentifier = subdomain;
-        }
-      } else if (parts.length > 2) {
-        const subdomain = parts[0];
-        if (subdomain && subdomain !== 'www' && subdomain !== 'api') {
-          tenantIdentifier = subdomain;
+    if (!tenantIdentifier) {
+      const host = (req.headers.host || '').split(':')[0];
+      if (host.includes('.')) {
+        const parts = host.split('.').filter(Boolean);
+        const last = parts[parts.length - 1];
+        const isLocalDev = last === 'localhost' || last === '127.0.0.1';
+        if (isLocalDev && parts.length >= 2) {
+          const subdomain = parts[0];
+          if (subdomain && subdomain !== 'www' && subdomain !== 'api') {
+            tenantIdentifier = subdomain;
+          }
+        } else if (parts.length > 2) {
+          const subdomain = parts[0];
+          if (subdomain && subdomain !== 'www' && subdomain !== 'api') {
+            tenantIdentifier = subdomain;
+          }
         }
       }
     }
 
-    // Strategy 2: Header
+    // Strategy 2: Header (only reached for unauthenticated / superadmin requests)
     if (!tenantIdentifier) {
       tenantIdentifier = req.headers['x-tenant-id'] || req.headers['x-tenant-domain'];
     }
 
-    // Strategy 3: JWT claim (after authenticate middleware)
+    // Strategy 3: JWT claim fallback (e.g. superadmin acting on their own tenant_id)
     if (!tenantIdentifier && req.user?.tenant_id) {
       tenantIdentifier = req.user.tenant_id;
     }

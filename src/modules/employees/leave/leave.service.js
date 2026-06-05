@@ -236,27 +236,43 @@ async function applyLeave(user, auth, data) {
   if (data.isDraft) initialStatus = 'Draft';
   else if (autoApprove) initialStatus = 'Approved';
 
-  // 9. Insert request
-  const request = await repo.insertRequest(pool, {
-    ...data,
-    leaveType:  leaveTypeCfg.name,   // canonical casing
-    totalDays,
-    status:     initialStatus,
-  });
+  // 9 + 10. Insert request, and (if auto-approved) deduct balance — atomically and
+  // under a row lock so concurrent applies can't both pass the balance check and
+  // over-deduct (lost-update race). The pre-check at step 7 is advisory UX only;
+  // the authoritative check happens here under FOR UPDATE.
+  const deductOnApply = autoApprove && !isUnpaid && leaveTypeCfg.annual_entitlement_days > 0;
+  const client = await pool.connect();
+  let request;
+  try {
+    await client.query('BEGIN');
 
-  // 10. If auto-approved, deduct balance immediately
-  if (autoApprove && !isUnpaid) {
-    const balance = await ensureBalance(
-      pool, data.employeeId, leaveTypeCfg.name, year, leaveTypeCfg.annual_entitlement_days
-    );
-    await repo.upsertBalance(pool, {
-      employeeId:     data.employeeId,
-      leaveType:      leaveTypeCfg.name,
-      year,
-      totalAllocated: balance.total_allocated,
-      used:           balance.used + totalDays,
-      carryForward:   balance.carry_forward,
+    request = await repo.insertRequest(client, {
+      ...data,
+      leaveType:  leaveTypeCfg.name,   // canonical casing
+      totalDays,
+      status:     initialStatus,
     });
+
+    if (deductOnApply) {
+      const balance = await repo.lockBalanceForUpdate(
+        client, data.employeeId, leaveTypeCfg.name, year, leaveTypeCfg.annual_entitlement_days
+      );
+      const remaining = (balance.total_allocated + balance.carry_forward) - balance.used;
+      if (remaining < totalDays) {
+        throw ApiError.badRequest(
+          `Insufficient ${leaveTypeCfg.name} balance. ` +
+          `Requested: ${totalDays} day(s), Available: ${remaining} day(s).`
+        );
+      }
+      await repo.incrementUsed(client, data.employeeId, leaveTypeCfg.name, year, totalDays);
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
   }
 
   // 11. Notifications
@@ -330,6 +346,11 @@ async function processLeave(user, auth, id, { action, reason }) {
     if (!hasPermission(auth, P.LEAVE_APPROVE)) {
       throw ApiError.forbidden('Leave approval permission required');
     }
+    // SECURITY: segregation of duties — an approver may never approve/reject their
+    // own leave request, even with LEAVE_APPROVE (mirrors attendance self-approval guard).
+    if (isOwnRequest) {
+      throw ApiError.forbidden('You cannot approve or reject your own leave request');
+    }
   } else if (!isOwnRequest && !hasPermission(auth, P.LEAVE_APPROVE)) {
     throw ApiError.forbidden('You can only manage your own leave requests');
   }
@@ -401,31 +422,28 @@ async function processLeave(user, auth, id, { action, reason }) {
     if (!isUnpaid) {
       const year       = new Date(request.from_date).getFullYear();
       const annualDays = leaveTypeCfg?.annual_entitlement_days ?? 0;
-      const balance    = await ensureBalance(
-        client, request.employee_id, request.leave_type, year, annualDays
-      );
 
       if (newStatus === 'Approved') {
-        // Deduct days — leave is now consuming the balance
-        await repo.upsertBalance(client, {
-          employeeId:     request.employee_id,
-          leaveType:      request.leave_type,
-          year,
-          totalAllocated: balance.total_allocated,
-          used:           balance.used + request.total_days,
-          carryForward:   balance.carry_forward,
-        });
+        // Deduct days — leave is now consuming the balance. Lock the row first so two
+        // concurrent final approvals can't both read a stale `used` and under-deduct.
+        const balance = await repo.lockBalanceForUpdate(
+          client, request.employee_id, request.leave_type, year, annualDays
+        );
+        const remaining = (balance.total_allocated + balance.carry_forward) - balance.used;
+        if (remaining < request.total_days) {
+          throw ApiError.badRequest(
+            `Insufficient ${request.leave_type} balance to approve. ` +
+            `Requested: ${request.total_days} day(s), Available: ${remaining} day(s).`
+          );
+        }
+        await repo.incrementUsed(client, request.employee_id, request.leave_type, year, request.total_days);
       } else if (newStatus === 'Cancelled' && request.status === 'Approved') {
-        // Restore days — previously approved leave is being cancelled
-        const restored = Math.max(0, balance.used - request.total_days);
-        await repo.upsertBalance(client, {
-          employeeId:     request.employee_id,
-          leaveType:      request.leave_type,
-          year,
-          totalAllocated: balance.total_allocated,
-          used:           restored,
-          carryForward:   balance.carry_forward,
-        });
+        // Restore days — previously approved leave is being cancelled. Atomic decrement
+        // (clamped at 0) under lock, symmetric with the deduction above.
+        await repo.lockBalanceForUpdate(
+          client, request.employee_id, request.leave_type, year, annualDays
+        );
+        await repo.incrementUsed(client, request.employee_id, request.leave_type, year, -request.total_days);
       }
       // Reject, or cancel before final approval → no balance change (never deducted).
     }

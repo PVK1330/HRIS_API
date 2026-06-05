@@ -9,6 +9,10 @@ function resolveOvertimeMultiplier(settings) {
   const rule = String(settings.overtime_calculation_rule || '').trim();
   const custom = Number(settings.overtime_custom_multiplier);
 
+  // The Overtime Pay Multiplier (overtime_custom_multiplier) is now the single rate
+  // control in settings — prefer it when set; fall back to the legacy rule string.
+  if (Number.isFinite(custom) && custom > 0) return custom;
+
   const nxMatch = rule.match(/(\d+(?:\.\d+)?)\s*x/i);
   if (nxMatch) {
     const parsed = parseFloat(nxMatch[1]);

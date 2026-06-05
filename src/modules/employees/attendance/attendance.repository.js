@@ -8,7 +8,7 @@ const SELECT_FIELDS = `
   a.employee_id,
   a.check_in_time, a.check_out_time, a.work_mode,
   a.status, a.total_hours, a.worked_hours, a.break_hours,
-  a.overtime_hours, a.late_minutes, a.early_departure_minutes,
+  a.overtime_hours, a.overtime_status, a.late_minutes, a.early_departure_minutes,
   a.is_late, a.early_departure, a.notes, a.leave_type,
   a.holiday_region, a.paid_day,
   a.regularization_status, a.regularization_reason,
@@ -135,7 +135,9 @@ async function getSummary(pool, employeeId, year, month) {
        COUNT(*) FILTER (WHERE status = 'Weekend')::int AS weekends,
        COUNT(*) FILTER (WHERE paid_day = true)::int AS paid_days,
        ROUND(COALESCE(SUM(worked_hours), SUM(total_hours), 0)::numeric, 2) AS total_worked_hours,
-       ROUND(COALESCE(SUM(overtime_hours), 0)::numeric, 2) AS total_overtime_hours,
+       -- Only APPROVED overtime counts toward attendance OT (pending OT is not yet calculated).
+       ROUND(COALESCE(SUM(overtime_hours) FILTER (WHERE overtime_status = 'Approved'), 0)::numeric, 2) AS total_overtime_hours,
+       ROUND(COALESCE(SUM(overtime_hours) FILTER (WHERE overtime_status = 'Pending'), 0)::numeric, 2) AS pending_overtime_hours,
        COUNT(*)::int AS total_days
      FROM attendance
      WHERE employee_id = $1
@@ -393,6 +395,52 @@ async function markOvertimePending(pool, id, client = pool) {
   return rows[0] || null;
 }
 
+/**
+ * Manually record overtime for an employee/date (Add Overtime). Creates the attendance
+ * row if absent (with a neutral Present status) or updates the overtime fields on an
+ * existing row. Does not touch punches. Returns the row with the joined employee name.
+ */
+async function upsertOvertime(pool, {
+  employeeId, date, overtimeHours, status, description, approvedBy, forwarded,
+}) {
+  // Compute timestamps in JS so no SQL parameter is reused in two type contexts
+  // (that triggered "inconsistent types deduced for parameter $4").
+  const approvedAt = status === 'Approved' ? new Date() : null;
+  const forwardedAt = forwarded ? new Date() : null;
+  const { rows } = await pool.query(
+    `INSERT INTO attendance (employee_id, date, work_mode, status, overtime_hours, overtime_status, notes,
+                             overtime_approved_by, overtime_approved_at, overtime_forwarded_at)
+     VALUES ($1::int, $2::date, 'In Office', 'Present', $3::numeric, $4::varchar, $5::text, $6::int, $7::timestamp, $8::timestamp)
+     ON CONFLICT (employee_id, date) DO UPDATE SET
+       overtime_hours        = EXCLUDED.overtime_hours,
+       overtime_status       = EXCLUDED.overtime_status,
+       notes                 = COALESCE(EXCLUDED.notes, attendance.notes),
+       overtime_approved_by  = EXCLUDED.overtime_approved_by,
+       overtime_approved_at  = EXCLUDED.overtime_approved_at,
+       overtime_forwarded_at = COALESCE(EXCLUDED.overtime_forwarded_at, attendance.overtime_forwarded_at),
+       updated_at            = NOW()
+     RETURNING id, employee_id, overtime_hours, overtime_status,
+               TO_CHAR(date, 'YYYY-MM-DD') AS date`,
+    [employeeId, date, overtimeHours, status, description || null, approvedBy || null, approvedAt, forwardedAt],
+  );
+  return rows[0] || null;
+}
+
+/** Sum of Pending+Approved overtime hours for an employee in a month (optionally excluding a date). */
+async function getMonthlyOvertimeHours(pool, employeeId, year, month, excludeDate = null) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(overtime_hours), 0)::float AS total
+     FROM attendance
+     WHERE employee_id = $1
+       AND EXTRACT(YEAR FROM date) = $2
+       AND EXTRACT(MONTH FROM date) = $3
+       AND overtime_status IN ('Pending', 'Approved')
+       AND ($4::date IS NULL OR date <> $4::date)`,
+    [employeeId, year, month, excludeDate],
+  );
+  return Number(rows[0]?.total || 0);
+}
+
 /** Manager approve/reject of a pending overtime record. */
 async function updateOvertimeStatus(pool, id, { status, approvedBy, rejectionReason, forwarded }) {
   const { rows } = await pool.query(
@@ -409,6 +457,41 @@ async function updateOvertimeStatus(pool, id, { status, approvedBy, rejectionRea
     [status, approvedBy || null, rejectionReason || null, !!forwarded, id],
   );
   return rows[0] || null;
+}
+
+/**
+ * All overtime records (any status), scoped to the caller's data scope — the history
+ * that backs the Overtime Management page. Optional status + search filters.
+ */
+async function getOvertimeRecords(pool, { status, search, limit = 100, offset = 0 } = {}, auth) {
+  const conditions = ["COALESCE(a.overtime_status, 'None') <> 'None'", 'COALESCE(a.overtime_hours, 0) > 0', 'e.deleted_at IS NULL'];
+  const params = [];
+  if (status) { params.push(status); conditions.push(`a.overtime_status = $${params.length}`); }
+  if (search) {
+    params.push(`%${search}%`);
+    const n = params.length;
+    conditions.push(`(e.full_name ILIKE $${n} OR e.emp_id ILIKE $${n})`);
+  }
+  const { appendScopeToConditions } = require('../../../utils/applyDataScope');
+  const scoped = appendScopeToConditions(auth, conditions, params, 'e');
+  scoped.params.push(limit, offset);
+  const { rows } = await pool.query(
+    `SELECT a.id, TO_CHAR(a.date, 'YYYY-MM-DD') AS date,
+            a.overtime_hours, a.overtime_status, a.notes AS reason,
+            a.overtime_rejection_reason,
+            TO_CHAR(a.overtime_approved_at, 'YYYY-MM-DD') AS overtime_approved_at,
+            (a.overtime_forwarded_at IS NOT NULL) AS forwarded,
+            e.id AS employee_id, e.full_name AS employee_name, e.emp_id, e.department,
+            app.full_name AS approver_name
+     FROM attendance a
+     JOIN employees e ON e.id = a.employee_id AND e.deleted_at IS NULL
+     LEFT JOIN employees app ON app.id = a.overtime_approved_by
+     WHERE ${scoped.conditions.join(' AND ')}
+     ORDER BY a.date DESC
+     LIMIT $${scoped.params.length - 1} OFFSET $${scoped.params.length}`,
+    scoped.params,
+  );
+  return rows;
 }
 
 /** Pending overtime requests, scoped to the caller's data scope. */
@@ -449,6 +532,9 @@ module.exports = {
   getPayrollSummary,
   markAbsentForDate,
   markOvertimePending,
+  upsertOvertime,
+  getMonthlyOvertimeHours,
   updateOvertimeStatus,
+  getOvertimeRecords,
   getPendingOvertime,
 };

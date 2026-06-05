@@ -54,6 +54,34 @@ async function submitExitRequest(tenant, data, exitUser, file = null) {
   const employeeId = data.employee_id || exitUser.employeeId;
   if (!employeeId) throw ApiError.badRequest('employee_id is required');
 
+  // Authorization: only HR / Org Admin (can terminate) may file an exit for another
+  // employee or record an involuntary termination. A regular employee may ONLY submit
+  // their own voluntary resignation.
+  const isAuthorized = Boolean(exitUser.isOrgExitAdmin || exitUser.canTerminateExit);
+  if (!isAuthorized) {
+    if (!exitUser.employeeId || Number(employeeId) !== Number(exitUser.employeeId)) {
+      throw ApiError.forbidden(
+        'You can only submit a resignation for your own account. Filing an exit for another employee requires HR / administrator access.',
+      );
+    }
+    if (data.exit_type === 'termination' || data.is_voluntary === false) {
+      throw ApiError.forbidden(
+        'Only HR or an authorized administrator can terminate an employee. You can submit a resignation.',
+      );
+    }
+    if (data.termination_type_id) {
+      const { rows: tt } = await pool.query(
+        'SELECT name FROM termination_types WHERE id = $1', [data.termination_type_id],
+      );
+      const name = String(tt[0]?.name || '').toLowerCase();
+      if (/dismiss|terminat|redundan|layoff|involuntary|for cause|fired/.test(name)) {
+        throw ApiError.forbidden(
+          'Only HR or an authorized administrator can record a termination. You can submit a resignation.',
+        );
+      }
+    }
+  }
+
   const { rows: empRows } = await pool.query(
     `SELECT id, full_name, first_name, last_name, work_email, employment_status
      FROM employees WHERE id = $1 AND deleted_at IS NULL`, [employeeId],

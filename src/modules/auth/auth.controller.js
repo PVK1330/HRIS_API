@@ -33,6 +33,15 @@ const resetPassword = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Authenticated self-service password change.
+ */
+const changePassword = asyncHandler(async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  const result = await authService.changePassword(req.user, { currentPassword, newPassword });
+  return ApiResponse.ok(res, result, 'Password updated successfully.');
+});
+
+/**
  * Login
  */
 const login = asyncHandler(async (req, res) => {
@@ -82,6 +91,7 @@ module.exports = {
   forgotPassword,
   verifyOtp,
   resetPassword,
+  changePassword,
   getAccessProfile,
   verifyTwoFactor,
   getMfaStatus,

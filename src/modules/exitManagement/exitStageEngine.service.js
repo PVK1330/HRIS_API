@@ -148,26 +148,41 @@ async function seedStageEntry(client, requestId, stage) {
     [requestId, stage.id],
   );
 
-  // If this stage is IT or Asset Clearance, dynamically fetch employee's assigned assets and insert them as checklist items.
+  // If this stage is IT or Asset Clearance, dynamically fetch the employee's
+  // assigned assets and insert them as checklist items.
   const stageName = (stage.name || '').toLowerCase();
   if (stageName.includes('it clearance') || stageName.includes('asset') || stageName.includes('it admin')) {
     const { rows: reqRows } = await client.query('SELECT employee_id FROM exit_requests WHERE id = $1', [requestId]);
-    if (reqRows.length > 0) {
-      const empId = reqRows[0].employee_id;
+    const empId = reqRows[0]?.employee_id;
+    if (empId) {
+      // CRITICAL: isolate inside a SAVEPOINT. If this asset seeding fails for any
+      // reason (schema differences across tenants, etc.), a bare failed query would
+      // poison the surrounding transaction and make the caller's COMMIT silently roll
+      // back the whole stage-advance — leaving the request stuck. The savepoint lets us
+      // recover and still commit the advance.
+      await client.query('SAVEPOINT seed_assets');
       try {
-        // Query assets assigned to the employee
-        const { rows: assets } = await client.query(`SELECT id, asset_name, asset_code FROM assets WHERE employee_id = $1 AND status = 'ASSIGNED'`, [empId]);
+        const { rows: assets } = await client.query(
+          `SELECT id, asset_id, type, serial_number
+             FROM assets
+            WHERE employee_id = $1
+              AND LOWER(COALESCE(status, '')) NOT IN ('available','returned','retired','disposed','lost')`,
+          [empId],
+        );
         for (const asset of assets) {
+          const name = asset.type || 'Asset';
+          const code = asset.asset_id || asset.serial_number || '';
           await client.query(
             `INSERT INTO exit_request_checklist_items
                (exit_request_id, stage_id, template_item_id, item_type, label, is_mandatory, status)
              VALUES ($1, $2, NULL, 'COLLECT_ASSET', $3, true, 'PENDING')`,
-            [requestId, stage.id, `Collect Asset: ${asset.asset_name} (${asset.asset_code})`]
+            [requestId, stage.id, code ? `Collect Asset: ${name} (${code})` : `Collect Asset: ${name}`],
           );
         }
+        await client.query('RELEASE SAVEPOINT seed_assets');
       } catch (e) {
-        // Fallback or ignore if assets table does not strictly exist
-        console.error('Error fetching assets for clearance', e);
+        await client.query('ROLLBACK TO SAVEPOINT seed_assets');
+        console.error('[exit] asset checklist seeding skipped:', e.message);
       }
     }
   }

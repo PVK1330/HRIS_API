@@ -1230,10 +1230,95 @@ async function getAccessProfile(currentUser) {
   };
 }
 
+/**
+ * Authenticated self-service password change. Verifies the current password and
+ * updates the hash in the correct table for the logged-in user's type
+ * (superadmin / tenant admin / employee).
+ */
+async function changePassword(user, { currentPassword, newPassword } = {}) {
+  if (!currentPassword || !newPassword) {
+    throw ApiError.badRequest('Current and new password are required');
+  }
+  if (String(newPassword).length < 8) {
+    throw ApiError.badRequest('New password must be at least 8 characters');
+  }
+  if (String(currentPassword) === String(newPassword)) {
+    throw ApiError.badRequest('New password must be different from the current password');
+  }
+
+  const userType = String(user?.userType || user?.role || '').toLowerCase();
+  const id = user?.id;
+  if (!id) throw ApiError.unauthorized('Not authenticated');
+
+  const { getTenantPool } = require('../../config/db');
+  let currentHash = null;
+  let applyUpdate = null;
+
+  if (userType === 'superadmin' || userType === 'billing_admin' || userType === 'support_admin') {
+    const { rows } = await superAdminPool.query(
+      'SELECT password_hash FROM public.superadmins WHERE id = $1 LIMIT 1',
+      [id],
+    );
+    currentHash = rows[0]?.password_hash || null;
+    applyUpdate = (hash) =>
+      superAdminPool.query('UPDATE public.superadmins SET password_hash = $1 WHERE id = $2', [hash, id]);
+  } else {
+    const dbName = user?.db_name;
+    if (!dbName) throw ApiError.badRequest('No organization context');
+    const tenantPool = getTenantPool(dbName);
+
+    if (userType === 'employee') {
+      const { rows } = await tenantPool.query(
+        'SELECT password_hash FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1',
+        [id],
+      );
+      currentHash = rows[0]?.password_hash || null;
+      applyUpdate = (hash) =>
+        tenantPool.query('UPDATE employees SET password_hash = $1 WHERE id = $2', [hash, id]);
+    } else {
+      // Tenant admin (admin / hr_admin / billing_admin / support_admin within a tenant).
+      const { rows } = await tenantPool.query(
+        'SELECT password_hash, email FROM admin_users WHERE id = $1 LIMIT 1',
+        [id],
+      );
+      currentHash = rows[0]?.password_hash || null;
+      const adminEmail = rows[0]?.email || null;
+      applyUpdate = async (hash) => {
+        await tenantPool.query('UPDATE admin_users SET password_hash = $1 WHERE id = $2', [hash, id]);
+        // Keep the central tenants row in sync for the primary admin (used at login).
+        if (adminEmail && user?.tenant_id) {
+          const t = await superAdminPool.query(
+            'SELECT admin_email FROM public.tenants WHERE id = $1',
+            [user.tenant_id],
+          );
+          const primary = t.rows[0]?.admin_email;
+          if (primary && normalizeLoginId(primary) === normalizeLoginId(adminEmail)) {
+            await superAdminPool.query('UPDATE public.tenants SET password_hash = $1 WHERE id = $2', [
+              hash,
+              user.tenant_id,
+            ]);
+          }
+        }
+      };
+    }
+  }
+
+  if (!currentHash) throw ApiError.notFound('Account not found');
+
+  const ok = await comparePassword(currentPassword, currentHash);
+  if (!ok) throw ApiError.badRequest('Current password is incorrect');
+
+  const newHash = await hashPassword(newPassword);
+  await applyUpdate(newHash);
+
+  return { message: 'Password updated successfully.' };
+}
+
 module.exports = {
   requestPasswordReset,
   verifyOTP,
   resetPassword,
+  changePassword,
   verify2FA,
   verifyMfaLogin,
   login,

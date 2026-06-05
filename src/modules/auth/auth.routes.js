@@ -86,6 +86,18 @@ router.post(
   controller.verifyTwoFactor,
 );
 
+/* --- Authenticated self-service password change --- */
+router.post(
+  '/change-password',
+  authenticate,
+  [
+    body('currentPassword').notEmpty().withMessage('Current password is required'),
+    body('newPassword').isLength({ min: 8 }).withMessage('New password must be at least 8 characters'),
+  ],
+  validate,
+  controller.changePassword,
+);
+
 router.get('/access-profile', authenticate, controller.getAccessProfile);
 
 /* --- Self-service MFA enrollment --- */

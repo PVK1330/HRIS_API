@@ -22,6 +22,9 @@ const lettersRepo = require('../letters/letters.repository');
 
 const EXIT_CATEGORY = 'Exit';
 const ATTACHMENT_TYPE = 'GENERATED_DOC'; // must match chk_exit_attachment_type (migration 080)
+// The cover template is the EMAIL wrapper (uses {{document_list}}), not a deliverable
+// document — it must never be generated as a standalone PDF.
+const COVER_TEMPLATE_NAME = 'Exit Documents Cover';
 
 function fmtDate(d) {
   if (!d) return '';
@@ -36,7 +39,9 @@ async function listTemplates(tenant) {
   const rows = await lettersRepo.findAllTemplates(pool, {
     category: EXIT_CATEGORY, status: 'Active', limit: 100, offset: 0,
   });
-  return rows.map((r) => ({ id: r.id, name: r.name, type: r.type, description: r.description }));
+  return rows
+    .filter((r) => String(r.name).trim().toLowerCase() !== COVER_TEMPLATE_NAME.toLowerCase())
+    .map((r) => ({ id: r.id, name: r.name, type: r.type, description: r.description }));
 }
 
 /** Documents already generated for this exit request (for re-download). */
@@ -136,7 +141,10 @@ async function generate(tenant, requestId, dto, actor) {
   for (const tplId of templateIds) {
     const tpl = await lettersRepo.findTemplateById(pool, tplId);
     if (!tpl) continue; // skip unknown / deleted templates silently
-    const renderedBody = replacePlaceholders(tpl.body || '', tagMap);
+    // The cover is the email wrapper, never a generated PDF (it uses {{document_list}}).
+    if (String(tpl.name).trim().toLowerCase() === COVER_TEMPLATE_NAME.toLowerCase()) continue;
+    // Safety: ensure {{document_list}} never renders literally in a generated document.
+    const renderedBody = replacePlaceholders(tpl.body || '', { document_list: '', ...tagMap });
     const pdfBuffer = await generatePdfFromHtml(renderedBody, company);
 
     const stamp = new Date().toISOString().replace(/[^0-9]/g, '');
@@ -240,13 +248,17 @@ async function generate(tenant, requestId, dto, actor) {
   };
 }
 
-/** Resolve the on-disk path for a stored generated document (download endpoint). */
+/**
+ * Resolve the on-disk path for any stored attachment of this request (download
+ * endpoint). Serves generated documents AND employee-uploaded files (e.g. the
+ * resignation letter). Access is enforced by the route's authorizeExitAccess.
+ */
 async function getDownload(tenant, requestId, attachmentId) {
   const pool = await getTenantPool(tenant.dbName);
   const { rows } = await pool.query(
     `SELECT file_url, file_name, mime_type FROM exit_request_attachments
-     WHERE id = $1 AND exit_request_id = $2 AND attachment_type = $3`,
-    [attachmentId, requestId, ATTACHMENT_TYPE],
+     WHERE id = $1 AND exit_request_id = $2`,
+    [attachmentId, requestId],
   );
   if (!rows.length) throw ApiError.notFound('Document not found');
   const row = rows[0];

@@ -70,6 +70,48 @@ const getAllCompetencies = asyncHandler(async (req, res) => {
 });
 
 /**
+ * PUT /api/competencies/:id
+ * Update a competency's name
+ */
+const updateCompetency = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { competencyName } = req.body;
+
+  if (!competencyName || !competencyName.trim()) {
+    throw ApiError.badRequest('Competency name is required');
+  }
+
+  const pool = getTenantDbPool(req.user);
+  const competencyId = parseInt(id, 10);
+  if (isNaN(competencyId)) {
+    throw ApiError.badRequest('Invalid competency ID');
+  }
+
+  const existing = await Competency.findById(pool, competencyId);
+  if (!existing) {
+    throw ApiError.notFound('Competency not found');
+  }
+
+  const name = competencyName.trim();
+
+  // Prevent renaming to a name already used by another competency
+  const dup = await Competency.findOneByName(pool, name);
+  if (dup && dup.id !== competencyId) {
+    throw ApiError.conflict('Competency name already exists');
+  }
+
+  const updated = await Competency.update(pool, competencyId, name, req.user.id);
+
+  const formatted = {
+    id: updated.id,
+    name: updated.competencyName,
+    createdAt: updated.createdAt ? new Date(updated.createdAt).toISOString().split('T')[0] : null,
+  };
+
+  return ApiResponse.ok(res, formatted, 'Competency updated successfully');
+});
+
+/**
  * DELETE /api/competencies/:id
  * Delete a selected competency
  */
@@ -106,6 +148,7 @@ const getSummary = asyncHandler(async (req, res) => {
 module.exports = {
   createCompetency,
   getAllCompetencies,
+  updateCompetency,
   deleteCompetency,
   getSummary,
 };

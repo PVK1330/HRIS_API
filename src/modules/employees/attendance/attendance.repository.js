@@ -441,6 +441,56 @@ async function getMonthlyOvertimeHours(pool, employeeId, year, month, excludeDat
   return Number(rows[0]?.total || 0);
 }
 
+/** Edit a still-Pending overtime entry (hours and/or reason). No-op if already processed. */
+async function updateOvertimeFields(pool, id, { overtimeHours, description }) {
+  const sets = ['updated_at = NOW()'];
+  const params = [];
+  if (overtimeHours !== undefined) {
+    params.push(overtimeHours);
+    sets.push(`overtime_hours = $${params.length}::numeric`);
+  }
+  if (description !== undefined) {
+    params.push(description);
+    sets.push(`notes = $${params.length}`);
+  }
+  params.push(id);
+  const { rows } = await pool.query(
+    `UPDATE attendance SET ${sets.join(', ')}
+     WHERE id = $${params.length} AND overtime_status = 'Pending'
+     RETURNING id, employee_id, overtime_hours, overtime_status, TO_CHAR(date, 'YYYY-MM-DD') AS date`,
+    params,
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Remove a pending overtime entry. If the attendance row exists only for the overtime
+ * (no punches), delete the row; otherwise just clear the overtime fields.
+ */
+async function deleteOvertimeRecord(pool, id) {
+  const { rows } = await pool.query(
+    `SELECT id, check_in_time, check_out_time FROM attendance WHERE id = $1`,
+    [id],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const isOvertimeOnly = !row.check_in_time && !row.check_out_time;
+  if (isOvertimeOnly) {
+    await pool.query(`DELETE FROM attendance WHERE id = $1 AND overtime_status = 'Pending'`, [id]);
+  } else {
+    await pool.query(
+      `UPDATE attendance
+         SET overtime_hours = 0, overtime_status = 'None',
+             overtime_approved_by = NULL, overtime_approved_at = NULL,
+             overtime_rejection_reason = NULL, overtime_forwarded_at = NULL,
+             updated_at = NOW()
+       WHERE id = $1 AND overtime_status = 'Pending'`,
+      [id],
+    );
+  }
+  return { id, removed: isOvertimeOnly };
+}
+
 /** Manager approve/reject of a pending overtime record. */
 async function updateOvertimeStatus(pool, id, { status, approvedBy, rejectionReason, forwarded }) {
   const { rows } = await pool.query(
@@ -533,6 +583,8 @@ module.exports = {
   markAbsentForDate,
   markOvertimePending,
   upsertOvertime,
+  updateOvertimeFields,
+  deleteOvertimeRecord,
   getMonthlyOvertimeHours,
   updateOvertimeStatus,
   getOvertimeRecords,

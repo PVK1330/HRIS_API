@@ -64,6 +64,16 @@ const overtimeRecords = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, 'Overtime records retrieved');
 });
 
+const updateOvertime = asyncHandler(async (req, res) => {
+  const data = await service.updateOvertime(req.auth, req.user, req.params.id, req.body);
+  return ApiResponse.ok(res, { record: data }, 'Overtime updated');
+});
+
+const deleteOvertime = asyncHandler(async (req, res) => {
+  const data = await service.deleteOvertime(req.auth, req.user, req.params.id);
+  return ApiResponse.ok(res, data, 'Overtime deleted');
+});
+
 const payrollSummary = asyncHandler(async (req, res) => {
   const data = await service.getPayrollSummary(req.auth, req.user, req.query);
   return ApiResponse.ok(res, data, 'Payroll attendance summary retrieved');
@@ -133,6 +143,8 @@ module.exports = {
   overtimeRecords,
   processOvertime,
   createOvertime,
+  updateOvertime,
+  deleteOvertime,
   payrollSummary,
   detail,
   myToday,

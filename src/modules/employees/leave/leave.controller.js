@@ -10,6 +10,12 @@ const list = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, 'Leave data retrieved successfully');
 });
 
+// GET /api/v1/leave/types
+const getTypes = asyncHandler(async (req, res) => {
+  const data = await service.getActiveLeaveTypes(req.user);
+  return ApiResponse.ok(res, data, 'Active leave types retrieved');
+});
+
 // GET /api/v1/leave
 const listAll = asyncHandler(async (req, res) => {
   const data = await service.listLeave(req.user, req.auth, req.query);
@@ -40,4 +46,4 @@ const carryForward = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, 'Leave carry-forward processed');
 });
 
-module.exports = { list, listAll, apply, process, balances, carryForward };
+module.exports = { list, getTypes, listAll, apply, process, balances, carryForward };

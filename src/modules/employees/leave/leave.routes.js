@@ -29,6 +29,8 @@ const adminRouter = Router();
 adminRouter.use(authenticate, loadAuthContext);
 adminRouter.use(requirePermission(P.LEAVE_VIEW));
 
+adminRouter.get('/types', ctrl.getTypes);
+
 adminRouter.get('/balances', [
   query('year').optional().isInt({ min: 2000, max: 2100 }),
   query('department').optional().isString().trim(),

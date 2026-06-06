@@ -90,21 +90,40 @@ adminRouter.get('/overtime', anyViewPermission(), [
   query('limit').optional().isInt({ min: 1, max: 200 }),
 ], validate, ctrl.overtimeRecords);
 
-// Add Overtime — manage/approve gated; data scope is enforced in the service.
+// Add Overtime — managers add for their scope; employees (attendance.create) add for
+// THEMSELVES only. Data scope + self-restriction are enforced in the service.
 adminRouter.post('/overtime', requireAnyPermission(
   P.ATTENDANCE_MANAGE,
   P.ATTENDANCE_APPROVE,
+  P.ATTENDANCE_CREATE,
 ), [
-  body('employeeId').isInt({ min: 1 }),
+  body('employeeId').optional().isInt({ min: 1 }),
   body('date').isDate(),
   body('overtimeHours').isFloat({ gt: 0 }),
   body('description').optional({ nullable: true }).isString().trim(),
   body('status').optional().isIn(['Pending', 'Approved', 'Rejected']),
 ], validate, ctrl.createOvertime);
+
+// Edit / delete a still-Pending overtime entry (locked once approved/rejected).
+adminRouter.patch('/overtime/:id', requireAnyPermission(
+  P.ATTENDANCE_MANAGE,
+  P.ATTENDANCE_APPROVE,
+), [
+  param('id').isInt({ min: 1 }),
+  body('overtimeHours').optional().isFloat({ gt: 0 }),
+  body('description').optional({ nullable: true }).isString().trim(),
+], validate, ctrl.updateOvertime);
+
+adminRouter.delete('/overtime/:id', requireAnyPermission(
+  P.ATTENDANCE_MANAGE,
+  P.ATTENDANCE_APPROVE,
+), [
+  param('id').isInt({ min: 1 }),
+], validate, ctrl.deleteOvertime);
 adminRouter.get('/regularizations/history', anyViewPermission(), [
   query('status').optional().isIn(['Pending', 'Approved', 'Rejected']),
   query('page').optional().isInt({ min: 1 }),
-  query('limit').optional().isInt({ min: 1, max: 100 }),
+  query('limit').optional().isInt({ min: 1, max: 200 }),
 ], validate, ctrl.regularizationHistory);
 
 adminRouter.get('/payroll-summary', anyViewPermission(), [

@@ -30,13 +30,14 @@ async function findRequests(pool, employeeId, { status, year, limit = 20, offset
   return rows;
 }
 
-async function findAllRequests(pool, { status, year, department, search, limit = 50, offset = 0 } = {}, auth = null) {
+async function findAllRequests(pool, { status, year, department, search, leaveType, limit = 50, offset = 0 } = {}, auth = null) {
   const conditions = ['e.deleted_at IS NULL'];
   const params = [];
 
   if (status)     { params.push(status);     conditions.push(`lr.status = $${params.length}`); }
   if (year)       { params.push(year);       conditions.push(`EXTRACT(YEAR FROM lr.from_date) = $${params.length}`); }
   if (department) { params.push(department); conditions.push(`e.department = $${params.length}`); }
+  if (leaveType)  { params.push(leaveType);  conditions.push(`lr.leave_type = $${params.length}`); }
   if (search) {
     params.push(`%${search}%`);
     const n = params.length;
@@ -74,13 +75,14 @@ async function findAllRequests(pool, { status, year, department, search, limit =
   return rows;
 }
 
-async function countAllRequests(pool, { status, year, department, search } = {}, auth = null) {
+async function countAllRequests(pool, { status, year, department, search, leaveType } = {}, auth = null) {
   const conditions = ['e.deleted_at IS NULL'];
   const params = [];
 
   if (status)     { params.push(status);     conditions.push(`lr.status = $${params.length}`); }
   if (year)       { params.push(year);       conditions.push(`EXTRACT(YEAR FROM lr.from_date) = $${params.length}`); }
   if (department) { params.push(department); conditions.push(`e.department = $${params.length}`); }
+  if (leaveType)  { params.push(leaveType);  conditions.push(`lr.leave_type = $${params.length}`); }
   if (search) {
     params.push(`%${search}%`);
     const n = params.length;

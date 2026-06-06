@@ -10,6 +10,7 @@ const { sendSystemNotification } = require('../../notifications/notifications.se
 const { hasPermission } = require('../../../services/authz.service');
 const { P } = require('../../../constants/permissions');
 const { assertEmployeeRecordAccess } = require('../../../utils/applyDataScope');
+const leaveSettingsService = require('../../leaveSettings/leaveSettings.service');
 
 const _cache = new Map();
 async function ensureMigrated(dbName) {
@@ -90,6 +91,7 @@ async function listLeave(user, auth, query = {}) {
     status:     query.status     || '',
     year,
     department: query.department || '',
+    leaveType:  query.leaveType  || '',
     search:     query.search     || '',
     limit,
     offset,
@@ -102,6 +104,12 @@ async function listLeave(user, auth, query = {}) {
   ]);
 
   return { requests, total, stats, year, limit, page: Math.max(1, parseInt(query.page, 10) || 1) };
+}
+
+async function getActiveLeaveTypes(user) {
+  const dbName = user.db_name || user.tenantDb;
+  const result = await leaveSettingsService.getAllLeaveTypes(dbName);
+  return { leaveTypes: result.leaveTypes.filter(t => t.isActive) };
 }
 
 // ─── Admin: POST /leave ───────────────────────────────────────────────────────
@@ -536,6 +544,7 @@ async function runCarryForward(user, { year } = {}) {
 module.exports = {
   getLeave,
   listLeave,
+  getActiveLeaveTypes,
   applyLeave,
   processLeave,
   listBalances,

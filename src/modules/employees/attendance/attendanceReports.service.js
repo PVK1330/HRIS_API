@@ -372,7 +372,7 @@ async function getRegularizationHistory(pool, query, auth) {
     conditions.push(`a.regularization_status = $${params.length}`);
   }
   const scoped = appendScopeToConditions(auth, conditions, params, 'e');
-  const limit = Math.min(100, parseInt(query.limit, 10) || 50);
+  const limit = Math.min(200, parseInt(query.limit, 10) || 50);
   const offset = (Math.max(1, parseInt(query.page, 10) || 1) - 1) * limit;
   scoped.params.push(limit, offset);
 

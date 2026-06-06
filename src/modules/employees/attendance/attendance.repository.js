@@ -289,7 +289,7 @@ async function updateRegularization(client, id, patch) {
     `UPDATE attendance
      SET regularization_status = $1,
          approved_by = $2,
-         approved_at = CASE WHEN $1 IN ('Approved','Rejected') THEN NOW() ELSE approved_at END,
+         approved_at = CASE WHEN $1::text IN ('Approved','Rejected') THEN NOW() ELSE approved_at END,
          regularization_remarks = COALESCE($3, regularization_remarks),
          regularized_by = $2,
          regularized_at = NOW(),

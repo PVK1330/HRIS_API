@@ -187,8 +187,13 @@ async function runReport(pool, reportType, scoped, query) {
               rs.approver_role AS pending_approver_role
        FROM attendance a
        JOIN employees e ON e.id = a.employee_id
-       LEFT JOIN attendance_regularization_steps rs
-         ON rs.attendance_id = a.id AND rs.status = 'Pending'
+       LEFT JOIN LATERAL (
+         SELECT approver_role
+         FROM attendance_regularization_steps
+         WHERE attendance_id = a.id AND status = 'Pending'
+         ORDER BY level ASC
+         LIMIT 1
+       ) rs ON true
        WHERE ${where}
          AND a.regularization_status NOT IN ('N/A', '')
        ORDER BY a.date DESC
@@ -384,8 +389,13 @@ async function getRegularizationHistory(pool, query, auth) {
             e.full_name AS employee_name, e.emp_id, e.department
      FROM attendance a
      JOIN employees e ON e.id = a.employee_id
-     LEFT JOIN attendance_regularization_steps rs
-       ON rs.attendance_id = a.id AND rs.status = 'Pending'
+     LEFT JOIN LATERAL (
+       SELECT level, approver_role
+       FROM attendance_regularization_steps
+       WHERE attendance_id = a.id AND status = 'Pending'
+       ORDER BY level ASC
+       LIMIT 1
+     ) rs ON true
      WHERE ${scoped.conditions.join(' AND ')}
      ORDER BY a.updated_at DESC
      LIMIT $${scoped.params.length - 1} OFFSET $${scoped.params.length}`,

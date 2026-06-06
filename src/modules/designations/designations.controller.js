@@ -51,6 +51,11 @@ const listByDepartment = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, rows, 'Designations retrieved successfully');
 });
 
+const listByDepartmentId = asyncHandler(async (req, res) => {
+  const rows = await service.listDesignationsByDepartmentId(req.tenant, req.params.deptId);
+  return ApiResponse.ok(res, rows, 'Designations retrieved successfully');
+});
+
 const getOne = asyncHandler(async (req, res) => {
   const designation = await service.getDesignation(req.tenant, req.params.id);
   return ApiResponse.ok(res, designation, 'Designation retrieved successfully');
@@ -79,6 +84,7 @@ module.exports = {
   filterOptions,
   exportList,
   listByDepartment,
+  listByDepartmentId,
   getOne,
   create,
   update,

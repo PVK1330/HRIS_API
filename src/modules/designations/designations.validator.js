@@ -56,6 +56,10 @@ const deptNameParam = Joi.object({
   deptName: Joi.string().min(1).max(255).required(),
 });
 
+const deptIdParam = Joi.object({
+  deptId: Joi.number().integer().positive().required(),
+});
+
 module.exports = {
   idParam,
   listingQuery,
@@ -63,4 +67,5 @@ module.exports = {
   createBody,
   updateBody,
   deptNameParam,
+  deptIdParam,
 };

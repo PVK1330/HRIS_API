@@ -238,11 +238,18 @@ async function applyLeave(user, auth, data) {
     }
   }
 
-  // 8. Determine initial status — auto_approval skips Pending
+  // 8. Determine initial status — auto_approval skips Pending;
+  //    if the employee has no reporting manager, skip directly to Dept Approval stage.
   const autoApprove = Boolean(leaveTypeCfg.auto_approval);
   let initialStatus = 'Pending Manager Approval';
-  if (data.isDraft) initialStatus = 'Draft';
-  else if (autoApprove) initialStatus = 'Approved';
+  if (data.isDraft) {
+    initialStatus = 'Draft';
+  } else if (autoApprove) {
+    initialStatus = 'Approved';
+  } else if (!emp.reporting_manager_id) {
+    // Escalation: no manager → Department Head is first approver.
+    initialStatus = 'Pending Dept Approval';
+  }
 
   // 9 + 10. Insert request, and (if auto-approved) deduct balance — atomically and
   // under a row lock so concurrent applies can't both pass the balance check and
@@ -321,18 +328,27 @@ async function applyLeave(user, auth, data) {
 
 // ─── Admin: PATCH /leave/:id ──────────────────────────────────────────────────
 
-// Roles permitted to give the FINAL (HR) approval. Tenant admins / superadmins act as HR.
+// Roles permitted to give the FINAL (HR) approval.
 const HR_ROLES = new Set(['admin', 'superadmin', 'hr_admin', 'hr_executive', 'hr']);
 function isHrActor(user) {
   return HR_ROLES.has(String(user?.role || '').toLowerCase());
 }
 
+function isDeptActor(user) {
+  return user?.scope === 'DEPARTMENT'
+    || user?.scope === 'DEPT_MANAGER'
+    || isHrActor(user);   // HR can always act as dept
+}
+
 /**
- * Two-stage approval workflow:
- *   Pending          --approve(manager)-->  Manager_Approved
- *   Manager_Approved --approve(HR)------->  Approved   (balance deducted here, HR-only)
- *   Any Stage Before Approved --reject--> Rejected
- *   Any Stage --cancel--> Cancelled (restore balance if was Approved)
+ * Three-stage leave approval workflow.
+ *
+ * Pending Manager Approval → (manager approves) → Pending Dept Approval
+ * Pending Dept Approval    → (dept approves)    → Pending HR Approval
+ * Pending HR Approval      → (HR approves)      → Approved  (balance deducted here)
+ *
+ * Rejection terminates the chain at any stage.
+ * If no reporting manager: initial status is "Pending Dept Approval" (escalation).
  */
 async function processLeave(user, auth, id, { action, reason }) {
   const pool = getPool(user);
@@ -354,8 +370,6 @@ async function processLeave(user, auth, id, { action, reason }) {
     if (!hasPermission(auth, P.LEAVE_APPROVE)) {
       throw ApiError.forbidden('Leave approval permission required');
     }
-    // SECURITY: segregation of duties — an approver may never approve/reject their
-    // own leave request, even with LEAVE_APPROVE (mirrors attendance self-approval guard).
     if (isOwnRequest) {
       throw ApiError.forbidden('You cannot approve or reject your own leave request');
     }
@@ -364,23 +378,37 @@ async function processLeave(user, auth, id, { action, reason }) {
   }
 
   let newStatus;
-  let stage; // 'manager' | 'hr' | undefined
+  let stage; // 'manager' | 'dept' | 'hr' | undefined
 
   if (action === 'submit') {
     if (request.status !== 'Draft') {
       throw ApiError.badRequest(`Cannot submit a request with status "${request.status}"`);
     }
-    newStatus = 'Pending Manager Approval';
+    // Escalation on submit — re-check manager assignment at processing time too.
+    newStatus = emp.reporting_manager_id
+      ? 'Pending Manager Approval'
+      : 'Pending Dept Approval';
+
   } else if (action === 'approve') {
     if (request.status === 'Pending Manager Approval') {
-      // Stage 1 — manager approval
-      if (user.role === 'manager' && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)) {
+      // Stage 1 — Reporting Manager
+      if (
+        user.role === 'manager'
+        && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)
+      ) {
         throw ApiError.forbidden('You can only approve requests for your direct reports.');
       }
-      newStatus = 'Pending HR Approval';
+      newStatus = 'Pending Dept Approval';
       stage = 'manager';
+    } else if (request.status === 'Pending Dept Approval') {
+      // Stage 2 — Department Head
+      if (!isDeptActor(user)) {
+        throw ApiError.forbidden('Department head role required for this approval stage');
+      }
+      newStatus = 'Pending HR Approval';
+      stage = 'dept';
     } else if (request.status === 'Pending HR Approval') {
-      // Stage 2 — HR final approval. Restricted to HR/admin roles.
+      // Stage 3 — HR final approval
       if (!isHrActor(user)) {
         throw ApiError.forbidden('Final approval requires an HR or admin role');
       }
@@ -389,12 +417,21 @@ async function processLeave(user, auth, id, { action, reason }) {
     } else {
       throw ApiError.badRequest(`Cannot approve a request with status "${request.status}"`);
     }
+
   } else if (action === 'reject') {
     if (request.status === 'Pending Manager Approval') {
-      if (user.role === 'manager' && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)) {
+      if (
+        user.role === 'manager'
+        && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)
+      ) {
         throw ApiError.forbidden('You can only reject requests for your direct reports.');
       }
       newStatus = 'Rejected by Manager';
+    } else if (request.status === 'Pending Dept Approval') {
+      if (!isDeptActor(user)) {
+        throw ApiError.forbidden('Department head role required to reject at this stage');
+      }
+      newStatus = 'Rejected by Dept';
     } else if (request.status === 'Pending HR Approval') {
       if (!isHrActor(user)) {
         throw ApiError.forbidden('Final rejection requires an HR or admin role');
@@ -403,14 +440,19 @@ async function processLeave(user, auth, id, { action, reason }) {
     } else {
       throw ApiError.badRequest(`Cannot reject a request with status "${request.status}"`);
     }
+
   } else { // cancel
-    if (!['Pending Manager Approval', 'Pending HR Approval', 'Approved', 'Draft'].includes(request.status)) {
+    const cancellable = [
+      'Pending Manager Approval', 'Pending Dept Approval',
+      'Pending HR Approval', 'Approved', 'Draft',
+    ];
+    if (!cancellable.includes(request.status)) {
       throw ApiError.badRequest(`Cannot cancel a request with status "${request.status}"`);
     }
     newStatus = 'Cancelled';
   }
 
-  // Transaction for updating status and balances atomically
+  // Transaction: update status and balance atomically.
   const client = await pool.connect();
   let updated;
   try {
@@ -421,9 +463,10 @@ async function processLeave(user, auth, id, { action, reason }) {
       stage,
       actorId:         user.id,
       rejectionReason: reason || null,
+      remarks:         reason || null,
     });
 
-    // ── Balance logic — only the FINAL approval consumes balance ────────────────
+    // Balance: only the FINAL HR approval deducts; cancelling an Approved leave restores it.
     const leaveTypeCfg = await repo.findActiveLeaveType(client, request.leave_type);
     const isUnpaid     = leaveTypeCfg?.paid_or_unpaid === 'Unpaid';
 
@@ -432,8 +475,6 @@ async function processLeave(user, auth, id, { action, reason }) {
       const annualDays = leaveTypeCfg?.annual_entitlement_days ?? 0;
 
       if (newStatus === 'Approved') {
-        // Deduct days — leave is now consuming the balance. Lock the row first so two
-        // concurrent final approvals can't both read a stale `used` and under-deduct.
         const balance = await repo.lockBalanceForUpdate(
           client, request.employee_id, request.leave_type, year, annualDays
         );
@@ -446,14 +487,11 @@ async function processLeave(user, auth, id, { action, reason }) {
         }
         await repo.incrementUsed(client, request.employee_id, request.leave_type, year, request.total_days);
       } else if (newStatus === 'Cancelled' && request.status === 'Approved') {
-        // Restore days — previously approved leave is being cancelled. Atomic decrement
-        // (clamped at 0) under lock, symmetric with the deduction above.
         await repo.lockBalanceForUpdate(
           client, request.employee_id, request.leave_type, year, annualDays
         );
         await repo.incrementUsed(client, request.employee_id, request.leave_type, year, -request.total_days);
       }
-      // Reject, or cancel before final approval → no balance change (never deducted).
     }
 
     await client.query('COMMIT');
@@ -464,26 +502,31 @@ async function processLeave(user, auth, id, { action, reason }) {
     client.release();
   }
 
-  // Send Workflow Notifications (Outside transaction)
+  // Notifications (outside transaction).
   if (action === 'submit') {
     await sendSystemNotification(user, {
       forAdmin: true,
       title: 'New Leave Request',
-      message: `A draft leave request for ${request.leave_type} (${request.total_days} days) has been submitted for manager approval.`,
-      type: 'leave_request',
-      entityType: 'leave',
-      entityId: request.id,
+      message: `A draft leave request for ${request.leave_type} (${request.total_days} days) has been submitted.`,
+      type: 'leave_request', entityType: 'leave', entityId: request.id,
       redirectUrl: '/admin/attendance/dashboard'
     }).catch(err => console.error(err));
+
   } else if (action === 'approve') {
-    if (newStatus === 'Pending HR Approval') {
+    if (newStatus === 'Pending Dept Approval') {
+      await sendSystemNotification(user, {
+        forAdmin: true,
+        title: 'Leave Pending Department Approval',
+        message: `Leave request for ${request.leave_type} (${request.total_days} days) approved by manager — awaiting department head.`,
+        type: 'leave_request', entityType: 'leave', entityId: request.id,
+        redirectUrl: '/admin/attendance/dashboard'
+      }).catch(err => console.error(err));
+    } else if (newStatus === 'Pending HR Approval') {
       await sendSystemNotification(user, {
         forAdmin: true,
         title: 'Leave Pending HR Approval',
-        message: `Leave request for ${request.leave_type} (${request.total_days} days) has been approved by the manager and awaits HR final approval.`,
-        type: 'leave_request',
-        entityType: 'leave',
-        entityId: request.id,
+        message: `Leave request for ${request.leave_type} (${request.total_days} days) approved by department — awaiting HR final approval.`,
+        type: 'leave_request', entityType: 'leave', entityId: request.id,
         redirectUrl: '/admin/attendance/dashboard'
       }).catch(err => console.error(err));
     } else if (newStatus === 'Approved') {
@@ -491,9 +534,7 @@ async function processLeave(user, auth, id, { action, reason }) {
         employeeId: request.employee_id,
         title: 'Leave Approved',
         message: `Your leave request for ${request.leave_type} (${request.total_days} days) has been fully approved!`,
-        type: 'leave_approved',
-        entityType: 'leave',
-        entityId: request.id,
+        type: 'leave_approved', entityType: 'leave', entityId: request.id,
         redirectUrl: '/attendance'
       }).catch(err => console.error(err));
     }
@@ -502,9 +543,7 @@ async function processLeave(user, auth, id, { action, reason }) {
       employeeId: request.employee_id,
       title: 'Leave Rejected',
       message: `Your leave request for ${request.leave_type} was rejected. Reason: ${reason || 'Not provided'}`,
-      type: 'leave_rejected',
-      entityType: 'leave',
-      entityId: request.id,
+      type: 'leave_rejected', entityType: 'leave', entityId: request.id,
       redirectUrl: '/attendance'
     }).catch(err => console.error(err));
   }

@@ -526,6 +526,12 @@ async function submitRegularization(auth, user, body, req) {
   const dateStr = body.date;
   if (!dateStr) throw ApiError.badRequest('date required');
 
+  // Escalation: if the employee has no reporting manager, skip directly to Manager_Approved
+  // so the Department Head becomes the first effective approver.
+  const emp = await authz.loadEmployee(pool, Number(employeeId));
+  const hasManager = !!(emp?.reporting_manager_id);
+  const initialRegStatus = hasManager ? 'Pending' : 'Manager_Approved';
+
   const computed = await buildComputedRecord(pool, employeeId, dateStr, {
     checkInTime: body.checkInTime,
     checkOutTime: body.checkOutTime,
@@ -536,13 +542,10 @@ async function submitRegularization(auth, user, body, req) {
   try {
     await client.query('BEGIN');
     const sanitized = integrity.sanitizeMetrics(
-      {
-        ...computed,
-        status: 'Regularization Pending',
-      },
+      { ...computed, status: 'Regularization Pending' },
       body.checkInTime,
       body.checkOutTime,
-      'Pending',
+      initialRegStatus,
     );
 
     const record = await repo.upsert(pool, {
@@ -561,14 +564,13 @@ async function submitRegularization(auth, user, body, req) {
       isLate: sanitized.is_late,
       earlyDeparture: sanitized.early_departure,
       notes: normalizeNotes(body.notes),
-      regularizationStatus: 'Pending',
+      regularizationStatus: initialRegStatus,
       regularizationReason: body.reason,
       requestedBy: actorEmployeeId(user),
-      currentApprovalLevel: 1,
+      currentApprovalLevel: hasManager ? 1 : 2,
       updatedBy: actorEmployeeId(user),
     }, client);
 
-    await approval.createSteps(client, record.id, settings);
     await client.query('COMMIT');
 
     const full = await repo.findById(pool, record.id);
@@ -582,12 +584,9 @@ async function submitRegularization(auth, user, body, req) {
       ...meta,
     });
 
-    // Post-commit notification — never fail an already-committed regularization on a
-    // notification error. notifyRegSubmitted already alerts the reporting manager (the
-    // first-level approver in the regularization chain).
     try {
       await notify.notifyRegSubmitted(pool, user.db_name, {
-        employeeId: employeeId,
+        employeeId,
         date: dateStr,
         entityId: record.id,
       });
@@ -691,8 +690,12 @@ async function getOvertimeRecords(auth, user, query = {}) {
 }
 
 /**
- * Manager approve/reject of a pending overtime record. On approval the overtime is
- * forwarded to the employee's department for further processing.
+ * Three-stage overtime approval workflow.
+ *
+ * Stage 1 (Pending)          → Reporting Manager (or Dept Head if no manager) → Manager_Approved
+ * Stage 2 (Manager_Approved) → Department Head                                 → Dept_Approved
+ * Stage 3 (Dept_Approved)    → HR / Admin                                      → Approved
+ * Any stage with action='reject'                                                → Rejected
  */
 async function processOvertime(auth, user, id, { action, reason }, req) {
   const pool = getPool(user);
@@ -700,58 +703,80 @@ async function processOvertime(auth, user, id, { action, reason }, req) {
 
   const record = await repo.findById(pool, id);
   if (!record) throw ApiError.notFound('Attendance record not found');
-  if (record.overtime_status !== 'Pending') {
+
+  const actionableStatuses = ['Pending', 'Manager_Approved', 'Dept_Approved'];
+  if (!actionableStatuses.includes(record.overtime_status)) {
     throw ApiError.badRequest('No pending overtime approval for this record');
   }
-  // SECURITY: segregation of duties — no one may approve/reject their own overtime,
-  // even tenant admins / managers (mirrors the regularization workflow guard).
+
+  // Segregation of duties — no self-approval at any stage.
   authz.assertNotSelfApproval(auth, record, 'overtime request');
-  await authz.assertCanModifyEmployee(auth, pool, Number(record.employee_id));
+
+  const emp = await authz.loadEmployee(pool, record.employee_id);
+  if (!emp) throw ApiError.notFound('Employee not found');
+
+  // Scope-based stage authorization.
+  authz.assertCanActOnStage(auth, record.overtime_status, emp, action, 'overtime');
 
   const approverId = actorEmployeeId(user);
-  const newStatus = action === 'approve' ? 'Approved' : 'Rejected';
+
+  // Determine stage label and next status.
+  let stage, newStatus;
+  if (record.overtime_status === 'Pending') {
+    stage = 'manager';
+    newStatus = action === 'approve' ? 'Manager_Approved' : 'Rejected';
+  } else if (record.overtime_status === 'Manager_Approved') {
+    stage = 'dept';
+    newStatus = action === 'approve' ? 'Dept_Approved' : 'Rejected';
+  } else {
+    stage = 'hr';
+    newStatus = action === 'approve' ? 'Approved' : 'Rejected';
+  }
 
   const updated = await repo.updateOvertimeStatus(pool, id, {
     status:          newStatus,
-    approvedBy:      approverId,
+    stage,
+    actorId:         approverId,
+    remarks:         action === 'approve' ? (reason || null) : null,
     rejectionReason: action === 'reject' ? (reason || null) : null,
-    forwarded:       action === 'approve',
+    forwarded:       newStatus === 'Approved',
+    currentStatus:   record.overtime_status,
   });
-  if (!updated) throw ApiError.badRequest('No pending overtime approval for this record');
+  if (!updated) throw ApiError.badRequest('Overtime update failed — record may have changed');
 
   const meta = audit.auditMeta(req);
   await audit.log(pool, {
     attendanceId: id,
     employeeId: record.employee_id,
-    action: action === 'approve' ? 'attendance.overtime.approve' : 'attendance.overtime.reject',
-    oldValue: { overtime_status: 'Pending', overtime_hours: record.overtime_hours },
+    action: action === 'approve'
+      ? `attendance.overtime.${stage}_approve`
+      : `attendance.overtime.${stage}_reject`,
+    oldValue: { overtime_status: record.overtime_status, overtime_hours: record.overtime_hours },
     newValue: updated,
     performedBy: approverId,
     ...meta,
   });
 
   try {
-    if (action === 'approve') {
+    if (newStatus === 'Approved') {
       await notify.notifyOtApproved(pool, user.db_name, {
-        employeeId: record.employee_id,
-        date: record.date,
-        entityId: record.id,
-        hours: record.overtime_hours,
+        employeeId: record.employee_id, date: record.date,
+        entityId: record.id, hours: record.overtime_hours,
       });
-      // Forward the approved overtime to the department for further processing.
       await notify.notifyOtForwardedToDept(pool, user.db_name, {
-        employeeId: record.employee_id,
-        date: record.date,
-        entityId: record.id,
-        hours: record.overtime_hours,
+        employeeId: record.employee_id, date: record.date,
+        entityId: record.id, hours: record.overtime_hours,
       });
-    } else {
+    } else if (newStatus === 'Manager_Approved') {
+      // Notify Dept Head that it's now in their queue.
+      await notify.notifyOtForwardedToDept(pool, user.db_name, {
+        employeeId: record.employee_id, date: record.date,
+        entityId: record.id, hours: record.overtime_hours,
+      });
+    } else if (newStatus === 'Rejected') {
       await notify.notifyOtRejected(pool, user.db_name, {
-        employeeId: record.employee_id,
-        date: record.date,
-        entityId: record.id,
-        hours: record.overtime_hours,
-        reason,
+        employeeId: record.employee_id, date: record.date,
+        entityId: record.id, hours: record.overtime_hours, reason,
       });
     }
   } catch (e) {
@@ -823,6 +848,12 @@ async function createOvertime(auth, user, body, req) {
   // Segregation of duties: cannot self-approve.
   if (status === 'Approved' && Number(auth?.employeeId) === Number(employeeId)) status = 'Pending';
 
+  // Escalation: if employee has no reporting manager, skip manager stage → Dept Head approves first.
+  if (status === 'Pending') {
+    const empRow = await authz.loadEmployee(pool, Number(employeeId));
+    if (!empRow?.reporting_manager_id) status = 'Manager_Approved';
+  }
+
   const approverId = actorEmployeeId(user);
   const record = await repo.upsertOvertime(pool, {
     employeeId,
@@ -863,6 +894,14 @@ async function createOvertime(auth, user, body, req) {
   return record;
 }
 
+/**
+ * Column-based three-stage regularization approval.
+ *
+ * Stage 1 (Pending)          → Reporting Manager (or Dept Head if no manager) → Manager_Approved
+ * Stage 2 (Manager_Approved) → Department Head                                 → Dept_Approved
+ * Stage 3 (Dept_Approved)    → HR / Admin                                      → Approved
+ * Any stage with action='reject'                                                → Rejected
+ */
 async function regularize(auth, user, id, { action, reason }, req) {
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
@@ -872,35 +911,51 @@ async function regularize(auth, user, id, { action, reason }, req) {
     await client.query('BEGIN');
     const record = await repo.findById(pool, id, client);
     if (!record) throw ApiError.notFound('Attendance record not found');
-    if (record.regularization_status !== 'Pending') {
+
+    const actionableStatuses = ['Pending', 'Manager_Approved', 'Dept_Approved'];
+    if (!actionableStatuses.includes(record.regularization_status)) {
       throw ApiError.badRequest('Record is not pending regularization');
     }
 
-    const pendingStep = await approval.getPendingStep(client, id);
-    await authz.assertCanActOnPendingStep(auth, pool, record, pendingStep, action);
+    // Self-approval guard.
+    authz.assertNotSelfApproval(auth, record, 'regularization request');
 
-    const result = await approval.advanceOrComplete(
-      client,
-      id,
-      actorEmployeeId(user),
-      reason,
-      action,
-    );
+    const emp = await authz.loadEmployee(pool, record.employee_id);
+    if (!emp) throw ApiError.notFound('Employee not found');
 
-    const regStatus = result.finalStatus;
+    // Stage-based scope authorization.
+    authz.assertCanActOnStage(auth, record.regularization_status, emp, action, 'regularization');
+
+    const approverId = actorEmployeeId(user);
+
+    // Determine stage + next status.
+    let stage, newRegStatus, nextLevel;
+    if (record.regularization_status === 'Pending') {
+      stage = 'manager';
+      newRegStatus = action === 'approve' ? 'Manager_Approved' : 'Rejected';
+      nextLevel = 2;
+    } else if (record.regularization_status === 'Manager_Approved') {
+      stage = 'dept';
+      newRegStatus = action === 'approve' ? 'Dept_Approved' : 'Rejected';
+      nextLevel = 3;
+    } else {
+      stage = 'hr';
+      newRegStatus = action === 'approve' ? 'Approved' : 'Rejected';
+      nextLevel = 3;
+    }
+
     let attStatus = record.status;
-    if (regStatus === 'Approved') {
+    if (newRegStatus === 'Approved') {
       attStatus = 'Regularization Approved';
-    } else if (regStatus === 'Rejected') {
+    } else if (newRegStatus === 'Rejected') {
       attStatus = 'Regularization Rejected';
-    } else if (regStatus === 'Pending') {
+    } else {
       attStatus = 'Regularization Pending';
     }
 
-    const approverId = actorEmployeeId(user);
-    if (regStatus === 'Approved') {
+    if (newRegStatus === 'Approved') {
       try {
-        integrity.assertApprovedHasApprover(regStatus, approverId);
+        integrity.assertApprovedHasApprover(newRegStatus, approverId);
       } catch (e) {
         throw ApiError.badRequest(e.message);
       }
@@ -917,15 +972,16 @@ async function regularize(auth, user, id, { action, reason }, req) {
       },
       record.check_in_time,
       record.check_out_time,
-      regStatus,
+      newRegStatus,
     );
 
     const updated = await repo.updateRegularization(client, id, {
-      status: regStatus,
+      status: newRegStatus,
+      stage,
       approvedBy: approverId,
       remarks: reason,
       attendanceStatus: sanitized.status,
-      currentApprovalLevel: result.currentLevel ?? record.current_approval_level,
+      currentApprovalLevel: nextLevel,
     });
 
     await client.query(
@@ -939,20 +995,22 @@ async function regularize(auth, user, id, { action, reason }, req) {
     await audit.log(pool, {
       attendanceId: id,
       employeeId: record.employee_id,
-      action: action === 'approve' ? 'attendance.regularization.approve' : 'attendance.regularization.reject',
-      oldValue: record,
+      action: action === 'approve'
+        ? `attendance.regularization.${stage}_approve`
+        : `attendance.regularization.${stage}_reject`,
+      oldValue: { regularization_status: record.regularization_status },
       newValue: updated,
-      performedBy: actorEmployeeId(user),
+      performedBy: approverId,
       ...meta,
     });
 
-    if (action === 'approve') {
+    if (action === 'approve' && newRegStatus === 'Approved') {
       await notify.notifyRegApproved(pool, user.db_name, {
         employeeId: record.employee_id,
         date: record.date,
         entityId: record.id,
       });
-    } else {
+    } else if (action === 'reject') {
       await notify.notifyRegRejected(pool, user.db_name, {
         employeeId: record.employee_id,
         date: record.date,

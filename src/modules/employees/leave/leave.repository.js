@@ -140,12 +140,13 @@ async function insertRequest(pool, data) {
 }
 
 /**
- * Update a request's lifecycle. `stage` records which approver acted:
- *   'manager' → sets manager_approved_by/at (status becomes Manager_Approved)
+ * Update a leave request's lifecycle. `stage` records which approver acted:
+ *   'manager' → sets manager_approved_by/at (status → Pending Dept Approval)
+ *   'dept'    → sets dept_approved_by/at (status → Pending HR Approval)
  *   'hr'      → sets hr_approved_by/at AND approved_by/at (final approval)
  * Reject/cancel pass no stage and just set status + rejection_reason.
  */
-async function updateRequestStatus(pool, id, { status, stage, actorId, rejectionReason }) {
+async function updateRequestStatus(pool, id, { status, stage, actorId, rejectionReason, remarks }) {
   const sets = ['status = $1::VARCHAR', 'updated_at = NOW()'];
   const params = [status];
   let i = 2;
@@ -153,6 +154,10 @@ async function updateRequestStatus(pool, id, { status, stage, actorId, rejection
   if (stage === 'manager') {
     sets.push(`manager_approved_by = $${i}`); params.push(actorId || null); i += 1;
     sets.push('manager_approved_at = NOW()');
+  } else if (stage === 'dept') {
+    sets.push(`dept_approved_by = $${i}`); params.push(actorId || null); i += 1;
+    sets.push('dept_approved_at = NOW()');
+    sets.push(`dept_remarks = $${i}`); params.push(remarks || null); i += 1;
   } else if (stage === 'hr') {
     sets.push(`hr_approved_by = $${i}`); params.push(actorId || null); i += 1;
     sets.push('hr_approved_at = NOW()');
@@ -168,7 +173,7 @@ async function updateRequestStatus(pool, id, { status, stage, actorId, rejection
      SET ${sets.join(', ')}
      WHERE id = $${i}
      RETURNING id, leave_type, status, total_days,
-               manager_approved_by, hr_approved_by,
+               manager_approved_by, dept_approved_by, hr_approved_by,
                TO_CHAR(from_date, 'YYYY-MM-DD') AS from_date,
                TO_CHAR(to_date,   'YYYY-MM-DD') AS to_date`,
     params

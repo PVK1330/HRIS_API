@@ -210,6 +210,47 @@ async function assertCanActOnPendingStep(auth, pool, record, pendingStep, action
   }
 }
 
+/**
+ * Column-based regularization: enforce no-self-approval + per-stage hierarchy for the
+ * record's CURRENT stage ('manager' | 'department' | 'hr').
+ */
+async function assertCanActOnStage(auth, pool, record, stage, action = 'approve') {
+  if (!auth) throw ApiError.unauthorized('Not authenticated');
+  assertNotSelfApproval(auth, record);
+
+  // Tenant admins / attendance.manage may act on any stage.
+  if (canOverrideApproval(auth)) return;
+
+  if (!hasApprovalPermission(auth, action)) {
+    throw ApiError.forbidden('You do not have permission to process regularizations');
+  }
+
+  const emp = await loadEmployee(pool, record.employee_id);
+  if (!emp) throw ApiError.notFound('Employee not found');
+
+  switch (stage) {
+    case 'manager':
+      if (!isDirectReport(auth, emp)) {
+        throw ApiError.forbidden('Only the direct reporting manager can act on this stage');
+      }
+      return;
+    case 'department':
+      if (!isInManagedDepartment(auth, emp)) {
+        throw ApiError.forbidden('You can only approve regularizations for employees in your department');
+      }
+      return;
+    case 'hr':
+      if (!hasHrApprovalScope(auth)) {
+        throw ApiError.forbidden(
+          'HR-level approval requires attendance.approve and attendance.view.all or attendance.manage',
+        );
+      }
+      return;
+    default:
+      throw ApiError.forbidden('You cannot act on this approval stage');
+  }
+}
+
 /** @deprecated Use assertCanActOnPendingStep — kept for callers that pre-load step */
 async function assertCanApproveRegularization(auth, pool, record, pendingStep, action) {
   if (!pendingStep) {
@@ -230,6 +271,7 @@ module.exports = {
   assertCanViewEmployee,
   assertCanModifyEmployee,
   assertCanActOnPendingStep,
+  assertCanActOnStage,
   assertCanApproveRegularization,
   loadEmployee,
   isDirectReport,

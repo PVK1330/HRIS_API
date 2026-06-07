@@ -9,7 +9,7 @@ const authz = require('./attendanceAuth.service');
 const calc = require('./attendanceCalculation.service');
 const graceEngine = require('./attendanceGrace.service');
 const audit = require('./attendanceAudit.service');
-const approval = require('./attendanceApproval.service');
+const workflow = require('./attendanceWorkflow.service');
 const notify = require('./attendanceNotifications.service');
 const reportsEngine = require('./attendanceReports.service');
 const exportEngine = require('./attendanceExport.service');
@@ -532,6 +532,11 @@ async function submitRegularization(auth, user, body, req) {
     workMode: body.workMode,
   }, body.workMode);
 
+  // Build the active approval stage chain (column-based) from settings + the employee's
+  // reporting manager / department. Stages with no possible approver are pruned.
+  const targetEmp = await authz.loadEmployee(pool, Number(employeeId));
+  const stages = workflow.buildStageChain(settings, targetEmp);
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -568,7 +573,7 @@ async function submitRegularization(auth, user, body, req) {
       updatedBy: actorEmployeeId(user),
     }, client);
 
-    await approval.createSteps(client, record.id, settings);
+    await repo.initRegularizationStages(client, record.id, stages);
     await client.query('COMMIT');
 
     const full = await repo.findById(pool, record.id);
@@ -876,33 +881,61 @@ async function regularize(auth, user, id, { action, reason }, req) {
       throw ApiError.badRequest('Record is not pending regularization');
     }
 
-    const pendingStep = await approval.getPendingStep(client, id);
-    await authz.assertCanActOnPendingStep(auth, pool, record, pendingStep, action);
-
-    const result = await approval.advanceOrComplete(
-      client,
-      id,
-      actorEmployeeId(user),
-      reason,
-      action,
-    );
-
-    const regStatus = result.finalStatus;
-    let attStatus = record.status;
-    if (regStatus === 'Approved') {
-      attStatus = 'Regularization Approved';
-    } else if (regStatus === 'Rejected') {
-      attStatus = 'Regularization Rejected';
-    } else if (regStatus === 'Pending') {
-      attStatus = 'Regularization Pending';
+    let stage = record.reg_current_stage;
+    if (!stage || stage === 'done') {
+      // Legacy / pre-staged-workflow record: migration 102 added the stage
+      // columns (reg_current_stage, *_approval_status) without backfilling
+      // requests that were already Pending, leaving them with a NULL stage.
+      // Initialize the stage chain on the fly — same logic as submit — so the
+      // request becomes actionable instead of being permanently stuck.
+      const repairSettings = await calc.loadSettings(pool);
+      const repairEmp = await authz.loadEmployee(pool, record.employee_id);
+      const repairStages = workflow.buildStageChain(repairSettings, repairEmp);
+      await repo.initRegularizationStages(client, record.id, repairStages);
+      const repaired = await repo.findById(pool, record.id, client);
+      if (repaired) Object.assign(record, repaired);
+      stage = record.reg_current_stage;
     }
+    if (!stage || stage === 'done') {
+      throw ApiError.badRequest('Regularization has no pending stage to act on');
+    }
+    // No self-approval + per-stage hierarchy (manager = reporting manager,
+    // department = dept head, hr = HR rights; admin/manage may override).
+    await authz.assertCanActOnStage(auth, pool, record, stage, action);
+
+    // Recompute the active chain to know the next stage after this one.
+    const regSettings = await calc.loadSettings(pool);
+    const regEmp = await authz.loadEmployee(pool, record.employee_id);
+    const chain = workflow.buildStageChain(regSettings, regEmp);
 
     const approverId = actorEmployeeId(user);
-    if (regStatus === 'Approved') {
-      try {
-        integrity.assertApprovedHasApprover(regStatus, approverId);
-      } catch (e) {
-        throw ApiError.badRequest(e.message);
+    let regStatus;      // overall regularization_status
+    let nextStage;      // reg_current_stage after this action
+    let attStatus;      // attendance.status
+    let stageStatus;    // this stage's column status
+
+    if (action === 'reject') {
+      stageStatus = 'Rejected';
+      regStatus = 'Rejected';
+      nextStage = 'done';
+      attStatus = 'Regularization Rejected';
+    } else { // approve
+      stageStatus = 'Approved';
+      const idx = chain.indexOf(stage);
+      const next = idx >= 0 ? chain[idx + 1] : undefined;
+      if (next) {
+        regStatus = 'Pending';
+        nextStage = next;
+        attStatus = 'Regularization Pending';
+      } else {
+        regStatus = 'Approved';
+        nextStage = 'done';
+        attStatus = 'Regularization Approved';
+        try {
+          integrity.assertApprovedHasApprover(regStatus, approverId);
+        } catch (e) {
+          throw ApiError.badRequest(e.message);
+        }
       }
     }
 
@@ -920,17 +953,20 @@ async function regularize(auth, user, id, { action, reason }, req) {
       regStatus,
     );
 
-    const updated = await repo.updateRegularization(client, id, {
-      status: regStatus,
-      approvedBy: approverId,
-      remarks: reason,
+    const updated = await repo.applyRegularizationDecision(client, id, {
+      stage,
+      stageStatus,
+      actorId: approverId,
+      regularizationStatus: regStatus,
+      nextStage,
       attendanceStatus: sanitized.status,
-      currentApprovalLevel: result.currentLevel ?? record.current_approval_level,
+      remarks: reason,
     });
 
+    // Keep derived attendance metrics consistent with the sanitized status.
     await client.query(
-      `UPDATE attendance SET status = $1, overtime_hours = $2, is_late = $3, paid_day = $4, updated_by = $5 WHERE id = $6`,
-      [sanitized.status, sanitized.overtime_hours, sanitized.is_late, sanitized.paid_day, approverId, id],
+      `UPDATE attendance SET overtime_hours = $1, is_late = $2, paid_day = $3, updated_by = $4 WHERE id = $5`,
+      [sanitized.overtime_hours, sanitized.is_late, sanitized.paid_day, approverId, id],
     );
 
     await client.query('COMMIT');

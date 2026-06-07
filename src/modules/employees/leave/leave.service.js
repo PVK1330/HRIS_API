@@ -327,12 +327,21 @@ function isHrActor(user) {
   return HR_ROLES.has(String(user?.role || '').toLowerCase());
 }
 
+// Department-stage actor: a user who manages the employee's department (or an HR/admin,
+// who may act on any stage). `auth.managedDepartmentId` is set by authz.loadAuthContext.
+function canActOnDeptStage(user, auth, emp) {
+  if (isHrActor(user)) return true;
+  return Boolean(auth?.managedDepartmentId)
+    && Number(auth.managedDepartmentId) === Number(emp?.department_id);
+}
+
 /**
- * Two-stage approval workflow:
- *   Pending          --approve(manager)-->  Manager_Approved
- *   Manager_Approved --approve(HR)------->  Approved   (balance deducted here, HR-only)
- *   Any Stage Before Approved --reject--> Rejected
- *   Any Stage --cancel--> Cancelled (restore balance if was Approved)
+ * Three-stage approval workflow (single record, column-based):
+ *   Pending Manager Approval --approve(manager)--> Pending Dept Approval
+ *   Pending Dept Approval    --approve(dept head)--> Pending HR Approval
+ *   Pending HR Approval      --approve(HR)-------->  Approved   (balance deducted here, HR-only)
+ *   Any open stage --reject--> Rejected by Manager / Dept / HR
+ *   Any open stage --cancel--> Cancelled (restore balance if was Approved)
  */
 async function processLeave(user, auth, id, { action, reason }) {
   const pool = getPool(user);
@@ -377,10 +386,17 @@ async function processLeave(user, auth, id, { action, reason }) {
       if (user.role === 'manager' && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)) {
         throw ApiError.forbidden('You can only approve requests for your direct reports.');
       }
-      newStatus = 'Pending HR Approval';
+      newStatus = 'Pending Dept Approval';
       stage = 'manager';
+    } else if (request.status === 'Pending Dept Approval') {
+      // Stage 2 — department head approval
+      if (!canActOnDeptStage(user, auth, emp)) {
+        throw ApiError.forbidden('Department approval requires the department head or an HR/admin role');
+      }
+      newStatus = 'Pending HR Approval';
+      stage = 'department';
     } else if (request.status === 'Pending HR Approval') {
-      // Stage 2 — HR final approval. Restricted to HR/admin roles.
+      // Stage 3 — HR final approval. Restricted to HR/admin roles.
       if (!isHrActor(user)) {
         throw ApiError.forbidden('Final approval requires an HR or admin role');
       }
@@ -395,6 +411,11 @@ async function processLeave(user, auth, id, { action, reason }) {
         throw ApiError.forbidden('You can only reject requests for your direct reports.');
       }
       newStatus = 'Rejected by Manager';
+    } else if (request.status === 'Pending Dept Approval') {
+      if (!canActOnDeptStage(user, auth, emp)) {
+        throw ApiError.forbidden('Department rejection requires the department head or an HR/admin role');
+      }
+      newStatus = 'Rejected by Dept';
     } else if (request.status === 'Pending HR Approval') {
       if (!isHrActor(user)) {
         throw ApiError.forbidden('Final rejection requires an HR or admin role');
@@ -404,7 +425,7 @@ async function processLeave(user, auth, id, { action, reason }) {
       throw ApiError.badRequest(`Cannot reject a request with status "${request.status}"`);
     }
   } else { // cancel
-    if (!['Pending Manager Approval', 'Pending HR Approval', 'Approved', 'Draft'].includes(request.status)) {
+    if (!['Pending Manager Approval', 'Pending Dept Approval', 'Pending HR Approval', 'Approved', 'Draft'].includes(request.status)) {
       throw ApiError.badRequest(`Cannot cancel a request with status "${request.status}"`);
     }
     newStatus = 'Cancelled';
@@ -476,11 +497,21 @@ async function processLeave(user, auth, id, { action, reason }) {
       redirectUrl: '/admin/attendance/dashboard'
     }).catch(err => console.error(err));
   } else if (action === 'approve') {
-    if (newStatus === 'Pending HR Approval') {
+    if (newStatus === 'Pending Dept Approval') {
+      await sendSystemNotification(user, {
+        forAdmin: true,
+        title: 'Leave Pending Department Approval',
+        message: `Leave request for ${request.leave_type} (${request.total_days} days) has been approved by the manager and awaits department head approval.`,
+        type: 'leave_request',
+        entityType: 'leave',
+        entityId: request.id,
+        redirectUrl: '/admin/attendance/dashboard'
+      }).catch(err => console.error(err));
+    } else if (newStatus === 'Pending HR Approval') {
       await sendSystemNotification(user, {
         forAdmin: true,
         title: 'Leave Pending HR Approval',
-        message: `Leave request for ${request.leave_type} (${request.total_days} days) has been approved by the manager and awaits HR final approval.`,
+        message: `Leave request for ${request.leave_type} (${request.total_days} days) has been approved by the department and awaits HR final approval.`,
         type: 'leave_request',
         entityType: 'leave',
         entityId: request.id,

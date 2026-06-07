@@ -29,21 +29,14 @@ async function autoRejectRecord(pool, tenantDb, record, settings) {
   try {
     await client.query('BEGIN');
 
-    await client.query(
-      `UPDATE attendance_regularization_steps
-       SET status = 'Rejected', acted_by = NULL, acted_at = NOW(),
-           remarks = $2
-       WHERE attendance_id = $1 AND status = 'Pending'`,
-      [
-        record.id,
-        `Auto-rejected after ${days} day(s) without approval`,
-      ],
-    );
-
     const { rows } = await client.query(
       `UPDATE attendance
        SET regularization_status = 'Rejected',
            status = 'Regularization Rejected',
+           manager_approval_status    = CASE WHEN manager_approval_status    = 'Pending' THEN 'Rejected' ELSE manager_approval_status    END,
+           department_approval_status = CASE WHEN department_approval_status = 'Pending' THEN 'Rejected' ELSE department_approval_status END,
+           hr_approval_status         = CASE WHEN hr_approval_status         = 'Pending' THEN 'Rejected' ELSE hr_approval_status         END,
+           reg_current_stage = 'done',
            regularization_remarks = $2,
            regularized_at = NOW(),
            updated_at = NOW()

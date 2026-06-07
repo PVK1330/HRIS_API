@@ -310,6 +310,68 @@ async function updateRegularization(client, id, patch) {
   return rows[0] || null;
 }
 
+const REG_STAGE_COLUMNS = Object.freeze({
+  manager: 'manager',
+  department: 'department',
+  hr: 'hr',
+});
+
+/**
+ * Initialize the column-based regularization stages on submit.
+ * Active stages → 'Pending'; inactive → 'N/A'. Sets the first active stage as current.
+ */
+async function initRegularizationStages(client, id, stages) {
+  const has = (s) => stages.includes(s);
+  const { rows } = await client.query(
+    `UPDATE attendance SET
+       manager_approval_status    = $1,
+       department_approval_status = $2,
+       hr_approval_status         = $3,
+       reg_current_stage          = $4,
+       updated_at = NOW()
+     WHERE id = $5
+     RETURNING *`,
+    [
+      has('manager') ? 'Pending' : 'N/A',
+      has('department') ? 'Pending' : 'N/A',
+      has('hr') ? 'Pending' : 'N/A',
+      stages[0] || 'hr',
+      id,
+    ],
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Stamp a single stage's decision and advance the workflow.
+ * @param {'manager'|'department'|'hr'} stage  which stage column to set
+ * @param {'Approved'|'Rejected'} stageStatus
+ */
+async function applyRegularizationDecision(client, id, {
+  stage, stageStatus, actorId, regularizationStatus, nextStage, attendanceStatus, remarks,
+}) {
+  const col = REG_STAGE_COLUMNS[stage];
+  if (!col) throw new Error(`Invalid regularization stage: ${stage}`);
+
+  const { rows } = await client.query(
+    `UPDATE attendance SET
+       ${col}_approval_status = $1,
+       ${col}_approved_by     = $2,
+       ${col}_approved_at     = NOW(),
+       regularization_status  = $3,
+       reg_current_stage      = $4,
+       status                 = $5,
+       regularization_remarks = COALESCE($6, regularization_remarks),
+       regularized_by         = $2,
+       regularized_at         = NOW(),
+       updated_at = NOW()
+     WHERE id = $7
+     RETURNING *`,
+    [stageStatus, actorId || null, regularizationStatus, nextStage, attendanceStatus, remarks || null, id],
+  );
+  return rows[0] || null;
+}
+
 async function getPendingRegularizations(pool, { limit = 50, offset = 0 }, auth) {
   const conditions = [`a.regularization_status = 'Pending'`, 'e.deleted_at IS NULL'];
   const params = [];
@@ -319,11 +381,14 @@ async function getPendingRegularizations(pool, { limit = 50, offset = 0 }, auth)
   const { rows } = await pool.query(
     `SELECT ${SELECT_FIELDS},
             a.regularization_reason,
-            rs.level AS pending_level, rs.approver_role AS pending_approver_role
+            a.reg_current_stage,
+            CASE a.reg_current_stage
+              WHEN 'manager'    THEN 'Direct Manager'
+              WHEN 'department' THEN 'Department Head'
+              WHEN 'hr'         THEN 'HR'
+              ELSE NULL END AS pending_approver_role
      FROM attendance a
      JOIN employees e ON e.id = a.employee_id
-     LEFT JOIN attendance_regularization_steps rs
-       ON rs.attendance_id = a.id AND rs.status = 'Pending'
      WHERE ${scoped.conditions.join(' AND ')}
      ORDER BY a.date DESC
      LIMIT $${scoped.params.length - 1} OFFSET $${scoped.params.length}`,
@@ -578,6 +643,8 @@ module.exports = {
   getDailySummary,
   upsert,
   updateRegularization,
+  initRegularizationStages,
+  applyRegularizationDecision,
   getPendingRegularizations,
   getPayrollSummary,
   markAbsentForDate,

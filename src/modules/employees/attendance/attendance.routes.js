@@ -163,12 +163,8 @@ adminRouter.post('/', requirePermission(P.ATTENDANCE_MANAGE), v.overrideBody, va
 adminRouter.get('/:id', anyViewPermission(), [param('id').isInt({ min: 1 })], validate, ctrl.detail);
 
 adminRouter.patch('/:id/regularize', (req, res, next) => {
-  const { hasPermission } = require('../../../services/authz.service');
-  const ok =
-    hasPermission(req.auth, P.ATTENDANCE_APPROVE)
-    || hasPermission(req.auth, P.ATTENDANCE_REJECT)
-    || hasPermission(req.auth, P.ATTENDANCE_MANAGE);
-  if (!ok) {
+  const { canApproveAttendance } = require('../../../services/authz.service');
+  if (!canApproveAttendance(req.auth)) {
     const ApiError = require('../../../utils/ApiError');
     return next(ApiError.forbidden('Approve or reject permission required'));
   }
@@ -180,12 +176,8 @@ adminRouter.patch('/:id/regularize', (req, res, next) => {
 ], validate, ctrl.regularize);
 
 adminRouter.patch('/:id/overtime', (req, res, next) => {
-  const { hasPermission } = require('../../../services/authz.service');
-  const ok =
-    hasPermission(req.auth, P.ATTENDANCE_APPROVE)
-    || hasPermission(req.auth, P.ATTENDANCE_REJECT)
-    || hasPermission(req.auth, P.ATTENDANCE_MANAGE);
-  if (!ok) {
+  const { canApproveAttendance } = require('../../../services/authz.service');
+  if (!canApproveAttendance(req.auth)) {
     const ApiError = require('../../../utils/ApiError');
     return next(ApiError.forbidden('Approve or reject permission required'));
   }

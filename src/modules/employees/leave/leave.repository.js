@@ -141,8 +141,9 @@ async function insertRequest(pool, data) {
 
 /**
  * Update a request's lifecycle. `stage` records which approver acted:
- *   'manager' → sets manager_approved_by/at (status becomes Manager_Approved)
- *   'hr'      → sets hr_approved_by/at AND approved_by/at (final approval)
+ *   'manager'    → sets manager_approved_by/at
+ *   'department' → sets department_approved_by/at
+ *   'hr'         → sets hr_approved_by/at AND approved_by/at (final approval)
  * Reject/cancel pass no stage and just set status + rejection_reason.
  */
 async function updateRequestStatus(pool, id, { status, stage, actorId, rejectionReason }) {
@@ -153,6 +154,9 @@ async function updateRequestStatus(pool, id, { status, stage, actorId, rejection
   if (stage === 'manager') {
     sets.push(`manager_approved_by = $${i}`); params.push(actorId || null); i += 1;
     sets.push('manager_approved_at = NOW()');
+  } else if (stage === 'department') {
+    sets.push(`department_approved_by = $${i}`); params.push(actorId || null); i += 1;
+    sets.push('department_approved_at = NOW()');
   } else if (stage === 'hr') {
     sets.push(`hr_approved_by = $${i}`); params.push(actorId || null); i += 1;
     sets.push('hr_approved_at = NOW()');
@@ -168,7 +172,7 @@ async function updateRequestStatus(pool, id, { status, stage, actorId, rejection
      SET ${sets.join(', ')}
      WHERE id = $${i}
      RETURNING id, leave_type, status, total_days,
-               manager_approved_by, hr_approved_by,
+               manager_approved_by, department_approved_by, hr_approved_by,
                TO_CHAR(from_date, 'YYYY-MM-DD') AS from_date,
                TO_CHAR(to_date,   'YYYY-MM-DD') AS to_date`,
     params
@@ -232,7 +236,7 @@ async function findOverlappingRequest(pool, employeeId, fromDate, toDate) {
             TO_CHAR(to_date,   'YYYY-MM-DD') AS to_date
      FROM leave_requests
      WHERE employee_id = $1
-       AND status IN ('Pending Manager Approval', 'Pending HR Approval', 'Approved')
+       AND status IN ('Pending Manager Approval', 'Pending Dept Approval', 'Pending HR Approval', 'Approved')
        AND from_date <= $3::date
        AND to_date   >= $2::date
      LIMIT 1`,
@@ -352,7 +356,7 @@ async function getStats(pool, year, auth = null) {
 
   const { rows } = await pool.query(
     `SELECT
-       COUNT(*) FILTER (WHERE lr.status IN ('Pending Manager Approval', 'Pending HR Approval'))::int AS pending,
+       COUNT(*) FILTER (WHERE lr.status IN ('Pending Manager Approval', 'Pending Dept Approval', 'Pending HR Approval'))::int AS pending,
        COUNT(*) FILTER (WHERE lr.status = 'Approved')::int AS approved,
        COUNT(*) FILTER (WHERE lr.status LIKE 'Rejected%')::int AS rejected,
        COUNT(*)::int AS total

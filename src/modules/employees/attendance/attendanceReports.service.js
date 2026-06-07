@@ -184,16 +184,13 @@ async function runReport(pool, reportType, scoped, query) {
               e.emp_id, e.full_name, e.department,
               a.regularization_status, a.regularization_reason,
               a.current_approval_level,
-              rs.approver_role AS pending_approver_role
+              CASE a.reg_current_stage
+                WHEN 'manager'    THEN 'Direct Manager'
+                WHEN 'department' THEN 'Department Head'
+                WHEN 'hr'         THEN 'HR'
+                ELSE NULL END AS pending_approver_role
        FROM attendance a
        JOIN employees e ON e.id = a.employee_id
-       LEFT JOIN LATERAL (
-         SELECT approver_role
-         FROM attendance_regularization_steps
-         WHERE attendance_id = a.id AND status = 'Pending'
-         ORDER BY level ASC
-         LIMIT 1
-       ) rs ON true
        WHERE ${where}
          AND a.regularization_status NOT IN ('N/A', '')
        ORDER BY a.date DESC
@@ -377,6 +374,8 @@ async function getRegularizationHistory(pool, query, auth) {
     conditions.push(`a.regularization_status = $${params.length}`);
   }
   const scoped = appendScopeToConditions(auth, conditions, params, 'e');
+  scoped.params.push(auth?.employeeId ?? null);
+  const selfIdx = scoped.params.length;
   const limit = Math.min(200, parseInt(query.limit, 10) || 50);
   const offset = (Math.max(1, parseInt(query.page, 10) || 1) - 1) * limit;
   scoped.params.push(limit, offset);
@@ -385,17 +384,17 @@ async function getRegularizationHistory(pool, query, auth) {
     `SELECT a.id, TO_CHAR(a.date, 'YYYY-MM-DD') AS date,
             a.regularization_status, a.regularization_reason,
             a.current_approval_level,
-            rs.level AS pending_level, rs.approver_role AS pending_approver_role,
+            a.reg_current_stage AS pending_stage,
+            CASE a.reg_current_stage
+              WHEN 'manager'    THEN 'Direct Manager'
+              WHEN 'department' THEN 'Department Head'
+              WHEN 'hr'         THEN 'HR'
+              ELSE NULL END AS pending_approver_role,
+            a.regularization_remarks,
+            (a.employee_id = $${selfIdx}) AS is_self,
             e.full_name AS employee_name, e.emp_id, e.department
      FROM attendance a
      JOIN employees e ON e.id = a.employee_id
-     LEFT JOIN LATERAL (
-       SELECT level, approver_role
-       FROM attendance_regularization_steps
-       WHERE attendance_id = a.id AND status = 'Pending'
-       ORDER BY level ASC
-       LIMIT 1
-     ) rs ON true
      WHERE ${scoped.conditions.join(' AND ')}
      ORDER BY a.updated_at DESC
      LIMIT $${scoped.params.length - 1} OFFSET $${scoped.params.length}`,

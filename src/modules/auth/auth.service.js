@@ -517,6 +517,7 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
   }
 
   const rbacRepo = require('../rbac/rbac.repository');
+  const { getScopeForRole } = require('../../services/authz.service');
   const rbacRoleId = emp.rbac_role_id || null;
 
   let allowedModules = ['dashboard'];
@@ -527,6 +528,11 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
     allowedModules = toAllowedModulesForJwt(expanded);
     permissions = Array.from(expanded);
   }
+  // Data scope drives which attendance tabs (Manual Attendance / team views) the
+  // UI exposes; SELF-scoped employees must never see manage/team tabs.
+  const dataScope = String(
+    (rbacRoleId ? await getScopeForRole(tenantPool, rbacRoleId) : 'SELF') || 'SELF',
+  ).toLowerCase();
 
   const token = jwt.sign(
     {
@@ -558,6 +564,7 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
       employeeId: emp.id,
       department: emp.department || null,
       permissions,
+      dataScope,
     },
     plan_details: planDetails,
     plan_features: planFeatures,
@@ -653,6 +660,7 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
       tenantName: tenant.name,
       employeeId: employeeId,
       permissions,
+      dataScope: 'all',
     },
     plan_details: planDetails,
     plan_features: planFeatures,
@@ -1140,6 +1148,7 @@ async function generateImpersonationToken(tenantId) {
       tenantId: tenant.id,
       tenantName: tenant.name,
       allowedModules,
+      dataScope: 'all',
     },
     plan_details: planDetails ? [planDetails] : [],
     plan_features: planFeatures,
@@ -1202,15 +1211,21 @@ async function getAccessProfile(currentUser) {
 
   let allowedModules = ['dashboard'];
   let permissions = [];
+  let dataScope = 'self';
   const tenantPool = getTenantPool(tenant.db_name);
   if (currentUser.role === 'admin') {
     allowedModules = await adminModulesForJwt(tenantPool);
     permissions = ['*'];
+    dataScope = 'all';
   } else if (currentUser.rbacRoleId) {
     const keys = await rbacRepo.permissionKeysForRole(tenantPool, currentUser.rbacRoleId);
     const expanded = expandPermissionKeys(keys);
     allowedModules = toAllowedModulesForJwt(expanded);
     permissions = Array.from(expanded);
+    const { getScopeForRole } = require('../../services/authz.service');
+    dataScope = String(
+      (await getScopeForRole(tenantPool, currentUser.rbacRoleId)) || 'SELF',
+    ).toLowerCase();
   }
 
   return {
@@ -1225,6 +1240,7 @@ async function getAccessProfile(currentUser) {
     tenant_features: tenantFeatures,
     allowedModules,
     permissions,
+    dataScope,
     billing: await safeBillingState(tenant.id),
     refreshed_at: new Date().toISOString(),
   };

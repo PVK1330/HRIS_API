@@ -281,9 +281,14 @@ async function upsert(pool, data, client = pool) {
   return row;
 }
 
+/**
+ * Update regularization status with per-stage actor columns.
+ * patch.stage: 'manager' | 'dept' | 'hr' — stamps the matching reg_*_approved_by/at/remarks.
+ * Legacy approved_by/regularized_by are updated on final approval for backward compat.
+ */
 async function updateRegularization(client, id, patch) {
   const {
-    status, approvedBy, remarks, attendanceStatus, currentApprovalLevel,
+    status, stage, approvedBy, remarks, attendanceStatus, currentApprovalLevel,
   } = patch;
   const { rows } = await client.query(
     `UPDATE attendance
@@ -373,7 +378,10 @@ async function applyRegularizationDecision(client, id, {
 }
 
 async function getPendingRegularizations(pool, { limit = 50, offset = 0 }, auth) {
-  const conditions = [`a.regularization_status = 'Pending'`, 'e.deleted_at IS NULL'];
+  const conditions = [
+    `a.regularization_status IN ('Pending', 'Manager_Approved', 'Dept_Approved')`,
+    'e.deleted_at IS NULL',
+  ];
   const params = [];
   const scoped = appendScopeToConditions(auth, conditions, params, 'e');
   scoped.params.push(limit, offset);
@@ -556,20 +564,58 @@ async function deleteOvertimeRecord(pool, id) {
   return { id, removed: isOvertimeOnly };
 }
 
-/** Manager approve/reject of a pending overtime record. */
-async function updateOvertimeStatus(pool, id, { status, approvedBy, rejectionReason, forwarded }) {
+/**
+ * Staged overtime approval. `stage` is 'manager' | 'dept' | 'hr'.
+ * Each stage stamps its own actor columns; the legacy overtime_approved_by/at are
+ * set on final HR approval for backward compatibility with payroll queries.
+ *
+ * @param {string} currentStatus - the status the record must be in (guard condition)
+ */
+async function updateOvertimeStatus(pool, id, { status, stage, actorId, remarks, rejectionReason, forwarded, currentStatus }) {
+  const sets = ['overtime_status = $1::VARCHAR', 'updated_at = NOW()'];
+  const params = [status];
+  let i = 2;
+
+  if (stage === 'manager') {
+    sets.push(`overtime_manager_approved_by = $${i}`); params.push(actorId || null); i += 1;
+    sets.push('overtime_manager_approved_at = NOW()');
+    sets.push(`overtime_manager_remarks = $${i}`); params.push(remarks || null); i += 1;
+  } else if (stage === 'dept') {
+    sets.push(`overtime_dept_approved_by = $${i}`); params.push(actorId || null); i += 1;
+    sets.push('overtime_dept_approved_at = NOW()');
+    sets.push(`overtime_dept_remarks = $${i}`); params.push(remarks || null); i += 1;
+  } else if (stage === 'hr') {
+    sets.push(`overtime_hr_approved_by = $${i}`); params.push(actorId || null); i += 1;
+    sets.push('overtime_hr_approved_at = NOW()');
+    sets.push(`overtime_hr_remarks = $${i}`); params.push(remarks || null); i += 1;
+    // Mirror to legacy columns so payroll/reporting queries keep working.
+    sets.push(`overtime_approved_by = $${i}`); params.push(actorId || null); i += 1;
+    sets.push('overtime_approved_at = NOW()');
+  }
+
+  if (rejectionReason) {
+    sets.push(`overtime_rejection_reason = $${i}`); params.push(rejectionReason); i += 1;
+  }
+
+  if (forwarded) {
+    sets.push('overtime_forwarded_at = NOW()');
+  }
+
+  params.push(id);
+  // currentStatus guard is optional — pass it to prevent race conditions.
+  const whereExtra = currentStatus ? ` AND overtime_status = $${i + 1}::VARCHAR` : '';
+  if (currentStatus) params.push(currentStatus);
+
   const { rows } = await pool.query(
     `UPDATE attendance
-       SET overtime_status           = $1::VARCHAR,
-           overtime_approved_by      = $2,
-           overtime_approved_at      = NOW(),
-           overtime_rejection_reason = $3,
-           overtime_forwarded_at     = CASE WHEN $4::boolean THEN NOW() ELSE overtime_forwarded_at END,
-           updated_at                = NOW()
-     WHERE id = $5 AND overtime_status = 'Pending'
+     SET ${sets.join(', ')}
+     WHERE id = $${i}${whereExtra}
      RETURNING id, employee_id, overtime_status, overtime_hours,
-               TO_CHAR(date, 'YYYY-MM-DD') AS date`,
-    [status, approvedBy || null, rejectionReason || null, !!forwarded, id],
+               TO_CHAR(date, 'YYYY-MM-DD') AS date,
+               overtime_manager_approved_by, overtime_manager_approved_at,
+               overtime_dept_approved_by, overtime_dept_approved_at,
+               overtime_hr_approved_by, overtime_hr_approved_at`,
+    params,
   );
   return rows[0] || null;
 }
@@ -596,6 +642,9 @@ async function getOvertimeRecords(pool, { status, search, limit = 100, offset = 
             a.overtime_rejection_reason,
             TO_CHAR(a.overtime_approved_at, 'YYYY-MM-DD') AS overtime_approved_at,
             (a.overtime_forwarded_at IS NOT NULL) AS forwarded,
+            a.overtime_manager_approved_by, a.overtime_manager_approved_at,
+            a.overtime_dept_approved_by,    a.overtime_dept_approved_at,
+            a.overtime_hr_approved_by,      a.overtime_hr_approved_at,
             e.id AS employee_id, e.full_name AS employee_name, e.emp_id, e.department,
             app.full_name AS approver_name
      FROM attendance a
@@ -609,9 +658,16 @@ async function getOvertimeRecords(pool, { status, search, limit = 100, offset = 
   return rows;
 }
 
-/** Pending overtime requests, scoped to the caller's data scope. */
+/**
+ * Overtime records awaiting action at any approval stage, scoped to the caller.
+ * All three intermediate statuses (Pending, Manager_Approved, Dept_Approved) are included
+ * so each role can see the records they need to action.
+ */
 async function getPendingOvertime(pool, { limit = 50, offset = 0 }, auth) {
-  const conditions = ["a.overtime_status = 'Pending'", 'e.deleted_at IS NULL'];
+  const conditions = [
+    "a.overtime_status IN ('Pending', 'Manager_Approved', 'Dept_Approved')",
+    'e.deleted_at IS NULL',
+  ];
   const params = [];
   const { appendScopeToConditions } = require('../../../utils/applyDataScope');
   const scoped = appendScopeToConditions(auth, conditions, params, 'e');
@@ -620,6 +676,9 @@ async function getPendingOvertime(pool, { limit = 50, offset = 0 }, auth) {
     `SELECT a.id, TO_CHAR(a.date, 'YYYY-MM-DD') AS date,
             a.overtime_hours, a.overtime_status,
             a.check_in_time, a.check_out_time,
+            a.overtime_manager_approved_by, a.overtime_manager_approved_at,
+            a.overtime_dept_approved_by,    a.overtime_dept_approved_at,
+            a.overtime_hr_approved_by,      a.overtime_hr_approved_at,
             e.id AS employee_id, e.full_name AS employee_name, e.emp_id, e.department,
             mgr.full_name AS manager_name
      FROM attendance a

@@ -4,42 +4,10 @@ const ApiError = require('../../../utils/ApiError');
 const { hasPermission } = require('../../../services/authz.service');
 const { P } = require('../../../constants/permissions');
 const { assertEmployeeRecordAccess } = require('../../../utils/applyDataScope');
-/** Maps attendance_settings.approver / chain labels → authorization kind */
-const STEP_KIND = Object.freeze({
-  TEAM_LEAD: 'team_lead',
-  MANAGER: 'manager',
-  HR: 'hr',
-});
 
-function normalizeStepKind(approverRole) {
-  const r = String(approverRole || '').trim().toLowerCase();
-  if (
-    r === 'direct manager'
-    || r === 'team lead'
-    || r === 'team_lead'
-    || r === 'direct_manager'
-  ) {
-    return STEP_KIND.TEAM_LEAD;
-  }
-  if (r === 'manager') {
-    return STEP_KIND.MANAGER;
-  }
-  if (r === 'hr' || r === 'hr manager' || r === 'hr_manager') {
-    return STEP_KIND.HR;
-  }
-  return null;
-}
+// ─── Scope helpers ────────────────────────────────────────────────────────────
 
-async function loadEmployee(pool, employeeId) {
-  const { rows } = await pool.query(
-    `SELECT id, department, reporting_manager_id, department_id
-     FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
-    [employeeId],
-  );
-  return rows[0] || null;
-}
-
-/** Tenant-wide attendance view (legacy attendance.view is NOT included). */
+/** Tenant-wide attendance view. */
 function canViewAll(auth) {
   return hasPermission(auth, P.ATTENDANCE_VIEW_ALL)
     || hasPermission(auth, P.ATTENDANCE_MANAGE);
@@ -108,6 +76,15 @@ function assertNotSelfApproval(auth, record, what = 'regularization request') {
   }
 }
 
+async function loadEmployee(pool, employeeId) {
+  const { rows } = await pool.query(
+    `SELECT id, department, reporting_manager_id, department_id
+     FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+    [employeeId],
+  );
+  return rows[0] || null;
+}
+
 async function assertCanViewEmployee(auth, pool, employeeId) {
   if (!auth) throw ApiError.unauthorized('Not authenticated');
   if (auth.isTenantAdmin || canViewAll(auth)) return;
@@ -152,9 +129,82 @@ async function assertCanModifyEmployee(auth, pool, employeeId) {
   throw ApiError.forbidden('You do not have permission to modify this attendance');
 }
 
+// ─── Stage-based authorization ────────────────────────────────────────────────
+
 /**
- * Enforce pending workflow step + hierarchy (service-layer; do not rely on routes).
- * @param {object} pendingStep - row from attendance_regularization_steps
+ * Determine which approval stage a record is currently at and assert the
+ * calling user is authorized to act on that stage.
+ *
+ * Stages (shared by regularization and overtime):
+ *   'Pending'          → Stage 1: Reporting Manager (or Dept Head if no manager)
+ *   'Manager_Approved' → Stage 2: Department Head
+ *   'Dept_Approved'    → Stage 3: HR / Admin
+ *
+ * @param {'regularization'|'overtime'} requestType  - human label for error messages
+ * @param {string} currentStatus - the record's current regularization_status or overtime_status
+ * @param {object} emp - employee row (must include reporting_manager_id, department_id, department)
+ */
+function assertCanActOnStage(auth, currentStatus, emp, action = 'approve', requestType = 'request') {
+  if (!auth) throw ApiError.unauthorized('Not authenticated');
+
+  // Override: tenant admins and attendance managers can always act.
+  if (canOverrideApproval(auth)) return;
+
+  if (!hasApprovalPermission(auth, action)) {
+    throw ApiError.forbidden(`You do not have permission to process ${requestType}s`);
+  }
+
+  const hasManager = !!emp.reporting_manager_id;
+
+  switch (currentStatus) {
+    case 'Pending': {
+      // Stage 1 — Reporting Manager is primary approver.
+      // If the employee has no manager, Department Head steps in.
+      if (hasManager) {
+        if (!isDirectReport(auth, emp)) {
+          throw ApiError.forbidden(
+            `Only the direct reporting manager can act on this ${requestType} at stage 1`,
+          );
+        }
+      } else {
+        // No manager — dept head is stage-1 approver.
+        if (!isInManagedDepartment(auth, emp) && !hasHrApprovalScope(auth)) {
+          throw ApiError.forbidden(
+            `No reporting manager assigned; only a department head or HR can approve this ${requestType}`,
+          );
+        }
+      }
+      return;
+    }
+
+    case 'Manager_Approved': {
+      // Stage 2 — Department Head.
+      if (!isInManagedDepartment(auth, emp) && !hasHrApprovalScope(auth)) {
+        throw ApiError.forbidden(
+          `Only the department head can act on this ${requestType} at stage 2`,
+        );
+      }
+      return;
+    }
+
+    case 'Dept_Approved': {
+      // Stage 3 — HR / Admin.
+      if (!hasHrApprovalScope(auth)) {
+        throw ApiError.forbidden(
+          `Only HR or admin can give final approval for this ${requestType}`,
+        );
+      }
+      return;
+    }
+
+    default:
+      throw ApiError.badRequest(`${requestType} is not in a state that can be approved or rejected`);
+  }
+}
+
+/**
+ * Legacy step-based authorization kept for backward compatibility.
+ * New code should use assertCanActOnStage instead.
  */
 async function assertCanActOnPendingStep(auth, pool, record, pendingStep, action = 'approve') {
   if (!auth) throw ApiError.unauthorized('Not authenticated');
@@ -164,9 +214,7 @@ async function assertCanActOnPendingStep(auth, pool, record, pendingStep, action
 
   assertNotSelfApproval(auth, record);
 
-  if (canOverrideApproval(auth)) {
-    return;
-  }
+  if (canOverrideApproval(auth)) return;
 
   if (!hasApprovalPermission(auth, action)) {
     throw ApiError.forbidden('You do not have permission to process regularizations');
@@ -251,25 +299,22 @@ async function assertCanActOnStage(auth, pool, record, stage, action = 'approve'
   }
 }
 
-/** @deprecated Use assertCanActOnPendingStep — kept for callers that pre-load step */
+/** @deprecated Use assertCanActOnPendingStep */
 async function assertCanApproveRegularization(auth, pool, record, pendingStep, action) {
-  if (!pendingStep) {
-    throw ApiError.badRequest('No pending approval step for this regularization');
-  }
   return assertCanActOnPendingStep(auth, pool, record, pendingStep, action);
 }
 
 module.exports = {
-  STEP_KIND,
-  normalizeStepKind,
   canViewAll,
   canViewTeam,
   canViewOwn,
   hasHrApprovalScope,
   canOverrideApproval,
+  hasApprovalPermission,
   assertNotSelfApproval,
   assertCanViewEmployee,
   assertCanModifyEmployee,
+  assertCanActOnStage,
   assertCanActOnPendingStep,
   assertCanActOnStage,
   assertCanApproveRegularization,

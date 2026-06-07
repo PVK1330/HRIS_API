@@ -146,7 +146,7 @@ async function insertRequest(pool, data) {
  *   'hr'         → sets hr_approved_by/at AND approved_by/at (final approval)
  * Reject/cancel pass no stage and just set status + rejection_reason.
  */
-async function updateRequestStatus(pool, id, { status, stage, actorId, rejectionReason }) {
+async function updateRequestStatus(pool, id, { status, stage, actorId, rejectionReason, remarks }) {
   const sets = ['status = $1::VARCHAR', 'updated_at = NOW()'];
   const params = [status];
   let i = 2;

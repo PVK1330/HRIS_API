@@ -246,6 +246,23 @@ async function listDesignationsByDepartmentName(tenant, deptName) {
   return rows.map((r) => ({ ...r, status: 'Active' }));
 }
 
+async function listDesignationsByDepartmentId(tenant, deptId) {
+  const pool = await getTenantPool(tenant.dbName);
+  const id = parseInt(deptId, 10);
+  if (!Number.isInteger(id) || id <= 0) throw new ApiError(400, 'Valid department id is required');
+  const { rows } = await pool.query(
+    `SELECT ds.id, ds.name, ds.description, ds.department_id,
+            d.name AS department_name,
+            ds.grade, ds.is_active
+     FROM designations ds
+     INNER JOIN departments d ON d.id = ds.department_id
+     WHERE ds.is_active = true AND d.is_active = true AND ds.department_id = $1
+     ORDER BY ds.name ASC`,
+    [id],
+  );
+  return rows.map((r) => ({ ...r, status: 'Active' }));
+}
+
 async function getDesignation(tenant, id) {
   const pool = await getTenantPool(tenant.dbName);
   const { rows } = await pool.query(
@@ -385,6 +402,7 @@ module.exports = {
   listAllForExport,
   getFilterOptions,
   listDesignationsByDepartmentName,
+  listDesignationsByDepartmentId,
   getDesignation,
   createDesignation,
   updateDesignation,

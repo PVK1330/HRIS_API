@@ -3,7 +3,7 @@
 const path = require('path');
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
-const { runTenantMigrations } = require('../tenant/tenant.service');
+const { ensureMigrated } = require('../../utils/tenantMigration');
 const empRepo = require('../employees/employees.repository');
 const repo = require('./messages.repository');
 const { inferMessageType } = require('./messages.upload');
@@ -13,17 +13,6 @@ const {
   isConversationParticipant,
   otherParticipantId,
 } = require('./messagingIdentity');
-
-const _cache = new Map();
-async function ensureMigrated(dbName) {
-  if (_cache.has(dbName)) return _cache.get(dbName);
-  const p = runTenantMigrations(dbName).catch((err) => {
-    _cache.delete(dbName);
-    throw ApiError.internal('Database setup failed.');
-  });
-  _cache.set(dbName, p);
-  return p;
-}
 
 function getPool(user) {
   if (!user?.db_name) throw ApiError.unauthorized('Tenant not found');

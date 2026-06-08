@@ -29,6 +29,13 @@ router.get(
   ctrl.listByDepartment,
 );
 
+router.get(
+  '/by-department-id/:deptId',
+  requirePermission(P.DEPARTMENTS_MANAGE),
+  validateWithJoi(v.deptIdParam, 'params'),
+  ctrl.listByDepartmentId,
+);
+
 router.get('/:id', requirePermission(P.DEPARTMENTS_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.getOne);
 
 router.post(

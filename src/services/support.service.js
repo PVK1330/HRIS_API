@@ -2,20 +2,9 @@
 
 const { getTenantPool, pool } = require('../config/db');
 const ApiError = require('../utils/ApiError');
-const { runTenantMigrations } = require('../modules/tenant/tenant.service');
+const { ensureMigrated } = require('../utils/tenantMigration');
 const { sendMail } = require('../utils/mail');
-
-const _migrationCache = new Map();
-
-async function ensureMigrated(dbName) {
-  if (_migrationCache.has(dbName)) return _migrationCache.get(dbName);
-  const p = runTenantMigrations(dbName).catch((err) => {
-    _migrationCache.delete(dbName);
-    throw ApiError.internal('Database setup failed.');
-  });
-  _migrationCache.set(dbName, p);
-  return p;
-}
+const logger = require('../utils/logger');
 
 function getPool(user) {
   if (!user || !user.db_name) {
@@ -77,17 +66,17 @@ async function createTicket(user, tenant, ticketData) {
         const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail);
         if (isEmailValid) {
           superadminEmail = rawEmail;
-          console.log(`[Support Ticket] Selected superadmin recipient email: ${superadminEmail}`);
+          logger.debug('[support] selected superadmin recipient');
         } else {
-          console.warn(`[Support Ticket] Warning: Superadmin identifier '${rawEmail}' is not a valid email.`);
+          logger.warn('[support] superadmin identifier is not a valid email');
         }
       }
     } catch (err) {
-      console.error('Error fetching superadmin email:', err);
+      logger.error('[support] error fetching superadmin email', { err: err.message });
     }
 
     if (!superadminEmail) {
-      console.warn('[Support Ticket] Warning: No valid superadmin email found. Skipping email notification.');
+      logger.warn('[support] no valid superadmin email found, skipping notification');
     }
 
     if (superadminEmail) {
@@ -179,7 +168,7 @@ HRMS Support System
       });
     }
   } catch (error) {
-    // Email sending should not break ticket creation
+    logger.warn('[support] ticket notification email failed', { ticketId, err: error.message });
   }
 
   return ticketRecord;
@@ -298,15 +287,15 @@ async function updateTicket(user, ticketId, ticketData) {
         if (isEmailValid) {
           adminEmail = rawEmail;
           adminName = admin.name || adminName;
-          console.log(`[Support Ticket] Selected admin recipient email: ${adminEmail}`);
+          logger.debug('[support] selected admin recipient');
         } else {
-          console.warn(`[Support Ticket] Warning: Admin identifier '${rawEmail}' is not a valid email.`);
+          logger.warn('[support] admin identifier is not a valid email');
         }
       }
     }
 
     if (!adminEmail) {
-      console.warn('[Support Ticket] Warning: No valid admin email found. Skipping email notification.');
+      logger.warn('[support] no valid admin email found, skipping notification');
     }
 
     if (adminEmail) {
@@ -336,7 +325,7 @@ async function updateTicket(user, ticketId, ticketData) {
       
     }
   } catch (emailError) {
-    console.error("Admin update email failed:", emailError.message);
+    logger.error('[support] admin update email failed', { err: emailError.message });
   }
 
   return updatedTicket;

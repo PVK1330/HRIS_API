@@ -2,6 +2,7 @@
 
 const { getTenantPool } = require('../config/db');
 const {
+  P,
   expandPermissionKeys,
   permissionSatisfied,
   toAllowedModuleKeys,
@@ -127,6 +128,24 @@ function hasPermission(auth, permissionKey) {
   return permissionSatisfied(auth.permissions, permissionKey);
 }
 
+/**
+ * Whether the principal may approve/reject attendance for OTHER employees
+ * (regularization, overtime). This is inherently a TEAM-or-wider capability:
+ * a SELF-scoped employee can only act on their own record, so they can never
+ * approve — regardless of any approve/reject/manage permission they may carry
+ * via the legacy "attendance" bucket.
+ */
+function canApproveAttendance(auth) {
+  if (!auth) return false;
+  if (auth.isTenantAdmin) return true;
+  if (String(auth.scope || 'SELF').toUpperCase() === 'SELF') return false;
+  return (
+    hasPermission(auth, P.ATTENDANCE_APPROVE)
+    || hasPermission(auth, P.ATTENDANCE_REJECT)
+    || hasPermission(auth, P.ATTENDANCE_MANAGE)
+  );
+}
+
 function allowedModulesFromAuth(auth) {
   if (auth?.isTenantAdmin) {
     return null; /* caller may use full list */
@@ -137,6 +156,7 @@ function allowedModulesFromAuth(auth) {
 module.exports = {
   loadAuthContext,
   hasPermission,
+  canApproveAttendance,
   allowedModulesFromAuth,
   getScopeForRole,
   allPermissionKeys,

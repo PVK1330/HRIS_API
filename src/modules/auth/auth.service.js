@@ -5,6 +5,9 @@ const bcrypt = require('bcrypt');
 const { comparePassword, hashPassword } = require('../../utils/password');
 const logger = require('../../utils/logger');
 const { slugifyTenantName } = require('../../utils/tenantSlug');
+const { normalizeLoginId, sqlEmailMatchesLogin } = require('../../utils/normalizeEmail');
+const { lookupTenants, upsertEntry: upsertIndexEntry } = require('../../utils/userTenantIndex');
+const { getPasswordPolicy, validatePasswordAgainstPolicy } = require('../passwordSecurity/passwordSecurity.service');
 const speakeasy = require('speakeasy');
 const QRCode = require('qrcode');
 const { superAdminPool } = require('../../config/db');
@@ -156,7 +159,39 @@ async function findUserByEmail(email, context = {}) {
     }
   }
 
-  // 3. Fallback: scan all active tenants
+  // 3. Index lookup — O(1) via public.user_tenant_index
+  const indexRows = await lookupTenants(normalizedEmail);
+
+  if (indexRows.length > 0) {
+    for (const indexRow of indexRows) {
+      try {
+        const tenantPool = getTenantPool(indexRow.db_name);
+        if (indexRow.user_type === 'admin') {
+          const adminResult = await tenantPool.query(
+            `SELECT id, email, name, status FROM admin_users WHERE ${sqlEmailMatchesLogin('email')} LIMIT 1`,
+            [normalizedEmail]
+          );
+          if (adminResult.rows.length > 0) {
+            return { tenant: indexRow, userType: 'admin', user: adminResult.rows[0] };
+          }
+        } else {
+          const employeeResult = await tenantPool.query(
+            `SELECT id, work_email AS email, full_name AS name, employment_status
+             FROM employees WHERE deleted_at IS NULL AND ${sqlEmailMatchesLogin('work_email')} LIMIT 1`,
+            [normalizedEmail]
+          );
+          if (employeeResult.rows.length > 0) {
+            return { tenant: indexRow, userType: 'employee', user: employeeResult.rows[0] };
+          }
+        }
+      } catch (err) {
+        logger.error(`Error reading tenant db ${indexRow.db_name} for forgot password:`, err);
+      }
+    }
+    return null;
+  }
+
+  // 4. O(N) fallback — runs only if user is not yet in the index (pre-backfill window)
   const tenantsResult = await superAdminPool.query(
     "SELECT id, name, db_name, status, admin_email FROM public.tenants WHERE status = 'active'"
   );
@@ -165,7 +200,6 @@ async function findUserByEmail(email, context = {}) {
     try {
       const tenantPool = getTenantPool(activeTenant.db_name);
 
-      // Check admin users
       const adminResult = await tenantPool.query(
         `SELECT id, email, name, status FROM admin_users WHERE ${sqlEmailMatchesLogin('email')} LIMIT 1`,
         [normalizedEmail]
@@ -174,9 +208,9 @@ async function findUserByEmail(email, context = {}) {
         return { tenant: activeTenant, userType: 'admin', user: adminResult.rows[0] };
       }
 
-      // Check employees
       const employeeResult = await tenantPool.query(
-        `SELECT id, work_email AS email, full_name AS name, employment_status FROM employees WHERE deleted_at IS NULL AND ${sqlEmailMatchesLogin('work_email')} LIMIT 1`,
+        `SELECT id, work_email AS email, full_name AS name, employment_status
+         FROM employees WHERE deleted_at IS NULL AND ${sqlEmailMatchesLogin('work_email')} LIMIT 1`,
         [normalizedEmail]
       );
       if (employeeResult.rows.length > 0) {
@@ -235,26 +269,80 @@ async function requestPasswordReset(email, context = {}) {
 }
 
 /**
- * Verify OTP
+ * Maximum number of incorrect OTP guesses before the reset record is
+ * invalidated and the user must request a new code.
+ */
+const MAX_OTP_ATTEMPTS = 5;
+
+/**
+ * Verify OTP.
+ *
+ * Brute-force hardening:
+ *  - Looks up the reset record by email only, so a wrong code can be tied back
+ *    to the record and counted (rather than silently returning "no rows").
+ *  - Increments a per-record failed-attempt counter; once MAX_OTP_ATTEMPTS
+ *    wrong guesses are reached the OTP is deleted and a new one is required.
+ *  - Resets the counter on a correct code. (Issuing a new OTP also resets it,
+ *    since requestPasswordReset replaces the row, defaulting attempts to 0.)
+ *  - Always throws the SAME generic error so callers cannot distinguish
+ *    "no such email" from "wrong code" from "expired" from "locked out".
  */
 async function verifyOTP(email, otp) {
   const normalizedEmail = normalizeLoginId(email);
+  const submitted = String(otp ?? '');
 
+  // One generic message for every failure path — never reveal whether the
+  // email was unknown, the code was wrong, expired, or attempt-locked.
+  const genericError = ApiError.badRequest('Invalid or expired code. Please request a new one.');
+
+  // Fetch the single active reset record for this email (requestPasswordReset
+  // keeps at most one row per email).
   const result = await superAdminPool.query(
-    `SELECT id, expires_at 
-     FROM public.password_resets 
-     WHERE LOWER(email) = LOWER($1) AND otp_code = $2`,
-    [normalizedEmail, otp]
+    `SELECT id, otp_code, expires_at, attempts
+     FROM public.password_resets
+     WHERE LOWER(email) = LOWER($1)
+     LIMIT 1`,
+    [normalizedEmail]
   );
 
   if (result.rows.length === 0) {
-    throw ApiError.badRequest('Invalid OTP code');
+    throw genericError;
   }
 
   const reset = result.rows[0];
 
+  // Expired → invalidate so a stale code can never be brute-forced.
   if (new Date() > new Date(reset.expires_at)) {
-    throw ApiError.badRequest('OTP code has expired');
+    await superAdminPool.query('DELETE FROM public.password_resets WHERE id = $1', [reset.id]);
+    throw genericError;
+  }
+
+  // Constant-time comparison of the 6-digit code.
+  const stored = String(reset.otp_code ?? '');
+  const matches =
+    submitted.length === stored.length &&
+    crypto.timingSafeEqual(Buffer.from(submitted), Buffer.from(stored));
+
+  if (!matches) {
+    const attempts = (reset.attempts || 0) + 1;
+    if (attempts >= MAX_OTP_ATTEMPTS) {
+      // Too many wrong guesses — kill the OTP entirely.
+      await superAdminPool.query('DELETE FROM public.password_resets WHERE id = $1', [reset.id]);
+    } else {
+      await superAdminPool.query(
+        'UPDATE public.password_resets SET attempts = $1 WHERE id = $2',
+        [attempts, reset.id]
+      );
+    }
+    throw genericError;
+  }
+
+  // Correct code → clear the failed-attempt counter.
+  if (reset.attempts && reset.attempts > 0) {
+    await superAdminPool.query(
+      'UPDATE public.password_resets SET attempts = 0 WHERE id = $1',
+      [reset.id]
+    );
   }
 
   return { success: true };
@@ -293,12 +381,14 @@ async function resetPassword(email, otp, newPassword) {
   }
   const tenant = tenantResult.rows[0];
 
-  // 4. Hash new password
-  const passwordHash = await bcrypt.hash(newPassword, env.BCRYPT_SALT_ROUNDS);
-
-  // 5. Update Tenant DB
+  // 4. Validate new password against this tenant's policy before hashing
   const { getTenantPool } = require('../../config/db');
   const tenantPool = getTenantPool(tenant.db_name);
+  const passwordPolicy = await getPasswordPolicy(tenantPool);
+  validatePasswordAgainstPolicy(newPassword, passwordPolicy);
+
+  // 5. Hash new password
+  const passwordHash = await bcrypt.hash(newPassword, env.BCRYPT_SALT_ROUNDS);
 
   if (user_type === 'admin') {
     await tenantPool.query(
@@ -363,40 +453,7 @@ async function verify2FA(userId, code) {
   return { success: true };
 }
 
-/**
- * Normalize login identifiers. For @gmail.com and @googlemail.com, strip dots in
- * the local part (Gmail treats them as equivalent). Other domains keep dots.
- */
-function normalizeLoginId(raw) {
-  const s = String(raw || '').trim().toLowerCase();
-  if (!s.includes('@')) return s;
-  const at = s.lastIndexOf('@');
-  const local = s.slice(0, at);
-  const domain = s.slice(at + 1);
-  if (domain === 'gmail.com' || domain === 'googlemail.com') {
-    return `${local.replace(/\./g, '')}@${domain}`;
-  }
-  return s;
-}
-
-/**
- * SQL: column matches normalized login $1, with Gmail / Googlemail dot-equivalence.
- */
-function sqlEmailMatchesLogin(col, param = '$1') {
-  return `(
-    LOWER(TRIM(${col})) = ${param}
-    OR (
-      ${param} LIKE '%@gmail.com'
-      AND RIGHT(LOWER(TRIM(${col})), 10) = '@gmail.com'
-      AND regexp_replace(split_part(LOWER(TRIM(${col})), '@', 1), '\\.', '', 'g') || '@gmail.com' = ${param}
-    )
-    OR (
-      ${param} LIKE '%@googlemail.com'
-      AND RIGHT(LOWER(TRIM(${col})), 14) = '@googlemail.com'
-      AND regexp_replace(split_part(LOWER(TRIM(${col})), '@', 1), '\\.', '', 'g') || '@googlemail.com' = ${param}
-    )
-  )`;
-}
+// normalizeLoginId and sqlEmailMatchesLogin are imported from ../../utils/normalizeEmail
 
 /**
  * Resolve tenant for workspace login (numeric id, subdomain slug, or schema_name).
@@ -429,6 +486,18 @@ async function resolveTenantForLogin({ tenantId, tenantSlug }) {
   if (bySchema.length) return bySchema[0];
 
   const slugNorm = slugifyTenantName(slugRaw);
+
+  // Try the indexed slug column first (O(1))
+  const { rows: bySlug } = await superAdminPool.query(
+    `SELECT id, name, db_name, status, plan_id, admin_email
+     FROM public.tenants
+     WHERE slug = $1
+     LIMIT 1`,
+    [slugNorm],
+  );
+  if (bySlug.length) return bySlug[0];
+
+  // Last-resort full-table scan (runs only until backfillAll() has written the slug column)
   const { rows: all } = await superAdminPool.query(
     `SELECT id, name, db_name, status, plan_id, admin_email FROM public.tenants`,
   );
@@ -470,6 +539,9 @@ async function provisionTenantAdminUser(tenantPool, tenant, { email, passwordHas
     [tenant.id, normalized, passwordHash, name || 'Organization Admin'],
   );
   logger.info(`[auth] provisioned admin_users for tenant ${tenant.id} (${normalized})`);
+  if (rows[0] && tenant.id) {
+    upsertIndexEntry(rows[0].email, tenant.id, 'admin').catch(() => {});
+  }
   return rows[0] || null;
 }
 
@@ -500,6 +572,166 @@ async function findTenantAdminForLogin(tenantPool, loginId, tenantAdminEmail) {
   return fallback.rows[0] || null;
 }
 
+// ─── Refresh-token store ──────────────────────────────────────────────────────
+
+function parseExpiresInMs(str) {
+  const m = /^(\d+)([smhd])$/.exec(String(str || ''));
+  if (!m) return 30 * 24 * 60 * 60 * 1000; // default 30d
+  const n = parseInt(m[1], 10);
+  return n * { s: 1000, m: 60000, h: 3600000, d: 86400000 }[m[2]];
+}
+
+async function issueRefreshToken(userId, role, tenantId, dbName, userType) {
+  const jti = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + parseExpiresInMs(env.JWT.refreshExpiresIn));
+
+  await superAdminPool.query(
+    `INSERT INTO public.refresh_tokens (jti, user_id, role, expires_at)
+     VALUES ($1, $2, $3, $4)`,
+    [jti, String(userId), role, expiresAt],
+  );
+
+  return jwt.sign(
+    {
+      jti,
+      sub: String(userId),
+      role,
+      tenant_id: tenantId || null,
+      db_name: dbName || null,
+      userType: userType || role,
+      purpose: 'refresh',
+    },
+    env.JWT.refreshSecret,
+    { expiresIn: env.JWT.refreshExpiresIn },
+  );
+}
+
+async function verifyAndRotateRefreshToken(refreshToken) {
+  if (!refreshToken) throw ApiError.unauthorized('No refresh token');
+
+  let payload;
+  try {
+    payload = jwt.verify(refreshToken, env.JWT.refreshSecret);
+  } catch (err) {
+    throw ApiError.unauthorized(
+      err.name === 'TokenExpiredError' ? 'Refresh token has expired' : 'Invalid refresh token',
+    );
+  }
+  if (!payload || payload.purpose !== 'refresh' || !payload.jti) {
+    throw ApiError.unauthorized('Invalid refresh token');
+  }
+
+  const { rows } = await superAdminPool.query(
+    'SELECT revoked FROM public.refresh_tokens WHERE jti = $1',
+    [payload.jti],
+  );
+
+  if (!rows.length || rows[0].revoked) {
+    // Reuse of a revoked token: revoke ALL active tokens for this user (theft indicator)
+    await superAdminPool.query(
+      'UPDATE public.refresh_tokens SET revoked = TRUE WHERE user_id = $1 AND role = $2',
+      [payload.sub, payload.role],
+    );
+    throw ApiError.unauthorized('Refresh token has been revoked');
+  }
+
+  // Rotate: revoke old jti before issuing new one
+  await superAdminPool.query(
+    'UPDATE public.refresh_tokens SET revoked = TRUE WHERE jti = $1',
+    [payload.jti],
+  );
+
+  const { getTenantPool } = require('../../config/db');
+  let newAccessToken;
+
+  if (payload.role === 'superadmin') {
+    const { rows: saRows } = await superAdminPool.query(
+      'SELECT id, email, role FROM public.superadmins WHERE id = $1 LIMIT 1',
+      [payload.sub],
+    );
+    if (!saRows[0]) throw ApiError.unauthorized('Account not found');
+    newAccessToken = jwt.sign(
+      { id: saRows[0].id, email: saRows[0].email, role: saRows[0].role || 'superadmin', tenant_id: null },
+      env.JWT.secret,
+      { expiresIn: env.JWT.expiresIn },
+    );
+  } else if (payload.role === 'admin') {
+    const tenantPool = getTenantPool(payload.db_name);
+    const { rows: adminRows } = await tenantPool.query(
+      'SELECT id, email, name FROM admin_users WHERE id = $1 LIMIT 1',
+      [payload.sub],
+    );
+    if (!adminRows[0]) throw ApiError.unauthorized('Account not found');
+    const { rows: empRows } = await tenantPool.query(
+      'SELECT id FROM employees WHERE deleted_at IS NULL AND LOWER(work_email) = LOWER($1) LIMIT 1',
+      [adminRows[0].email],
+    );
+    newAccessToken = jwt.sign(
+      {
+        id: adminRows[0].id,
+        email: adminRows[0].email,
+        name: adminRows[0].name,
+        role: 'admin',
+        tenant_id: payload.tenant_id,
+        db_name: payload.db_name,
+        userType: 'admin',
+        employeeId: empRows[0]?.id || null,
+      },
+      env.JWT.secret,
+      { expiresIn: env.JWT.expiresIn },
+    );
+  } else if (payload.role === 'employee') {
+    const tenantPool = getTenantPool(payload.db_name);
+    const { rows: empRows } = await tenantPool.query(
+      `SELECT id, full_name, work_email, rbac_role_id, department
+       FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+      [payload.sub],
+    );
+    if (!empRows[0]) throw ApiError.unauthorized('Account not found');
+    newAccessToken = jwt.sign(
+      {
+        id: empRows[0].id,
+        email: empRows[0].work_email,
+        name: empRows[0].full_name,
+        role: 'employee',
+        tenant_id: payload.tenant_id,
+        db_name: payload.db_name,
+        rbacRoleId: empRows[0].rbac_role_id || null,
+        employeeId: empRows[0].id,
+        department: empRows[0].department || null,
+        userType: 'employee',
+      },
+      env.JWT.secret,
+      { expiresIn: env.JWT.expiresIn },
+    );
+  } else {
+    throw ApiError.unauthorized('Unknown role in refresh token');
+  }
+
+  const newRefreshToken = await issueRefreshToken(
+    payload.sub, payload.role, payload.tenant_id, payload.db_name, payload.userType,
+  );
+
+  return { accessToken: newAccessToken, refreshToken: newRefreshToken };
+}
+
+async function revokeRefreshToken(refreshToken) {
+  if (!refreshToken) return;
+  try {
+    const payload = jwt.verify(refreshToken, env.JWT.refreshSecret);
+    if (payload?.jti) {
+      await superAdminPool.query(
+        'UPDATE public.refresh_tokens SET revoked = TRUE WHERE jti = $1',
+        [payload.jti],
+      );
+    }
+  } catch (err) {
+    logger.debug('[auth] revokeRefreshToken: token expired or invalid, nothing to revoke', { err: err.message });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures, planDetails, planFeatures, options = {}) {
   if (!options.mfaVerified) {
     const { rows: mfaRows } = await tenantPool.query(
@@ -517,6 +749,7 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
   }
 
   const rbacRepo = require('../rbac/rbac.repository');
+  const { getScopeForRole } = require('../../services/authz.service');
   const rbacRoleId = emp.rbac_role_id || null;
 
   let allowedModules = ['dashboard'];
@@ -527,6 +760,11 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
     allowedModules = toAllowedModulesForJwt(expanded);
     permissions = Array.from(expanded);
   }
+  // Data scope drives which attendance tabs (Manual Attendance / team views) the
+  // UI exposes; SELF-scoped employees must never see manage/team tabs.
+  const dataScope = String(
+    (rbacRoleId ? await getScopeForRole(tenantPool, rbacRoleId) : 'SELF') || 'SELF',
+  ).toLowerCase();
 
   const token = jwt.sign(
     {
@@ -545,8 +783,11 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
     { expiresIn: env.JWT.expiresIn },
   );
 
+  const refreshToken = await issueRefreshToken(emp.id, 'employee', tenant.id, tenant.db_name, 'employee');
+
   return {
     token,
+    refreshToken,
     user: {
       id: emp.id,
       name: emp.full_name,
@@ -558,6 +799,7 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
       employeeId: emp.id,
       department: emp.department || null,
       permissions,
+      dataScope,
     },
     plan_details: planDetails,
     plan_features: planFeatures,
@@ -642,8 +884,11 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
     { expiresIn: env.JWT.expiresIn },
   );
 
+  const refreshToken = await issueRefreshToken(adminUser.id, 'admin', tenant.id, tenant.db_name, 'admin');
+
   return {
     token,
+    refreshToken,
     user: {
       id: adminUser.id,
       name: adminUser.name,
@@ -653,6 +898,7 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
       tenantName: tenant.name,
       employeeId: employeeId,
       permissions,
+      dataScope: 'all',
     },
     plan_details: planDetails,
     plan_features: planFeatures,
@@ -769,6 +1015,97 @@ async function verifyMfaLogin(mfaToken, code) {
  * • With `tenantId` or `tenantSlug`: employee portal (if enabled), then org admin.
  * • Legacy: tenant resolved solely by matching `admin_email` on central `tenants`.
  */
+const LOCKOUT_COOLDOWN_MS = 15 * 60 * 1000;
+
+async function getMaxLoginAttempts(tenantPool) {
+  try {
+    const r = await tenantPool.query(
+      'SELECT max_login_attempt_limit FROM password_security_settings LIMIT 1',
+    );
+    return r.rows[0]?.max_login_attempt_limit ?? 5;
+  } catch {
+    return 5;
+  }
+}
+
+async function enforceAdminLockout(pool, id) {
+  const r = await pool.query(
+    'SELECT locked_until FROM admin_users WHERE id = $1',
+    [id],
+  );
+  const row = r.rows[0];
+  if (!row || !row.locked_until) return;
+  if (new Date(row.locked_until) > new Date()) {
+    throw ApiError.unauthorized(
+      'Account temporarily locked due to too many failed login attempts. Please try again later.',
+    );
+  }
+  await pool.query(
+    'UPDATE admin_users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1',
+    [id],
+  );
+}
+
+async function recordAdminFailedLogin(pool, id, maxAttempts) {
+  await pool.query(
+    `UPDATE admin_users
+     SET failed_login_attempts = failed_login_attempts + 1,
+         locked_until = CASE
+           WHEN failed_login_attempts + 1 >= $2
+           THEN NOW() + ($3 * INTERVAL '1 millisecond')
+           ELSE locked_until
+         END
+     WHERE id = $1`,
+    [id, maxAttempts, LOCKOUT_COOLDOWN_MS],
+  );
+}
+
+async function resetAdminLoginCounter(pool, id) {
+  await pool.query(
+    'UPDATE admin_users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1',
+    [id],
+  );
+}
+
+async function enforceEmployeeLockout(pool, id) {
+  const r = await pool.query(
+    'SELECT locked_until FROM employees WHERE id = $1',
+    [id],
+  );
+  const row = r.rows[0];
+  if (!row || !row.locked_until) return;
+  if (new Date(row.locked_until) > new Date()) {
+    throw ApiError.unauthorized(
+      'Account temporarily locked due to too many failed login attempts. Please try again later.',
+    );
+  }
+  await pool.query(
+    'UPDATE employees SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1',
+    [id],
+  );
+}
+
+async function recordEmployeeFailedLogin(pool, id, maxAttempts) {
+  await pool.query(
+    `UPDATE employees
+     SET failed_login_attempts = failed_login_attempts + 1,
+         locked_until = CASE
+           WHEN failed_login_attempts + 1 >= $2
+           THEN NOW() + ($3 * INTERVAL '1 millisecond')
+           ELSE locked_until
+         END
+     WHERE id = $1`,
+    [id, maxAttempts, LOCKOUT_COOLDOWN_MS],
+  );
+}
+
+async function resetEmployeeLoginCounter(pool, id) {
+  await pool.query(
+    'UPDATE employees SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1',
+    [id],
+  );
+}
+
 async function login(email, password, options = {}) {
   const loginId = normalizeLoginId(email);
   const tenantIdParsed =
@@ -798,6 +1135,7 @@ async function login(email, password, options = {}) {
 
     await runTenantMigrations(tenant.db_name).catch(() => {});
     const tenantPool = getTenantPool(tenant.db_name);
+    const maxAttempts = await getMaxLoginAttempts(tenantPool);
     const tenantFeatures = await gatherTenantFeatures(tenant.id);
     const { planDetails, planFeatures } = await fetchPlanBundles(tenant.plan_id);
 
@@ -830,6 +1168,7 @@ async function login(email, password, options = {}) {
         if (adminUser.status !== 'active') {
           throw ApiError.unauthorized('User account is inactive');
         }
+        await enforceAdminLockout(tenantPool, adminUser.id);
         let okRegistry = await comparePassword(password, adminUser.password_hash);
         if (!okRegistry) {
           const empForSync = await findEmployeeForLogin(tenantPool, loginId);
@@ -849,6 +1188,7 @@ async function login(email, password, options = {}) {
           }
         }
         if (okRegistry) {
+          await resetAdminLoginCounter(tenantPool, adminUser.id);
           return buildAdminLoginResult(
             adminUser,
             tenant,
@@ -858,6 +1198,7 @@ async function login(email, password, options = {}) {
             planFeatures,
           );
         }
+        await recordAdminFailedLogin(tenantPool, adminUser.id, maxAttempts);
       }
     }
 
@@ -869,8 +1210,10 @@ async function login(email, password, options = {}) {
       if (String(emp.employment_status || '').toLowerCase() === 'terminated') {
         throw ApiError.unauthorized('User account is inactive');
       }
+      await enforceEmployeeLockout(tenantPool, emp.id);
       const okEmp = await comparePassword(password, emp.password_hash);
       if (okEmp) {
+        await resetEmployeeLoginCounter(tenantPool, emp.id);
         return buildEmployeeLoginResult(
           emp,
           tenant,
@@ -880,6 +1223,7 @@ async function login(email, password, options = {}) {
           planFeatures,
         );
       }
+      await recordEmployeeFailedLogin(tenantPool, emp.id, maxAttempts);
     }
 
     if (!loginId.includes('@')) {
@@ -897,11 +1241,13 @@ async function login(email, password, options = {}) {
     if (adminUser.status !== 'active') {
       throw ApiError.unauthorized('User account is inactive');
     }
+    await enforceAdminLockout(tenantPool, adminUser.id);
     const okAdm = await comparePassword(password, adminUser.password_hash);
     if (!okAdm) {
+      await recordAdminFailedLogin(tenantPool, adminUser.id, maxAttempts);
       throw ApiError.unauthorized('Invalid email or password');
     }
-
+    await resetAdminLoginCounter(tenantPool, adminUser.id);
     return buildAdminLoginResult(
       adminUser,
       tenant,
@@ -929,49 +1275,93 @@ async function login(email, password, options = {}) {
     resolvedTenant = centralResult.rows[0];
     resolvedType = 'admin';
   } else {
-    // Fallback scan active tenants to identify user
-    const tenantsResult = await superAdminPool.query(
-      "SELECT id, name, db_name, status, plan_id, admin_email FROM public.tenants WHERE status = 'active'"
-    );
+    // Try the email→tenant index first (O(1) lookup)
+    const indexRows = await lookupTenants(loginId);
 
-    for (const activeTenant of tenantsResult.rows) {
-      try {
-        const tenantPool = getTenantPool(activeTenant.db_name);
+    if (indexRows.length > 0) {
+      for (const indexRow of indexRows) {
+        try {
+          const tenantPool = getTenantPool(indexRow.db_name);
 
-        // Check if admin user in this tenant
-        const adminResult = await tenantPool.query(
-          `SELECT id, email, password_hash, name, status FROM admin_users WHERE ${sqlEmailMatchesLogin('email')} LIMIT 1`,
-          [loginId]
-        );
-        if (adminResult.rows.length > 0) {
-          const u = adminResult.rows[0];
-          if (await comparePassword(password, u.password_hash)) {
-            resolvedTenant = activeTenant;
-            resolvedUser = u;
-            resolvedType = 'admin';
-            break;
+          if (indexRow.user_type === 'admin') {
+            const adminResult = await tenantPool.query(
+              `SELECT id, email, password_hash, name, status FROM admin_users WHERE ${sqlEmailMatchesLogin('email')} LIMIT 1`,
+              [loginId]
+            );
+            if (adminResult.rows.length > 0) {
+              const u = adminResult.rows[0];
+              if (await comparePassword(password, u.password_hash)) {
+                resolvedTenant = indexRow;
+                resolvedUser = u;
+                resolvedType = 'admin';
+                break;
+              }
+            }
+          } else {
+            const employeeResult = await tenantPool.query(
+              `SELECT id, full_name, work_email, username, password_hash, portal_enabled,
+                      rbac_role_id, employment_status, department
+               FROM employees
+               WHERE deleted_at IS NULL AND ${sqlEmailMatchesLogin('work_email')} LIMIT 1`,
+              [loginId]
+            );
+            if (employeeResult.rows.length > 0) {
+              const emp = employeeResult.rows[0];
+              if (emp.portal_enabled && emp.password_hash && await comparePassword(password, emp.password_hash)) {
+                resolvedTenant = indexRow;
+                resolvedUser = emp;
+                resolvedType = 'employee';
+                break;
+              }
+            }
           }
+        } catch (err) {
+          logger.error(`Error reading tenant ${indexRow.db_name} during central login:`, err);
         }
+      }
+    } else {
+      // O(N) fallback — runs only if user is not yet in the index (pre-backfill window)
+      const tenantsResult = await superAdminPool.query(
+        "SELECT id, name, db_name, status, plan_id, admin_email FROM public.tenants WHERE status = 'active'"
+      );
 
-        // Check if employee in this tenant
-        const employeeResult = await tenantPool.query(
-          `SELECT id, full_name, work_email, username, password_hash, portal_enabled,
-                  rbac_role_id, employment_status, department
-           FROM employees
-           WHERE deleted_at IS NULL AND ${sqlEmailMatchesLogin('work_email')} LIMIT 1`,
-          [loginId]
-        );
-        if (employeeResult.rows.length > 0) {
-          const emp = employeeResult.rows[0];
-          if (emp.portal_enabled && emp.password_hash && await comparePassword(password, emp.password_hash)) {
-            resolvedTenant = activeTenant;
-            resolvedUser = emp;
-            resolvedType = 'employee';
-            break;
+      for (const activeTenant of tenantsResult.rows) {
+        try {
+          const tenantPool = getTenantPool(activeTenant.db_name);
+
+          const adminResult = await tenantPool.query(
+            `SELECT id, email, password_hash, name, status FROM admin_users WHERE ${sqlEmailMatchesLogin('email')} LIMIT 1`,
+            [loginId]
+          );
+          if (adminResult.rows.length > 0) {
+            const u = adminResult.rows[0];
+            if (await comparePassword(password, u.password_hash)) {
+              resolvedTenant = activeTenant;
+              resolvedUser = u;
+              resolvedType = 'admin';
+              break;
+            }
           }
+
+          const employeeResult = await tenantPool.query(
+            `SELECT id, full_name, work_email, username, password_hash, portal_enabled,
+                    rbac_role_id, employment_status, department
+             FROM employees
+             WHERE deleted_at IS NULL AND ${sqlEmailMatchesLogin('work_email')} LIMIT 1`,
+            [loginId]
+          );
+          if (employeeResult.rows.length > 0) {
+            const emp = employeeResult.rows[0];
+            if (emp.portal_enabled && emp.password_hash && await comparePassword(password, emp.password_hash)) {
+              resolvedTenant = activeTenant;
+              resolvedUser = emp;
+              resolvedType = 'employee';
+              break;
+            }
+          }
+        } catch (err) {
+          logger.error(`Error scanning tenant ${activeTenant.db_name} during central login:`, err);
         }
-      } catch (err) {
-        logger.error(`Error scanning tenant ${activeTenant.db_name} during central login:`, err);
       }
     }
   }
@@ -1007,12 +1397,16 @@ async function login(email, password, options = {}) {
         throw ApiError.unauthorized('User account is inactive');
       }
 
+      const centralMaxAttempts = await getMaxLoginAttempts(tenantPool);
+      await enforceAdminLockout(tenantPool, user.id);
       const passwordMatches = await comparePassword(password, user.password_hash);
       if (!passwordMatches) {
+        await recordAdminFailedLogin(tenantPool, user.id, centralMaxAttempts);
         throw ApiError.unauthorized('Invalid email or password');
       }
     }
 
+    await resetAdminLoginCounter(tenantPool, user.id);
     return buildAdminLoginResult(
       user,
       resolvedTenant,
@@ -1025,6 +1419,7 @@ async function login(email, password, options = {}) {
     if (String(resolvedUser.employment_status || '').toLowerCase() === 'terminated') {
       throw ApiError.unauthorized('User account is inactive');
     }
+    await resetEmployeeLoginCounter(tenantPool, resolvedUser.id);
     return buildEmployeeLoginResult(
       resolvedUser,
       resolvedTenant,
@@ -1127,11 +1522,14 @@ async function generateImpersonationToken(tenantId) {
       userType: 'admin',
     },
     env.JWT.secret,
-    { expiresIn: env.JWT.expiresIn },
+    { expiresIn: '4h' },
   );
+
+  const refreshToken = await issueRefreshToken(user.id, 'admin', tenant.id, tenant.db_name, 'admin');
 
   return {
     token,
+    refreshToken,
     user: {
       id: user.id,
       name: user.name,
@@ -1140,12 +1538,44 @@ async function generateImpersonationToken(tenantId) {
       tenantId: tenant.id,
       tenantName: tenant.name,
       allowedModules,
+      dataScope: 'all',
     },
     plan_details: planDetails ? [planDetails] : [],
     plan_features: planFeatures,
     tenant_features: tenantFeatures,
     allowedModules,
   };
+}
+
+const IMPERSONATION_CODE_TTL_MS = 5 * 60 * 1000;
+const impersonationCodes = new Map();
+
+function pruneExpiredCodes() {
+  const now = Date.now();
+  for (const [k, v] of impersonationCodes) {
+    if (v.expiresAt < now) impersonationCodes.delete(k);
+  }
+}
+
+async function issueImpersonationCode(tenantId) {
+  const data = await generateImpersonationToken(tenantId);
+  const code = crypto.randomBytes(32).toString('hex');
+  pruneExpiredCodes();
+  impersonationCodes.set(code, { ...data, expiresAt: Date.now() + IMPERSONATION_CODE_TTL_MS });
+  return code;
+}
+
+function redeemImpersonationCode(code) {
+  if (!code || typeof code !== 'string' || code.length !== 64) {
+    throw ApiError.unauthorized('Invalid impersonation code');
+  }
+  const entry = impersonationCodes.get(code);
+  impersonationCodes.delete(code);
+  if (!entry || entry.expiresAt < Date.now()) {
+    throw ApiError.unauthorized('Impersonation code is invalid or has expired');
+  }
+  const { token, user, plan_details, plan_features, tenant_features, allowedModules } = entry;
+  return { token, user, plan_details, plan_features, tenant_features, allowedModules };
 }
 
 async function getAccessProfile(currentUser) {
@@ -1202,15 +1632,21 @@ async function getAccessProfile(currentUser) {
 
   let allowedModules = ['dashboard'];
   let permissions = [];
+  let dataScope = 'self';
   const tenantPool = getTenantPool(tenant.db_name);
   if (currentUser.role === 'admin') {
     allowedModules = await adminModulesForJwt(tenantPool);
     permissions = ['*'];
+    dataScope = 'all';
   } else if (currentUser.rbacRoleId) {
     const keys = await rbacRepo.permissionKeysForRole(tenantPool, currentUser.rbacRoleId);
     const expanded = expandPermissionKeys(keys);
     allowedModules = toAllowedModulesForJwt(expanded);
     permissions = Array.from(expanded);
+    const { getScopeForRole } = require('../../services/authz.service');
+    dataScope = String(
+      (await getScopeForRole(tenantPool, currentUser.rbacRoleId)) || 'SELF',
+    ).toLowerCase();
   }
 
   return {
@@ -1225,18 +1661,108 @@ async function getAccessProfile(currentUser) {
     tenant_features: tenantFeatures,
     allowedModules,
     permissions,
+    dataScope,
     billing: await safeBillingState(tenant.id),
     refreshed_at: new Date().toISOString(),
   };
+}
+
+/**
+ * Authenticated self-service password change. Verifies the current password and
+ * updates the hash in the correct table for the logged-in user's type
+ * (superadmin / tenant admin / employee).
+ */
+async function changePassword(user, { currentPassword, newPassword } = {}) {
+  if (!currentPassword || !newPassword) {
+    throw ApiError.badRequest('Current and new password are required');
+  }
+  if (String(currentPassword) === String(newPassword)) {
+    throw ApiError.badRequest('New password must be different from the current password');
+  }
+
+  const userType = String(user?.userType || user?.role || '').toLowerCase();
+  const id = user?.id;
+  if (!id) throw ApiError.unauthorized('Not authenticated');
+
+  const { getTenantPool } = require('../../config/db');
+  let currentHash = null;
+  let applyUpdate = null;
+  let passwordPolicy = null; // null → defaults (min 8, no special chars)
+
+  if (userType === 'superadmin' || userType === 'billing_admin' || userType === 'support_admin') {
+    const { rows } = await superAdminPool.query(
+      'SELECT password_hash FROM public.superadmins WHERE id = $1 LIMIT 1',
+      [id],
+    );
+    currentHash = rows[0]?.password_hash || null;
+    applyUpdate = (hash) =>
+      superAdminPool.query('UPDATE public.superadmins SET password_hash = $1 WHERE id = $2', [hash, id]);
+    // Superadmins have no per-tenant policy; passwordPolicy stays null (defaults apply).
+  } else {
+    const dbName = user?.db_name;
+    if (!dbName) throw ApiError.badRequest('No organization context');
+    const tenantPool = getTenantPool(dbName);
+    passwordPolicy = await getPasswordPolicy(tenantPool);
+
+    if (userType === 'employee') {
+      const { rows } = await tenantPool.query(
+        'SELECT password_hash FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1',
+        [id],
+      );
+      currentHash = rows[0]?.password_hash || null;
+      applyUpdate = (hash) =>
+        tenantPool.query('UPDATE employees SET password_hash = $1 WHERE id = $2', [hash, id]);
+    } else {
+      // Tenant admin (admin / hr_admin / billing_admin / support_admin within a tenant).
+      const { rows } = await tenantPool.query(
+        'SELECT password_hash, email FROM admin_users WHERE id = $1 LIMIT 1',
+        [id],
+      );
+      currentHash = rows[0]?.password_hash || null;
+      const adminEmail = rows[0]?.email || null;
+      applyUpdate = async (hash) => {
+        await tenantPool.query('UPDATE admin_users SET password_hash = $1 WHERE id = $2', [hash, id]);
+        // Keep the central tenants row in sync for the primary admin (used at login).
+        if (adminEmail && user?.tenant_id) {
+          const t = await superAdminPool.query(
+            'SELECT admin_email FROM public.tenants WHERE id = $1',
+            [user.tenant_id],
+          );
+          const primary = t.rows[0]?.admin_email;
+          if (primary && normalizeLoginId(primary) === normalizeLoginId(adminEmail)) {
+            await superAdminPool.query('UPDATE public.tenants SET password_hash = $1 WHERE id = $2', [
+              hash,
+              user.tenant_id,
+            ]);
+          }
+        }
+      };
+    }
+  }
+
+  if (!currentHash) throw ApiError.notFound('Account not found');
+
+  const ok = await comparePassword(currentPassword, currentHash);
+  if (!ok) throw ApiError.badRequest('Current password is incorrect');
+
+  validatePasswordAgainstPolicy(newPassword, passwordPolicy);
+  const newHash = await hashPassword(newPassword);
+  await applyUpdate(newHash);
+
+  return { message: 'Password updated successfully.' };
 }
 
 module.exports = {
   requestPasswordReset,
   verifyOTP,
   resetPassword,
+  changePassword,
   verify2FA,
   verifyMfaLogin,
   login,
-  generateImpersonationToken,
-  getAccessProfile
+  issueImpersonationCode,
+  redeemImpersonationCode,
+  getAccessProfile,
+  verifyAndRotateRefreshToken,
+  revokeRefreshToken,
 };

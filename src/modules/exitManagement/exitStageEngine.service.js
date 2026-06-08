@@ -1,5 +1,7 @@
 'use strict';
 
+const logger = require('../../utils/logger');
+
 /**
  * exitStageEngine — stage-advance algorithm + status transitions for the workflow engine.
  *
@@ -128,7 +130,7 @@ async function seedStageEntry(client, requestId, stage) {
      WHERE id = $3`,
     [stage.id, deptId, requestId],
   );
-  console.log(`[Exit Workflow] Request ${requestId} current_stage_id updated to ${stage.id}.`);
+  logger.info('[exit] stage updated', { requestId, stageId: stage.id });
 
   // Open PENDING slot for the stage occurrence (authoritative SLA clock).
   await client.query(
@@ -148,26 +150,41 @@ async function seedStageEntry(client, requestId, stage) {
     [requestId, stage.id],
   );
 
-  // If this stage is IT or Asset Clearance, dynamically fetch employee's assigned assets and insert them as checklist items.
+  // If this stage is IT or Asset Clearance, dynamically fetch the employee's
+  // assigned assets and insert them as checklist items.
   const stageName = (stage.name || '').toLowerCase();
   if (stageName.includes('it clearance') || stageName.includes('asset') || stageName.includes('it admin')) {
     const { rows: reqRows } = await client.query('SELECT employee_id FROM exit_requests WHERE id = $1', [requestId]);
-    if (reqRows.length > 0) {
-      const empId = reqRows[0].employee_id;
+    const empId = reqRows[0]?.employee_id;
+    if (empId) {
+      // CRITICAL: isolate inside a SAVEPOINT. If this asset seeding fails for any
+      // reason (schema differences across tenants, etc.), a bare failed query would
+      // poison the surrounding transaction and make the caller's COMMIT silently roll
+      // back the whole stage-advance — leaving the request stuck. The savepoint lets us
+      // recover and still commit the advance.
+      await client.query('SAVEPOINT seed_assets');
       try {
-        // Query assets assigned to the employee
-        const { rows: assets } = await client.query(`SELECT id, asset_name, asset_code FROM assets WHERE employee_id = $1 AND status = 'ASSIGNED'`, [empId]);
+        const { rows: assets } = await client.query(
+          `SELECT id, asset_id, type, serial_number
+             FROM assets
+            WHERE employee_id = $1
+              AND LOWER(COALESCE(status, '')) NOT IN ('available','returned','retired','disposed','lost')`,
+          [empId],
+        );
         for (const asset of assets) {
+          const name = asset.type || 'Asset';
+          const code = asset.asset_id || asset.serial_number || '';
           await client.query(
             `INSERT INTO exit_request_checklist_items
                (exit_request_id, stage_id, template_item_id, item_type, label, is_mandatory, status)
              VALUES ($1, $2, NULL, 'COLLECT_ASSET', $3, true, 'PENDING')`,
-            [requestId, stage.id, `Collect Asset: ${asset.asset_name} (${asset.asset_code})`]
+            [requestId, stage.id, code ? `Collect Asset: ${name} (${code})` : `Collect Asset: ${name}`],
           );
         }
+        await client.query('RELEASE SAVEPOINT seed_assets');
       } catch (e) {
-        // Fallback or ignore if assets table does not strictly exist
-        console.error('Error fetching assets for clearance', e);
+        await client.query('ROLLBACK TO SAVEPOINT seed_assets');
+        logger.warn('[exit] asset checklist seeding skipped', { err: e.message });
       }
     }
   }
@@ -206,11 +223,11 @@ async function advanceStage(client, request, stage) {
   // 2. approval-mode satisfaction
   const satisfied = await isStageSatisfied(client, request, stage);
   if (!satisfied) {
-    console.log(`[Exit Workflow] Request ${request.id} Stage ${stage.id} not satisfied (approvals_pending).`);
+    logger.debug('[exit] stage approvals pending', { requestId: request.id, stageId: stage.id });
     return { advanced: false, reason: 'approvals_pending' };
   }
 
-  console.log(`[Exit Workflow] Request ${request.id} Stage ${stage.id} COMPLETED.`);
+  logger.info('[exit] stage completed', { requestId: request.id, stageId: stage.id });
 
 
   // 3. mark stage COMPLETE + close the PENDING slot
@@ -224,12 +241,12 @@ async function advanceStage(client, request, stage) {
   // 4/5. next stage or finish
   const next = await getNextStage(client, request.workflow_id, stage.stage_order);
   if (next) {
-    console.log(`[Exit Workflow] Request ${request.id} resolved NEXT STAGE: ${next.id} (${next.name}).`);
+    logger.info('[exit] next stage resolved', { requestId: request.id, nextStageId: next.id });
     await seedStageEntry(client, request.id, next);
     return { advanced: true, completed: false, nextStageId: next.id };
   }
   
-  console.log(`[Exit Workflow] Request ${request.id} resolved NEXT STAGE: NONE (Workflow Completed).`);
+  logger.info('[exit] workflow completed', { requestId: request.id });
 
   await client.query(
     `UPDATE exit_requests

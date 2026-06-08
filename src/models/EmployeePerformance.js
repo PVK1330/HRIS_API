@@ -1,78 +1,5 @@
 'use strict';
 
-/**
- * ============================================================================
- * EmployeePerformance Model / Schema
- * ============================================================================
- * 
- * Fields:
- * - employee: ID referencing Employee table (populated as object)
- * - performanceCycle: ID referencing PerformanceCycle table (populated as object)
- * - competencyRatings: Array of { competency: ID, rating: Number }
- * - overallRating: Calculated average of competency ratings
- * - keyContributions: String
- * - growthObjectives: String
- * - performanceBand: Computed based on overall rating
- * - performanceLead: String
- * - status: 'Pending' or 'Completed'
- * 
- * Implements high-performance batched joins and full CRUD over Postgres pool.
- * ============================================================================
- */
-
-const EmployeePerformanceSchema = {
-  employee: {
-    type: 'ObjectId',
-    ref: 'Employee',
-    required: true
-  },
-  performanceCycle: {
-    type: 'ObjectId',
-    ref: 'PerformanceCycle',
-    required: true
-  },
-  competencyRatings: [
-    {
-      competency: {
-        type: 'ObjectId',
-        ref: 'Competency'
-      },
-      rating: {
-        type: Number,
-        min: 1,
-        max: 5,
-        required: true
-      }
-    }
-  ],
-  overallRating: {
-    type: Number,
-    min: 1,
-    max: 5
-  },
-  keyContributions: {
-    type: String,
-    trim: true
-  },
-  growthObjectives: {
-    type: String,
-    trim: true
-  },
-  performanceBand: {
-    type: String,
-    enum: ['Outstanding', 'Exceeds', 'Meets', 'Needs Improvement']
-  },
-  performanceLead: {
-    type: String
-  },
-  status: {
-    type: String,
-    enum: ['Pending', 'Completed'],
-    default: 'Pending'
-  },
-  timestamps: true
-};
-
 function calculateOverallRating(competencyRatings) {
   if (!Array.isArray(competencyRatings) || competencyRatings.length === 0) {
     return 0;
@@ -1119,4 +1046,4 @@ class EmployeePerformance {
   }
 }
 
-module.exports = { EmployeePerformance, EmployeePerformanceSchema };
+module.exports = { EmployeePerformance };

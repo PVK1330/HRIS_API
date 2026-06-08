@@ -29,6 +29,8 @@ const adminRouter = Router();
 adminRouter.use(authenticate, loadAuthContext);
 adminRouter.use(requirePermission(P.LEAVE_VIEW));
 
+adminRouter.get('/types', ctrl.getTypes);
+
 adminRouter.get('/balances', [
   query('year').optional().isInt({ min: 2000, max: 2100 }),
   query('department').optional().isString().trim(),
@@ -49,12 +51,22 @@ adminRouter.get('/', [
 adminRouter.post('/', [
   requirePermission(P.LEAVE_APPLY),
   body('employeeId').isInt({ min: 1 }).withMessage('employeeId required'),
-  body('leaveType').notEmpty().isString().trim().withMessage('leaveType required'),
+  // Accept either leaveTypeId (preferred) or the leaveType name — the service
+  // resolves by id first, then by name.
+  body('leaveTypeId').optional({ nullable: true }).isInt({ min: 1 }).withMessage('leaveTypeId must be a positive integer'),
+  body('leaveType').optional({ nullable: true }).isString().trim(),
+  body('leaveTypeId').custom((val, { req }) => {
+    const hasId = req.body.leaveTypeId !== undefined && req.body.leaveTypeId !== null && req.body.leaveTypeId !== '';
+    const hasName = typeof req.body.leaveType === 'string' && req.body.leaveType.trim() !== '';
+    if (!hasId && !hasName) throw new Error('leaveTypeId or leaveType is required');
+    return true;
+  }),
   body('fromDate').isDate().withMessage('fromDate required (YYYY-MM-DD)'),
   body('toDate').isDate().withMessage('toDate required (YYYY-MM-DD)'),
   body('reason').notEmpty().isString().trim().withMessage('reason required'),
   body('totalDays').optional({ nullable: true }).isInt({ min: 1 }),
   body('handoverNote').optional().isString().trim(),
+  body('supportingDocumentUrl').optional({ nullable: true }).isString().trim(),
   body('isDraft').optional().isBoolean(),
 ], validate, ctrl.apply);
 

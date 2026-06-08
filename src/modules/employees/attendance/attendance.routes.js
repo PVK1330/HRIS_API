@@ -90,21 +90,40 @@ adminRouter.get('/overtime', anyViewPermission(), [
   query('limit').optional().isInt({ min: 1, max: 200 }),
 ], validate, ctrl.overtimeRecords);
 
-// Add Overtime — manage/approve gated; data scope is enforced in the service.
+// Add Overtime — managers add for their scope; employees (attendance.create) add for
+// THEMSELVES only. Data scope + self-restriction are enforced in the service.
 adminRouter.post('/overtime', requireAnyPermission(
   P.ATTENDANCE_MANAGE,
   P.ATTENDANCE_APPROVE,
+  P.ATTENDANCE_CREATE,
 ), [
-  body('employeeId').isInt({ min: 1 }),
+  body('employeeId').optional().isInt({ min: 1 }),
   body('date').isDate(),
   body('overtimeHours').isFloat({ gt: 0 }),
   body('description').optional({ nullable: true }).isString().trim(),
   body('status').optional().isIn(['Pending', 'Approved', 'Rejected']),
 ], validate, ctrl.createOvertime);
+
+// Edit / delete a still-Pending overtime entry (locked once approved/rejected).
+adminRouter.patch('/overtime/:id', requireAnyPermission(
+  P.ATTENDANCE_MANAGE,
+  P.ATTENDANCE_APPROVE,
+), [
+  param('id').isInt({ min: 1 }),
+  body('overtimeHours').optional().isFloat({ gt: 0 }),
+  body('description').optional({ nullable: true }).isString().trim(),
+], validate, ctrl.updateOvertime);
+
+adminRouter.delete('/overtime/:id', requireAnyPermission(
+  P.ATTENDANCE_MANAGE,
+  P.ATTENDANCE_APPROVE,
+), [
+  param('id').isInt({ min: 1 }),
+], validate, ctrl.deleteOvertime);
 adminRouter.get('/regularizations/history', anyViewPermission(), [
   query('status').optional().isIn(['Pending', 'Approved', 'Rejected']),
   query('page').optional().isInt({ min: 1 }),
-  query('limit').optional().isInt({ min: 1, max: 100 }),
+  query('limit').optional().isInt({ min: 1, max: 200 }),
 ], validate, ctrl.regularizationHistory);
 
 adminRouter.get('/payroll-summary', anyViewPermission(), [
@@ -144,12 +163,8 @@ adminRouter.post('/', requirePermission(P.ATTENDANCE_MANAGE), v.overrideBody, va
 adminRouter.get('/:id', anyViewPermission(), [param('id').isInt({ min: 1 })], validate, ctrl.detail);
 
 adminRouter.patch('/:id/regularize', (req, res, next) => {
-  const { hasPermission } = require('../../../services/authz.service');
-  const ok =
-    hasPermission(req.auth, P.ATTENDANCE_APPROVE)
-    || hasPermission(req.auth, P.ATTENDANCE_REJECT)
-    || hasPermission(req.auth, P.ATTENDANCE_MANAGE);
-  if (!ok) {
+  const { canApproveAttendance } = require('../../../services/authz.service');
+  if (!canApproveAttendance(req.auth)) {
     const ApiError = require('../../../utils/ApiError');
     return next(ApiError.forbidden('Approve or reject permission required'));
   }
@@ -161,12 +176,8 @@ adminRouter.patch('/:id/regularize', (req, res, next) => {
 ], validate, ctrl.regularize);
 
 adminRouter.patch('/:id/overtime', (req, res, next) => {
-  const { hasPermission } = require('../../../services/authz.service');
-  const ok =
-    hasPermission(req.auth, P.ATTENDANCE_APPROVE)
-    || hasPermission(req.auth, P.ATTENDANCE_REJECT)
-    || hasPermission(req.auth, P.ATTENDANCE_MANAGE);
-  if (!ok) {
+  const { canApproveAttendance } = require('../../../services/authz.service');
+  if (!canApproveAttendance(req.auth)) {
     const ApiError = require('../../../utils/ApiError');
     return next(ApiError.forbidden('Approve or reject permission required'));
   }

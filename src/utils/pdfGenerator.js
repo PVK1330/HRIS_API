@@ -1,6 +1,7 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
+const logger = require('./logger');
 
 const PDF_NAV_TIMEOUT_MS = Number(process.env.PDF_NAV_TIMEOUT_MS) || 60_000;
 
@@ -229,7 +230,7 @@ async function generatePdfFromHtml(htmlBody, tenant = {}) {
 
     return pdfBuffer;
   } catch (error) {
-    console.error('Error generating PDF with Puppeteer:', error);
+    logger.error('[pdf] puppeteer PDF generation failed', { err: error.message });
     if (error.message && /Could not find Chrome|executablePath/i.test(error.message)) {
       const hint = new Error(
         'PDF engine: Chrome/Chromium not found. Install Chrome or set PUPPETEER_EXECUTABLE_PATH in .env to your chrome.exe path.',

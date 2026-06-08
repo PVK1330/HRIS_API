@@ -5,6 +5,7 @@ const path = require('path');
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 
 const env = require('./config/env');
 const { createCorsOptions } = require('./config/cors');
@@ -75,6 +76,7 @@ app.use(generalLimiter);
 
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(cookieParser());
 
 /* -------------------- Static uploads -------------------- */
 
@@ -94,28 +96,50 @@ const SUPERADMIN_LOGOS_DIR = path.join(UPLOADS_DIR, 'superadmin-logos');
 if (!fs.existsSync(SUPERADMIN_LOGOS_DIR)) {
   fs.mkdirSync(SUPERADMIN_LOGOS_DIR, { recursive: true });
 }
-app.use('/uploads', express.static(UPLOADS_DIR, {
+// Harden every static upload response. SVG uploads are blocked at the multer
+// filter (see upload.middleware.js), but these headers neutralize any
+// already-stored SVG/HTML and prevent MIME-sniffing as defense-in-depth:
+//  - nosniff: a mislabeled file can't be reinterpreted as an active type
+//  - script-src/object-src 'none': blocks active content on every response
+//  - For risky text-based formats (SVG/XML/HTML) that can carry embedded JS,
+//    additionally apply `default-src 'none'` + `sandbox` (no allow-scripts) so
+//    that even direct navigation to the file cannot execute script. CSP on a
+//    subresource only applies when the file is the top-level document, so
+//    inline <img> embedding of legitimate images is unaffected. The strict
+//    sandbox is scoped away from PDFs/docs to preserve inline preview.
+const RISKY_STATIC_EXT = new Set(['.svg', '.svgz', '.xml', '.html', '.htm', '.xhtml']);
+
+function setUploadHeaders(res, filePath) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  const ext = path.extname(filePath || '').toLowerCase();
+  if (RISKY_STATIC_EXT.has(ext)) {
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'none'; object-src 'none'; sandbox",
+    );
+    res.setHeader('Content-Disposition', 'attachment');
+  } else {
+    res.setHeader('Content-Security-Policy', "script-src 'none'; object-src 'none'");
+  }
+}
+
+const STATIC_OPTS = {
   fallthrough: true,
   maxAge: '1d',
   index: false,
-}));
+  setHeaders: setUploadHeaders,
+};
+
+app.use('/uploads', express.static(UPLOADS_DIR, STATIC_OPTS));
 
 app.use(
   '/uploads/tenant-logos',
-  express.static(TENANT_LOGOS_DIR, {
-    fallthrough: true,
-    maxAge: '1d',
-    index: false,
-  }),
+  express.static(TENANT_LOGOS_DIR, STATIC_OPTS),
 );
 
 app.use(
   '/uploads/superadmin-logos',
-  express.static(SUPERADMIN_LOGOS_DIR, {
-    fallthrough: true,
-    maxAge: '1d',
-    index: false,
-  }),
+  express.static(SUPERADMIN_LOGOS_DIR, STATIC_OPTS),
 );
 
 /* -------------------- Health -------------------- */
@@ -146,25 +170,19 @@ app.use('/api/v1/holidays', holidaysRoutes);
 app.use('/api/v1/leave', leaveAdminRoutes);
 // Standalone dropdowns (placed BEFORE general routers to avoid wildcard matching)
 app.get('/api/v1/performance-cycles/dropdown', authenticate, loadAuthContext, getCyclesDropdown);
-app.get('/api/performance-cycles/dropdown', authenticate, loadAuthContext, getCyclesDropdown);
 app.get('/api/v1/competencies/dropdown', authenticate, loadAuthContext, getCompetenciesDropdown);
-app.get('/api/competencies/dropdown', authenticate, loadAuthContext, getCompetenciesDropdown);
 
 app.use('/api/v1/performance-cycles', performanceCyclesRoutes);
 app.use('/api/v1/competencies', competencyRoutes);
-app.use('/api/competencies', competencyRoutes);
 
 // Employee Performance Assessment endpoints
 app.use('/api/v1/employee-performance', employeePerformanceRoutes);
-app.use('/api/employee-performance', employeePerformanceRoutes);
 
 // Performance Export endpoints
 app.use('/api/v1/performance', performanceExportRoutes);
-app.use('/api/performance', performanceExportRoutes);
 
 // Manager Performance Review endpoints
 app.use('/api/v1/manager/performance', managerPerformanceRoutes);
-app.use('/api/manager/performance', managerPerformanceRoutes);
 
 app.use('/api/v1/messages', messagesRoutes);
 app.use('/api/v1/admin/settings/assets', assetSettingsRoutes);
@@ -193,9 +211,9 @@ app.use('/api/v1/admin/settings/onboarding', onboardingSettingsRoutes);
 app.use('/api/v1/admin/documents', adminDocumentsRoutes);
 app.use('/api/v1/admin/payroll', require('./modules/payroll/payroll.routes'));
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
-app.use('/api/support', supportRoutes);
-app.use('/api/admin/support', supportRoutes);
-app.use('/api/superadmin/support', superadminSupportRoutes);
+app.use('/api/v1/support', supportRoutes);
+app.use('/api/v1/admin/support', supportRoutes);
+app.use('/api/v1/superadmin/support', superadminSupportRoutes);
 app.use(
   '/api/v1/public/candidate-onboarding',
   require('./routes/public/candidateOnboardingRoutes'),
@@ -205,5 +223,18 @@ app.use(
 
 app.use(notFoundHandler);
 app.use(errorHandler);
+
+/* -------------------- Startup: email→tenant index backfill -------------------- */
+
+setImmediate(() => {
+  require('./utils/userTenantIndex')
+    .backfillAll()
+    .catch((err) => {
+      require('./utils/logger').warn(
+        '[startup] userTenantIndex backfill failed — O(N) scan remains as fallback:',
+        err.message,
+      );
+    });
+});
 
 module.exports = app;

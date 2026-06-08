@@ -10,6 +10,7 @@ const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
 const resolver = require('./exitAccessResolver.service');
 const engine = require('./exitStageEngine.service');
+const logger = require('../../utils/logger');
 
 let notifications = null;
 function notify() {
@@ -26,7 +27,9 @@ function emit(tenant, room, event, payload) {
     const { getIo } = require('../../socket');
     const io = getIo();
     if (io) io.to(room).emit(event, payload);
-  } catch (_) { /* non-blocking */ }
+  } catch (emitErr) {
+    logger.debug('[exit] socket emit failed', { room, event, err: emitErr.message });
+  }
 }
 
 function empName(r) {
@@ -53,6 +56,34 @@ async function submitExitRequest(tenant, data, exitUser, file = null) {
   const pool = await getTenantPool(tenant.dbName);
   const employeeId = data.employee_id || exitUser.employeeId;
   if (!employeeId) throw ApiError.badRequest('employee_id is required');
+
+  // Authorization: only HR / Org Admin (can terminate) may file an exit for another
+  // employee or record an involuntary termination. A regular employee may ONLY submit
+  // their own voluntary resignation.
+  const isAuthorized = Boolean(exitUser.isOrgExitAdmin || exitUser.canTerminateExit);
+  if (!isAuthorized) {
+    if (!exitUser.employeeId || Number(employeeId) !== Number(exitUser.employeeId)) {
+      throw ApiError.forbidden(
+        'You can only submit a resignation for your own account. Filing an exit for another employee requires HR / administrator access.',
+      );
+    }
+    if (data.exit_type === 'termination' || data.is_voluntary === false) {
+      throw ApiError.forbidden(
+        'Only HR or an authorized administrator can terminate an employee. You can submit a resignation.',
+      );
+    }
+    if (data.termination_type_id) {
+      const { rows: tt } = await pool.query(
+        'SELECT name FROM termination_types WHERE id = $1', [data.termination_type_id],
+      );
+      const name = String(tt[0]?.name || '').toLowerCase();
+      if (/dismiss|terminat|redundan|layoff|involuntary|for cause|fired/.test(name)) {
+        throw ApiError.forbidden(
+          'Only HR or an authorized administrator can record a termination. You can submit a resignation.',
+        );
+      }
+    }
+  }
 
   const { rows: empRows } = await pool.query(
     `SELECT id, full_name, first_name, last_name, work_email, employment_status
@@ -148,8 +179,10 @@ async function submitExitRequest(tenant, data, exitUser, file = null) {
         type: 'exit_management',
         sendEmail: false,
       });
-    } catch (_) { /* non-blocking */ }
-    events().onSubmitted(tenant, requestId).catch((e) => console.error('Exit workflow event error:', e));
+    } catch (notifyErr) {
+      logger.warn('[exit] submission notification failed', { employeeId, err: notifyErr.message });
+    }
+    events().onSubmitted(tenant, requestId).catch((e) => logger.error('[exit] workflow event error', { err: e.message }));
 
     return getExitRequest(tenant, requestId, exitUser);
   } catch (err) {
@@ -370,13 +403,13 @@ async function approveStage(tenant, id, exitUser, comments) {
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'approve' });
     
     if (result.advanced) {
-      console.log(`[Exit Workflow] Stage advanced for request ${id}. Completed: ${result.completed}`);
+      logger.info('[exit] stage advanced', { requestId: id, completed: result.completed });
       emit(tenant, `exit:${id}`, result.completed ? 'exit:request_completed' : 'exit:stage_advanced', { exitRequestId: Number(id) });
-      
+
       events().onApproved(tenant, Number(id), !!result.completed)
-        .catch((e) => console.error('Exit workflow event error:', e));
+        .catch((e) => logger.error('[exit] workflow event error', { err: e.message }));
     } else {
-      console.log(`[Exit Workflow] Request ${id} did not advance. Reason: ${result.reason}`);
+      logger.info('[exit] request did not advance', { requestId: id, reason: result.reason });
     }
 
     return getExitRequest(tenant, id, exitUser);
@@ -419,8 +452,10 @@ async function rejectStage(tenant, id, exitUser, reason) {
         type: 'exit_management',
         sendEmail: false,
       });
-    } catch (_) { /* non-blocking */ }
-    events().onRejected(tenant, Number(id), reason).catch((e) => console.error('Exit workflow event error:', e));
+    } catch (notifyErr) {
+      logger.warn('[exit] rejection notification failed', { employeeId: request.employee_id, err: notifyErr.message });
+    }
+    events().onRejected(tenant, Number(id), reason).catch((e) => logger.error('[exit] workflow event error', { err: e.message }));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -461,8 +496,8 @@ async function sendBackStage(tenant, id, exitUser, { target_stage_id, comments }
     events().onSendBack(tenant, Number(id), {
       reason: comments,
       exitUser: { ...exitUser, actorName: exitUser.actorName || exitUser.full_name },
-    }).catch((e) => console.error('Exit workflow event error:', e));
-    events().onStageEntered(tenant, Number(id), { skipBroadcast: true }).catch((e) => console.error('Exit workflow event error:', e));
+    }).catch((e) => logger.error('[exit] workflow event error', { err: e.message }));
+    events().onStageEntered(tenant, Number(id), { skipBroadcast: true }).catch((e) => logger.error('[exit] workflow event error', { err: e.message }));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -495,7 +530,7 @@ async function reassignStage(tenant, id, exitUser, { department_id, comments }) 
     await recordAction(client, { ...request, current_owner_department_id: department_id }, 'REASSIGN', exitUser, comments);
     await client.query('COMMIT');
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'reassign' });
-    events().onReassigned(tenant, Number(id)).catch((e) => console.error('Exit workflow event error:', e));
+    events().onReassigned(tenant, Number(id)).catch((e) => logger.error('[exit] workflow event error', { err: e.message }));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -532,7 +567,7 @@ async function escalateStage(tenant, id, exitUser, comments) {
     );
     await client.query('COMMIT');
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'escalate' });
-    events().onEscalated(tenant, Number(id), stage.escalation_to_user_id || null).catch((e) => console.error('Exit workflow event error:', e));
+    events().onEscalated(tenant, Number(id), stage.escalation_to_user_id || null).catch((e) => logger.error('[exit] workflow event error', { err: e.message }));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -555,7 +590,7 @@ async function addComment(tenant, id, exitUser, comments) {
     events().onCommentAdded(tenant, Number(id), {
       comment: comments,
       exitUser: { ...exitUser, actorName: exitUser.actorName || exitUser.full_name },
-    }).catch((e) => console.error('Exit workflow event error:', e));
+    }).catch((e) => logger.error('[exit] workflow event error', { err: e.message }));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -590,7 +625,7 @@ async function withdrawExitRequest(tenant, id, exitUser, reason) {
     );
     await client.query('COMMIT');
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'withdraw' });
-    events().onWithdrawn(tenant, Number(id), reason).catch((e) => console.error('Exit workflow event error:', e));
+    events().onWithdrawn(tenant, Number(id), reason).catch((e) => logger.error('[exit] workflow event error', { err: e.message }));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');

@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { superadminOnboardTenant, completeOnboarding } = require('../../services/onboardingService');
 const { superadminPool } = require('../../config/db');
+const logger = require('../../utils/logger');
 
 /**
  * POST /api/superadmin/onboarding/tenant
@@ -22,7 +23,7 @@ router.post('/tenant', async (req, res) => {
       message: 'Tenant onboarded successfully. Temporary password sent to admin email.'
     });
   } catch (error) {
-    console.error('Error onboarding tenant:', error);
+    logger.error('[onboarding] error onboarding tenant', { err: error.message });
     res.status(500).json({ error: error.message || 'Failed to onboard tenant' });
   }
 });
@@ -42,7 +43,7 @@ router.get('/pending', async (req, res) => {
     );
     res.json({ data: result.rows });
   } catch (error) {
-    console.error('Error fetching pending onboarding:', error);
+    logger.error('[onboarding] error fetching pending onboarding', { err: error.message });
     res.status(500).json({ error: 'Failed to fetch pending onboarding' });
   }
 });
@@ -60,7 +61,7 @@ router.put('/:tenantId/complete', async (req, res) => {
       message: 'Onboarding marked as complete'
     });
   } catch (error) {
-    console.error('Error completing onboarding:', error);
+    logger.error('[onboarding] error completing onboarding', { err: error.message });
     res.status(500).json({ error: 'Failed to complete onboarding' });
   }
 });
@@ -80,7 +81,7 @@ router.get('/subscription-plans', async (req, res) => {
     );
     res.json({ data: result.rows });
   } catch (error) {
-    console.error('Error fetching subscription plans:', error);
+    logger.error('[onboarding] error fetching subscription plans', { err: error.message });
     res.status(500).json({ error: 'Failed to fetch subscription plans' });
   }
 });

@@ -20,12 +20,14 @@ const SUPERADMIN_LOGO_DIR = path.join(UPLOADS_DIR, 'superadmin-logos');
 const MAX_SIZE_MB = Math.round(env.UPLOAD.maxSize / (1024 * 1024)) || 2;
 const MAX_SIZE_BYTES = env.UPLOAD.maxSize;
 
-const ALLOWED_EXT = new Set(['.png', '.jpg', '.jpeg', '.svg', '.ico', '.pdf', '.doc', '.docx', '.xls', '.xlsx']);
+// SVG is intentionally excluded: SVGs can embed <script>/on* handlers and
+// execute as stored XSS when served statically. Raster/icon/document formats
+// only. See the hardened /uploads static headers in app.js for defense-in-depth.
+const ALLOWED_EXT = new Set(['.png', '.jpg', '.jpeg', '.ico', '.pdf', '.doc', '.docx', '.xls', '.xlsx']);
 const ALLOWED_MIME = new Set([
   'image/png',
   'image/jpeg',
   'image/jpg',
-  'image/svg+xml',
   'image/x-icon',
   'image/vnd.microsoft.icon',
   'application/pdf',
@@ -47,8 +49,9 @@ function ensureTenantLogoDir() {
   }
 }
 
-const TENANT_LOGO_EXT = new Set(['.png', '.jpg', '.jpeg', '.svg']);
-const TENANT_LOGO_MIME = new Set(['image/png', 'image/jpeg', 'image/svg+xml']);
+// SVG excluded — see ALLOWED_EXT note above (stored-XSS risk).
+const TENANT_LOGO_EXT = new Set(['.png', '.jpg', '.jpeg']);
+const TENANT_LOGO_MIME = new Set(['image/png', 'image/jpeg']);
 
 const SUPPORT_UPLOAD_DIR = path.join(UPLOADS_DIR, 'support-attachments');
 
@@ -125,7 +128,7 @@ const tenantLogoStorage = aws.isS3Configured
 function tenantLogoFileFilter(_req, file, cb) {
   const ext = path.extname(file.originalname).toLowerCase();
   if (!TENANT_LOGO_EXT.has(ext) || !TENANT_LOGO_MIME.has(file.mimetype)) {
-    return cb(new ApiError(400, 'Only PNG, JPG, SVG files are allowed'));
+    return cb(new ApiError(400, 'Only PNG, JPG files are allowed'));
   }
   cb(null, true);
 }

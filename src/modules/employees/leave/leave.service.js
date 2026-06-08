@@ -2,7 +2,7 @@
 
 const { getTenantPool } = require('../../../config/db');
 const ApiError = require('../../../utils/ApiError');
-const { runTenantMigrations } = require('../../tenant/tenant.service');
+const { ensureMigrated } = require('../../../utils/tenantMigration');
 const empRepo = require('../employees.repository');
 const repo = require('./leave.repository');
 const carryForward = require('./leaveCarryForward.service');
@@ -10,17 +10,8 @@ const { sendSystemNotification } = require('../../notifications/notifications.se
 const { hasPermission } = require('../../../services/authz.service');
 const { P } = require('../../../constants/permissions');
 const { assertEmployeeRecordAccess } = require('../../../utils/applyDataScope');
-
-const _cache = new Map();
-async function ensureMigrated(dbName) {
-  if (_cache.has(dbName)) return _cache.get(dbName);
-  const p = runTenantMigrations(dbName).catch((err) => {
-    _cache.delete(dbName);
-    throw ApiError.internal('Database setup failed.');
-  });
-  _cache.set(dbName, p);
-  return p;
-}
+const leaveSettingsService = require('../../leaveSettings/leaveSettings.service');
+const logger = require('../../../utils/logger');
 
 function getPool(user) {
   if (!user?.db_name) throw ApiError.unauthorized('Tenant not found');
@@ -90,6 +81,7 @@ async function listLeave(user, auth, query = {}) {
     status:     query.status     || '',
     year,
     department: query.department || '',
+    leaveType:  query.leaveType  || '',
     search:     query.search     || '',
     limit,
     offset,
@@ -102,6 +94,12 @@ async function listLeave(user, auth, query = {}) {
   ]);
 
   return { requests, total, stats, year, limit, page: Math.max(1, parseInt(query.page, 10) || 1) };
+}
+
+async function getActiveLeaveTypes(user) {
+  const dbName = user.db_name || user.tenantDb;
+  const result = await leaveSettingsService.getAllLeaveTypes(dbName);
+  return { leaveTypes: result.leaveTypes.filter(t => t.isActive) };
 }
 
 // ─── Admin: POST /leave ───────────────────────────────────────────────────────
@@ -230,11 +228,18 @@ async function applyLeave(user, auth, data) {
     }
   }
 
-  // 8. Determine initial status — auto_approval skips Pending
+  // 8. Determine initial status — auto_approval skips Pending;
+  //    if the employee has no reporting manager, skip directly to Dept Approval stage.
   const autoApprove = Boolean(leaveTypeCfg.auto_approval);
   let initialStatus = 'Pending Manager Approval';
-  if (data.isDraft) initialStatus = 'Draft';
-  else if (autoApprove) initialStatus = 'Approved';
+  if (data.isDraft) {
+    initialStatus = 'Draft';
+  } else if (autoApprove) {
+    initialStatus = 'Approved';
+  } else if (!emp.reporting_manager_id) {
+    // Escalation: no manager → Department Head is first approver.
+    initialStatus = 'Pending Dept Approval';
+  }
 
   // 9 + 10. Insert request, and (if auto-approved) deduct balance — atomically and
   // under a row lock so concurrent applies can't both pass the balance check and
@@ -286,7 +291,7 @@ async function applyLeave(user, auth, data) {
       entityType: 'leave',
       entityId: request.id,
       redirectUrl: '/admin/attendance/dashboard'
-    }).catch(err => console.error('Failed to notify manager:', err));
+    }).catch(err => logger.error('[leave] failed to notify manager', { err: err.message }));
   } else if (initialStatus === 'Approved') {
     await sendSystemNotification(user, {
       employeeId: data.employeeId,
@@ -296,7 +301,7 @@ async function applyLeave(user, auth, data) {
       entityType: 'leave',
       entityId: request.id,
       redirectUrl: '/attendance'
-    }).catch(err => console.error('Failed to notify employee:', err));
+    }).catch(err => logger.error('[leave] failed to notify employee', { err: err.message }));
   }
 
   return {
@@ -313,7 +318,7 @@ async function applyLeave(user, auth, data) {
 
 // ─── Admin: PATCH /leave/:id ──────────────────────────────────────────────────
 
-// Roles permitted to give the FINAL (HR) approval. Tenant admins / superadmins act as HR.
+// Roles permitted to give the FINAL (HR) approval.
 const HR_ROLES = new Set(['admin', 'superadmin', 'hr_admin', 'hr_executive', 'hr']);
 function isHrActor(user) {
   return HR_ROLES.has(String(user?.role || '').toLowerCase());
@@ -346,8 +351,6 @@ async function processLeave(user, auth, id, { action, reason }) {
     if (!hasPermission(auth, P.LEAVE_APPROVE)) {
       throw ApiError.forbidden('Leave approval permission required');
     }
-    // SECURITY: segregation of duties — an approver may never approve/reject their
-    // own leave request, even with LEAVE_APPROVE (mirrors attendance self-approval guard).
     if (isOwnRequest) {
       throw ApiError.forbidden('You cannot approve or reject your own leave request');
     }
@@ -356,17 +359,24 @@ async function processLeave(user, auth, id, { action, reason }) {
   }
 
   let newStatus;
-  let stage; // 'manager' | 'hr' | undefined
+  let stage; // 'manager' | 'dept' | 'hr' | undefined
 
   if (action === 'submit') {
     if (request.status !== 'Draft') {
       throw ApiError.badRequest(`Cannot submit a request with status "${request.status}"`);
     }
-    newStatus = 'Pending Manager Approval';
+    // Escalation on submit — re-check manager assignment at processing time too.
+    newStatus = emp.reporting_manager_id
+      ? 'Pending Manager Approval'
+      : 'Pending Dept Approval';
+
   } else if (action === 'approve') {
     if (request.status === 'Pending Manager Approval') {
-      // Stage 1 — manager approval
-      if (user.role === 'manager' && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)) {
+      // Stage 1 — Reporting Manager
+      if (
+        user.role === 'manager'
+        && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)
+      ) {
         throw ApiError.forbidden('You can only approve requests for your direct reports.');
       }
       newStatus = 'Pending HR Approval';
@@ -381,9 +391,13 @@ async function processLeave(user, auth, id, { action, reason }) {
     } else {
       throw ApiError.badRequest(`Cannot approve a request with status "${request.status}"`);
     }
+
   } else if (action === 'reject') {
     if (request.status === 'Pending Manager Approval') {
-      if (user.role === 'manager' && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)) {
+      if (
+        user.role === 'manager'
+        && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)
+      ) {
         throw ApiError.forbidden('You can only reject requests for your direct reports.');
       }
       newStatus = 'Rejected by Manager';
@@ -395,6 +409,7 @@ async function processLeave(user, auth, id, { action, reason }) {
     } else {
       throw ApiError.badRequest(`Cannot reject a request with status "${request.status}"`);
     }
+
   } else { // cancel
     if (!['Pending Manager Approval', 'Pending HR Approval', 'Approved', 'Draft'].includes(request.status)) {
       throw ApiError.badRequest(`Cannot cancel a request with status "${request.status}"`);
@@ -402,7 +417,7 @@ async function processLeave(user, auth, id, { action, reason }) {
     newStatus = 'Cancelled';
   }
 
-  // Transaction for updating status and balances atomically
+  // Transaction: update status and balance atomically.
   const client = await pool.connect();
   let updated;
   try {
@@ -413,9 +428,10 @@ async function processLeave(user, auth, id, { action, reason }) {
       stage,
       actorId:         user.id,
       rejectionReason: reason || null,
+      remarks:         reason || null,
     });
 
-    // ── Balance logic — only the FINAL approval consumes balance ────────────────
+    // Balance: only the FINAL HR approval deducts; cancelling an Approved leave restores it.
     const leaveTypeCfg = await repo.findActiveLeaveType(client, request.leave_type);
     const isUnpaid     = leaveTypeCfg?.paid_or_unpaid === 'Unpaid';
 
@@ -424,8 +440,6 @@ async function processLeave(user, auth, id, { action, reason }) {
       const annualDays = leaveTypeCfg?.annual_entitlement_days ?? 0;
 
       if (newStatus === 'Approved') {
-        // Deduct days — leave is now consuming the balance. Lock the row first so two
-        // concurrent final approvals can't both read a stale `used` and under-deduct.
         const balance = await repo.lockBalanceForUpdate(
           client, request.employee_id, request.leave_type, year, annualDays
         );
@@ -438,14 +452,11 @@ async function processLeave(user, auth, id, { action, reason }) {
         }
         await repo.incrementUsed(client, request.employee_id, request.leave_type, year, request.total_days);
       } else if (newStatus === 'Cancelled' && request.status === 'Approved') {
-        // Restore days — previously approved leave is being cancelled. Atomic decrement
-        // (clamped at 0) under lock, symmetric with the deduction above.
         await repo.lockBalanceForUpdate(
           client, request.employee_id, request.leave_type, year, annualDays
         );
         await repo.incrementUsed(client, request.employee_id, request.leave_type, year, -request.total_days);
       }
-      // Reject, or cancel before final approval → no balance change (never deducted).
     }
 
     await client.query('COMMIT');
@@ -456,17 +467,16 @@ async function processLeave(user, auth, id, { action, reason }) {
     client.release();
   }
 
-  // Send Workflow Notifications (Outside transaction)
+  // Notifications (outside transaction).
   if (action === 'submit') {
     await sendSystemNotification(user, {
       forAdmin: true,
       title: 'New Leave Request',
-      message: `A draft leave request for ${request.leave_type} (${request.total_days} days) has been submitted for manager approval.`,
-      type: 'leave_request',
-      entityType: 'leave',
-      entityId: request.id,
+      message: `A draft leave request for ${request.leave_type} (${request.total_days} days) has been submitted.`,
+      type: 'leave_request', entityType: 'leave', entityId: request.id,
       redirectUrl: '/admin/attendance/dashboard'
-    }).catch(err => console.error(err));
+    }).catch(err => logger.error('[leave] failed to notify admin of draft submission', { err: err.message }));
+
   } else if (action === 'approve') {
     if (newStatus === 'Pending HR Approval') {
       await sendSystemNotification(user, {
@@ -477,28 +487,24 @@ async function processLeave(user, auth, id, { action, reason }) {
         entityType: 'leave',
         entityId: request.id,
         redirectUrl: '/admin/attendance/dashboard'
-      }).catch(err => console.error(err));
+      }).catch(err => logger.error('[leave] failed to notify admin of pending HR approval', { err: err.message }));
     } else if (newStatus === 'Approved') {
       await sendSystemNotification(user, {
         employeeId: request.employee_id,
         title: 'Leave Approved',
         message: `Your leave request for ${request.leave_type} (${request.total_days} days) has been fully approved!`,
-        type: 'leave_approved',
-        entityType: 'leave',
-        entityId: request.id,
+        type: 'leave_approved', entityType: 'leave', entityId: request.id,
         redirectUrl: '/attendance'
-      }).catch(err => console.error(err));
+      }).catch(err => logger.error('[leave] failed to notify employee of approval', { err: err.message }));
     }
   } else if (action === 'reject') {
     await sendSystemNotification(user, {
       employeeId: request.employee_id,
       title: 'Leave Rejected',
       message: `Your leave request for ${request.leave_type} was rejected. Reason: ${reason || 'Not provided'}`,
-      type: 'leave_rejected',
-      entityType: 'leave',
-      entityId: request.id,
+      type: 'leave_rejected', entityType: 'leave', entityId: request.id,
       redirectUrl: '/attendance'
-    }).catch(err => console.error(err));
+    }).catch(err => logger.error('[leave] failed to notify employee of rejection', { err: err.message }));
   }
 
   return updated;
@@ -536,6 +542,7 @@ async function runCarryForward(user, { year } = {}) {
 module.exports = {
   getLeave,
   listLeave,
+  getActiveLeaveTypes,
   applyLeave,
   processLeave,
   listBalances,

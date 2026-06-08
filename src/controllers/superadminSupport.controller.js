@@ -1,6 +1,7 @@
 const superadminSupportService = require('../services/superadminSupport.service');
 const { emitTicketUpdate, emitTicketDeleted, getIo } = require('../socket');
 const { pushNotification } = require('../modules/notifications/notifications.service');
+const logger = require('../utils/logger');
 
 /**
  * Superadmin Support Controller
@@ -50,7 +51,7 @@ async function listAllTickets(req, res) {
       },
     });
   } catch (error) {
-    console.error('[SUPERADMIN SUPPORT] Error listing tickets:', error);
+    logger.error('[superadmin-support] error listing tickets', { err: error.message });
     res.status(500).json({
       success: false,
       message: 'Failed to fetch support tickets',
@@ -72,7 +73,7 @@ async function getStats(req, res) {
       data: stats,
     });
   } catch (error) {
-    console.error('Error fetching stats:', error);
+    logger.error('[superadmin-support] error fetching stats', { err: error.message });
     res.status(500).json({
       success: false,
       message: 'Failed to fetch ticket statistics',
@@ -104,7 +105,7 @@ async function getTicketDetails(req, res) {
       data: transformed,
     });
   } catch (error) {
-    console.error('Error fetching ticket details:', error);
+    logger.error('[superadmin-support] error fetching ticket details', { err: error.message });
     res.status(500).json({
       success: false,
       message: 'Failed to fetch ticket details',
@@ -162,13 +163,13 @@ async function updateStatus(req, res) {
         forAdmin: false
       });
       
-      console.log('[SUPERADMIN] Created notification for admin', updatedTicket.admin_id, 'notification:', notification);
-      
+      logger.info('[superadmin-support] notification created for admin', { adminId: updatedTicket.admin_id });
+
       // Emit socket event to the admin if they're online
       try {
         const io = getIo();
         if (io && updatedTicket.admin_id) {
-          console.log('[SUPERADMIN] Emitting notification event to user:', updatedTicket.admin_id);
+          logger.debug('[superadmin-support] emitting notification event', { adminId: updatedTicket.admin_id });
           io.to(`user:${updatedTicket.admin_id}`).emit('new_notification', {
             id: notification?.id,
             title,
@@ -178,10 +179,10 @@ async function updateStatus(req, res) {
           });
         }
       } catch (socketErr) {
-        console.error('[SUPERADMIN] Failed to emit socket event:', socketErr);
+        logger.error('[superadmin-support] failed to emit socket event', { err: socketErr.message });
       }
     } catch (err) {
-      console.error('Failed to push support ticket status-updated notification (superadmin):', err);
+      logger.error('[superadmin-support] failed to push status-updated notification', { err: err.message });
     }
 
     res.json({
@@ -190,7 +191,7 @@ async function updateStatus(req, res) {
       data: transformTicket(updatedTicket),
     });
   } catch (error) {
-    console.error('Error updating ticket status:', error);
+    logger.error('[superadmin-support] error updating ticket status', { err: error.message });
     res.status(500).json({
       success: false,
       message: 'Failed to update ticket status',
@@ -259,13 +260,13 @@ async function addReply(req, res) {
         forAdmin: false
       });
       
-      console.log('[SUPERADMIN] Created notification for admin', updatedTicket.admin_id, 'notification:', notification);
-      
+      logger.info('[superadmin-support] notification created for admin', { adminId: updatedTicket.admin_id });
+
       // Emit socket event to the admin if they're online
       try {
         const io = getIo();
         if (io && updatedTicket.admin_id) {
-          console.log('[SUPERADMIN] Emitting notification event to user:', updatedTicket.admin_id);
+          logger.debug('[superadmin-support] emitting notification event', { adminId: updatedTicket.admin_id });
           io.to(`user:${updatedTicket.admin_id}`).emit('new_notification', {
             id: notification?.id,
             title,
@@ -275,10 +276,10 @@ async function addReply(req, res) {
           });
         }
       } catch (socketErr) {
-        console.error('[SUPERADMIN] Failed to emit socket event:', socketErr);
+        logger.error('[superadmin-support] failed to emit socket event', { err: socketErr.message });
       }
     } catch (err) {
-      console.error('Failed to push support ticket reply notification (superadmin):', err);
+      logger.error('[superadmin-support] failed to push reply notification', { err: err.message });
     }
 
     res.json({
@@ -290,7 +291,7 @@ async function addReply(req, res) {
       },
     });
   } catch (error) {
-    console.error('Error adding reply:', error);
+    logger.error('[superadmin-support] error adding reply', { err: error.message });
     res.status(500).json({
       success: false,
       message: 'Failed to add reply',
@@ -373,13 +374,13 @@ async function updateTicket(req, res) {
         forAdmin: false
       });
       
-      console.log('[SUPERADMIN] Created notification for admin', refreshedTicket.admin_id, 'notification:', notification);
-      
+      logger.info('[superadmin-support] notification created for admin', { adminId: refreshedTicket.admin_id });
+
       // Emit socket event to the admin if they're online
       try {
         const io = getIo();
         if (io && refreshedTicket.admin_id) {
-          console.log('[SUPERADMIN] Emitting notification event to user:', refreshedTicket.admin_id);
+          logger.debug('[superadmin-support] emitting notification event', { adminId: refreshedTicket.admin_id });
           io.to(`user:${refreshedTicket.admin_id}`).emit('new_notification', {
             id: notification?.id,
             title,
@@ -389,10 +390,10 @@ async function updateTicket(req, res) {
           });
         }
       } catch (socketErr) {
-        console.error('[SUPERADMIN] Failed to emit socket event:', socketErr);
+        logger.error('[superadmin-support] failed to emit socket event', { err: socketErr.message });
       }
     } catch (err) {
-      console.error('Failed to push support ticket updated notification (superadmin):', err);
+      logger.error('[superadmin-support] failed to push updated notification', { err: err.message });
     }
 
     res.json({
@@ -401,7 +402,7 @@ async function updateTicket(req, res) {
       data: transformedTicket,
     });
   } catch (error) {
-    console.error('Error updating ticket:', error);
+    logger.error('[superadmin-support] error updating ticket', { err: error.message });
     res.status(500).json({
       success: false,
       message: 'Failed to update ticket',
@@ -428,7 +429,7 @@ async function deleteTicket(req, res) {
 
     res.json({ success: true, message: 'Ticket deleted successfully', data: { id } });
   } catch (error) {
-    console.error('Error deleting ticket:', error);
+    logger.error('[superadmin-support] error deleting ticket', { err: error.message });
     res.status(500).json({ success: false, message: 'Failed to delete ticket', error: error.message });
   }
 }

@@ -11,6 +11,7 @@
 
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
+const logger = require('../../utils/logger');
 
 async function listChecklist(tenant, requestId, stageId) {
   const pool = await getTenantPool(tenant.dbName);
@@ -138,7 +139,7 @@ async function markAssetReturned(tenant, requestId, assetId, data, actor) {
       employeeId,
       { employeeId: actor?.employeeId, actorName: actor?.actorName },
       { status, notes: data.notes },
-    ).catch((e) => { console.error('Exit workflow event error:', e); return null; });
+    ).catch((e) => { logger.error('[exit] workflow event error', { err: e.message }); return null; });
   }
   return updated;
 }

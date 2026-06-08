@@ -2,6 +2,10 @@
 
 const { appendScopeToConditions } = require('../../../utils/applyDataScope');
 const repo = require('./attendance.repository');
+const authz = require('./attendanceAuth.service');
+
+// Stage → human label for the pending-approver column / banners.
+const REG_STAGE_LABELS = { manager: 'Reporting Manager', department: 'Department Head', hr: 'HR' };
 
 const REPORT_TYPES = [
   'employee',
@@ -184,11 +188,13 @@ async function runReport(pool, reportType, scoped, query) {
               e.emp_id, e.full_name, e.department,
               a.regularization_status, a.regularization_reason,
               a.current_approval_level,
-              rs.approver_role AS pending_approver_role
+              CASE a.reg_current_stage
+                WHEN 'manager'    THEN 'Direct Manager'
+                WHEN 'department' THEN 'Department Head'
+                WHEN 'hr'         THEN 'HR'
+                ELSE NULL END AS pending_approver_role
        FROM attendance a
        JOIN employees e ON e.id = a.employee_id
-       LEFT JOIN attendance_regularization_steps rs
-         ON rs.attendance_id = a.id AND rs.status = 'Pending'
        WHERE ${where}
          AND a.regularization_status NOT IN ('N/A', '')
        ORDER BY a.date DESC
@@ -372,7 +378,9 @@ async function getRegularizationHistory(pool, query, auth) {
     conditions.push(`a.regularization_status = $${params.length}`);
   }
   const scoped = appendScopeToConditions(auth, conditions, params, 'e');
-  const limit = Math.min(100, parseInt(query.limit, 10) || 50);
+  scoped.params.push(auth?.employeeId ?? null);
+  const selfIdx = scoped.params.length;
+  const limit = Math.min(200, parseInt(query.limit, 10) || 50);
   const offset = (Math.max(1, parseInt(query.page, 10) || 1) - 1) * limit;
   scoped.params.push(limit, offset);
 
@@ -380,18 +388,50 @@ async function getRegularizationHistory(pool, query, auth) {
     `SELECT a.id, TO_CHAR(a.date, 'YYYY-MM-DD') AS date,
             a.regularization_status, a.regularization_reason,
             a.current_approval_level,
-            rs.level AS pending_level, rs.approver_role AS pending_approver_role,
+            a.reg_current_stage AS pending_stage,
+            CASE a.reg_current_stage
+              WHEN 'manager'    THEN 'Direct Manager'
+              WHEN 'department' THEN 'Department Head'
+              WHEN 'hr'         THEN 'HR'
+              ELSE NULL END AS pending_approver_role,
+            a.regularization_remarks,
+            a.manager_approval_status, a.department_approval_status, a.hr_approval_status,
+            a.manager_approved_at, a.department_approved_at, a.hr_approved_at,
+            mgrapp.full_name AS manager_approver_name,
+            deptapp.full_name AS dept_approver_name,
+            hrapp.full_name AS hr_approver_name,
+            (a.employee_id = $${selfIdx}) AS is_self,
+            a.employee_id, e.reporting_manager_id, e.department_id,
             e.full_name AS employee_name, e.emp_id, e.department
      FROM attendance a
      JOIN employees e ON e.id = a.employee_id
-     LEFT JOIN attendance_regularization_steps rs
-       ON rs.attendance_id = a.id AND rs.status = 'Pending'
+     LEFT JOIN employees mgrapp  ON mgrapp.id  = a.manager_approved_by
+     LEFT JOIN employees deptapp ON deptapp.id = a.department_approved_by
+     LEFT JOIN employees hrapp   ON hrapp.id   = a.hr_approved_by
      WHERE ${scoped.conditions.join(' AND ')}
      ORDER BY a.updated_at DESC
      LIMIT $${scoped.params.length - 1} OFFSET $${scoped.params.length}`,
     scoped.params,
   );
-  return { records: rows, total: rows.length };
+
+  // Per-record `can_act`: only the responsible approver for the CURRENT stage
+  // (reg_current_stage, while still Pending) sees Approve/Reject in the UI.
+  const records = rows.map((r) => {
+    const stage = r.regularization_status === 'Pending' ? r.pending_stage : null;
+    const emp = {
+      id: r.employee_id,
+      reporting_manager_id: r.reporting_manager_id,
+      department_id: r.department_id,
+      department: r.department,
+    };
+    const canAct = stage ? authz.canActOnStage(auth, emp, stage, { employee_id: r.employee_id }) : false;
+    return {
+      ...r,
+      pending_stage_label: stage ? REG_STAGE_LABELS[stage] : null,
+      can_act: canAct,
+    };
+  });
+  return { records, total: records.length };
 }
 
 module.exports = {

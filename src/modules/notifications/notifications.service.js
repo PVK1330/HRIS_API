@@ -6,6 +6,7 @@ const { getTenantPool, superAdminPool } = require('../../config/db');
 const { runTenantMigrations } = require('../tenant/tenant.service');
 const { sendMail } = require('../../utils/mail');
 const { getIo } = require('../../socket');
+const logger = require('../../utils/logger');
 
 const _migrationCache = new Map();
 async function ensureMigrated(dbName) {
@@ -49,21 +50,21 @@ async function pushNotification(tenant, {
     redirectUrl,
   });
 
-  console.log('[NOTIFICATION CREATED]', notificationRecord);
+  logger.info('[notifications] notification created', { id: notificationRecord?.id });
 
   try {
     const io = getIo();
     if (io && notificationRecord) {
       if (employeeId) {
-        console.log('[SOCKET EMIT]', employeeId, notificationRecord);
+        logger.debug('[notifications] socket emit to employee', { employeeId });
         io.to(`user:${employeeId}`).emit('new_notification', notificationRecord);
       } else if (forAdmin) {
-        console.log('[SOCKET EMIT]', 'ADMIN_TENANT', notificationRecord);
+        logger.debug('[notifications] socket emit to admin tenant');
         io.to(`tenant:${dbName}`).emit('new_notification', notificationRecord);
       }
     }
   } catch (err) {
-    console.error('Failed to emit push notification centrally:', err);
+    logger.error('[notifications] failed to emit push notification', { err: err.message });
   }
 
   return notificationRecord;
@@ -102,7 +103,7 @@ async function sendSystemNotification(tenant, {
       redirectUrl,
     });
   } catch (err) {
-    console.error('Failed to log push notification centrally:', err);
+    logger.error('[notifications] failed to log push notification', { err: err.message });
   }
 
   if (sendEmail) {
@@ -124,7 +125,7 @@ async function sendSystemNotification(tenant, {
             String(rows[0]?.personal_email || '').trim() ||
             null;
         } catch (err) {
-          console.error(`Failed to query employee ${targetEmployeeId} email for notification:`, err);
+          logger.error('[notifications] failed to query employee email', { targetEmployeeId, err: err.message });
         }
       }
     }
@@ -152,7 +153,7 @@ async function sendSystemNotification(tenant, {
           html,
         });
       } catch (err) {
-        console.error(`Failed to send email notification to ${emailTo}:`, err);
+        logger.error('[notifications] failed to send email notification', { err: err.message });
       }
     }
   }
@@ -188,11 +189,7 @@ async function listNotifications(user, tenant = null) {
 
           allNotifications = allNotifications.concat(notificationsWithTenant);
         } catch (err) {
-          console.error('[NOTIFICATIONS SERVICE] Error fetching from tenant:', {
-            tenantId: tenantRecord.id,
-            dbName: tenantRecord.db_name,
-            error: err.message,
-          });
+          logger.error('[notifications] error fetching tenant notifications', { tenantDbName: tenantRecord.db_name, err: err.message });
         }
       }
 
@@ -202,7 +199,7 @@ async function listNotifications(user, tenant = null) {
 
       return allNotifications;
     } catch (err) {
-      console.error('[NOTIFICATIONS SERVICE] Error fetching superadmin notifications from all tenants:', err);
+      logger.error('[notifications] error fetching superadmin notifications', { err: err.message });
       return [];
     }
   }

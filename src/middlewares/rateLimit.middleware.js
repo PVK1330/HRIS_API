@@ -4,42 +4,87 @@ const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = require('express-rate-limit');
 const env = require('../config/env');
 
-const windowMs = parseInt(env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000;
-const isDevelopment = env.NODE_ENV !== 'production';
+// All limiter sizing comes from env.RATE_LIMIT (config/env.js parses the env
+// vars and applies sane defaults). Nothing here should read a flat env name or
+// hardcode a literal — that was the wiring bug that made .env overrides no-ops.
+const {
+  windowMs,
+  max: generalMax,
+  authMax,
+  otpMax,
+  registrationWindowMs,
+  registrationMax,
+  refreshMax,
+  candidateWindowMs,
+  candidateMax,
+} = env.RATE_LIMIT;
+
+// Set DISABLE_RATE_LIMIT=true in local .env only — never in staging or production
+const isRateLimitDisabled = env.DISABLE_RATE_LIMIT === true;
 
 // General API rate limit
 const generalLimiter = rateLimit({
   windowMs,
-  max: isDevelopment ? Math.max(parseInt(env.RATE_LIMIT_MAX, 10) || 100, 1000) : (parseInt(env.RATE_LIMIT_MAX, 10) || 100),
+  max: generalMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many requests, please try again later.' },
-  skip: () => isDevelopment,
+  skip: () => isRateLimitDisabled,
 });
 
 // Strict limit for auth endpoints (login, register)
 const authLimiter = rateLimit({
   windowMs,
-  max: parseInt(env.AUTH_RATE_LIMIT_MAX, 10) || 10,
+  max: authMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many authentication attempts. Try again later.' },
   skipSuccessfulRequests: true,
 });
 
+// OTP verification (forgot-password code check + reset-password).
+// Unlike authLimiter, this counts EVERY attempt — including failed ones — so
+// repeated wrong-code guesses are throttled (the whole point of OTP brute-force
+// protection). Keyed per IP + email so a single client cannot hammer one
+// account, and one account cannot be hammered from a single client. This sits
+// alongside the per-record DB attempt counter (which invalidates the OTP after
+// a handful of wrong guesses regardless of source IP).
+const otpLimiter = rateLimit({
+  windowMs,
+  max: otpMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many attempts. Please try again later.' },
+  keyGenerator: (req) => {
+    const email = String(req.body?.email || '').trim().toLowerCase().slice(0, 200);
+    const ipKey = ipKeyGenerator(req.ip);
+    return email ? `otp:${ipKey}:${email}` : `otp:${ipKey}`;
+  },
+  skip: () => isRateLimitDisabled,
+});
+
 // Very strict for public tenant self-registration only
 const registrationLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 5,
+  windowMs: registrationWindowMs,
+  max: registrationMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many registration attempts. Try again in 1 hour.' },
 });
 
+// Token refresh — generous enough for multi-tab usage but still throttled
+const refreshLimiter = rateLimit({
+  windowMs,
+  max: refreshMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many refresh attempts. Try again later.' },
+});
+
 /** Candidate offer/sign/documents portal — per token + IP, not registration limits. */
 const candidateOnboardingLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: isDevelopment ? 500 : 150,
+  windowMs: candidateWindowMs,
+  max: candidateMax,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -58,6 +103,8 @@ const candidateOnboardingLimiter = rateLimit({
 module.exports = {
   generalLimiter,
   authLimiter,
+  otpLimiter,
+  refreshLimiter,
   registrationLimiter,
   candidateOnboardingLimiter,
 };

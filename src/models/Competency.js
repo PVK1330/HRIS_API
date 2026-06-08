@@ -109,6 +109,24 @@ class Competency {
   }
 
   /**
+   * Update a competency's name by ID
+   */
+  static async update(pool, id, competencyName, userId) {
+    if (!competencyName || !competencyName.trim()) {
+      throw new Error('Competency name is required');
+    }
+    const name = competencyName.trim();
+    const query = `
+      UPDATE competencies
+      SET competency_name = $2, updated_by = $3, updated_at = NOW()
+      WHERE id = $1 AND deleted_at IS NULL
+      RETURNING *;
+    `;
+    const { rows } = await pool.query(query, [id, name, userId]);
+    return rows[0] ? new Competency(rows[0]) : null;
+  }
+
+  /**
    * Delete competency by ID (soft delete)
    */
   static async deleteById(pool, id, userId) {

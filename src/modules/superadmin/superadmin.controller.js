@@ -3,6 +3,22 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const ApiResponse = require('../../utils/ApiResponse');
 const service = require('./superadmin.service');
+const authService = require('../auth/auth.service');
+const env = require('../../config/env');
+
+const REFRESH_COOKIE_NAME = 'refresh_token';
+const REFRESH_COOKIE_PATH = '/api/v1/auth';
+const REFRESH_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+function setRefreshCookie(res, token) {
+  res.cookie(REFRESH_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: env.NODE_ENV === 'production',
+    sameSite: 'Strict',
+    path: REFRESH_COOKIE_PATH,
+    maxAge: REFRESH_COOKIE_MAX_AGE_MS,
+  });
+}
 
 /**
  * POST /api/v1/superadmin/login
@@ -21,13 +37,10 @@ const login = asyncHandler(async (req, res) => {
     );
   }
 
-  const { token, superadmin } = result;
+  const { refreshToken, token, superadmin } = result;
+  if (refreshToken) setRefreshCookie(res, refreshToken);
 
-  return ApiResponse.ok(
-    res,
-    { token, superadmin },
-    'Login successful'
-  );
+  return ApiResponse.ok(res, { token, superadmin }, 'Login successful');
 });
 
 /**
@@ -36,13 +49,20 @@ const login = asyncHandler(async (req, res) => {
 const verify2FA = asyncHandler(async (req, res) => {
   const { userId, code } = req.body;
 
-  const { token, superadmin } = await service.verify2FA({ userId, code });
+  const { refreshToken, token, superadmin } = await service.verify2FA({ userId, code });
+  if (refreshToken) setRefreshCookie(res, refreshToken);
 
-  return ApiResponse.ok(
-    res,
-    { token, superadmin },
-    'Verification successful'
-  );
+  return ApiResponse.ok(res, { token, superadmin }, 'Verification successful');
+});
+
+/**
+ * POST /api/v1/superadmin/logout
+ */
+const logout = asyncHandler(async (req, res) => {
+  const token = req.cookies?.[REFRESH_COOKIE_NAME];
+  await authService.revokeRefreshToken(token);
+  res.clearCookie(REFRESH_COOKIE_NAME, { path: REFRESH_COOKIE_PATH });
+  return ApiResponse.ok(res, null, 'Logged out successfully.');
 });
 
 /* --- Self-service 2FA enrollment for superadmin / sub-admin accounts --- */
@@ -186,6 +206,7 @@ const getAuditLogs = asyncHandler(async (_req, res) => {
 module.exports = {
   login,
   verify2FA,
+  logout,
   getMfaStatus,
   setupMfa,
   enableMfa,

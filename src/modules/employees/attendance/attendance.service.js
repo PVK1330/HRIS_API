@@ -2,7 +2,7 @@
 
 const { getTenantPool } = require('../../../config/db');
 const ApiError = require('../../../utils/ApiError');
-const { runTenantMigrations } = require('../../tenant/tenant.service');
+const { ensureMigrated } = require('../../../utils/tenantMigration');
 const empRepo = require('../employees.repository');
 const repo = require('./attendance.repository');
 const authz = require('./attendanceAuth.service');
@@ -18,17 +18,6 @@ const integrity = require('./attendanceIntegrity.service');
 const { hasPermission } = require('../../../services/authz.service');
 const { P } = require('../../../constants/permissions');
 const logger = require('../../../utils/logger');
-
-const _cache = new Map();
-async function ensureMigrated(dbName) {
-  if (_cache.has(dbName)) return _cache.get(dbName);
-  const p = runTenantMigrations(dbName).catch((err) => {
-    _cache.delete(dbName);
-    throw ApiError.internal('Database setup failed.');
-  });
-  _cache.set(dbName, p);
-  return p;
-}
 
 function getPool(user) {
   if (!user?.db_name) throw ApiError.unauthorized('Tenant not found');
@@ -65,7 +54,9 @@ async function resolveEmployeeId(pool, user, explicitId) {
         [user.email],
       );
       if (rows[0]) employeeId = rows[0].id;
-    } catch { /* lookup is best-effort */ }
+    } catch (err) {
+      logger.debug('[attendance] employee id lookup by email failed', { email: user.email, err: err.message });
+    }
   }
   return employeeId;
 }
@@ -960,7 +951,9 @@ async function createOvertime(auth, user, body, req) {
       performedBy: approverId,
       ...meta,
     });
-  } catch { /* audit is best-effort */ }
+  } catch (auditErr) {
+    logger.warn('[attendance] overtime audit log failed', { err: auditErr.message });
+  }
 
   return record;
 }

@@ -9,7 +9,9 @@ const {
   generateTenantDbName,
   slugifyOrgNameForDb,
 } = require("../../utils/tenantDbName");
+const { slugifyTenantName } = require("../../utils/tenantSlug");
 const db = require("../../config/db");
+const { upsertEntry: upsertIndexEntry } = require("../../utils/userTenantIndex");
 const env = require("../../config/env");
 const { sendMail } = require("../../utils/mail");
 const { renderEmail } = require("../../utils/emailTemplate");
@@ -390,6 +392,18 @@ async function createTenant({
     if (!adminRow?.id) {
       throw ApiError.internal("Failed to create organization admin account");
     }
+
+    // Populate the central email→tenant index and tenant slug so subsequent logins are O(1).
+    const tenantSlug = slugifyTenantName(tenantRow.name);
+    await Promise.all([
+      upsertIndexEntry(normalizedEmail, tenantRow.id, "admin"),
+      tenantSlug
+        ? db.superAdminPool.query(
+            "UPDATE public.tenants SET slug = $1 WHERE id = $2 AND slug IS NULL",
+            [tenantSlug, tenantRow.id],
+          ).catch(() => {})
+        : Promise.resolve(),
+    ]).catch(() => {});
 
     logger.info(`Tenant created: ${tenantRow.name} (db=${tenantRow.db_name})`);
 

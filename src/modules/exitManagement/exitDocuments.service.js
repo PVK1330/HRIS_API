@@ -19,6 +19,7 @@ const ApiError = require('../../utils/ApiError');
 const env = require('../../config/env');
 const { generatePdfFromHtml, replacePlaceholders } = require('../../utils/pdfGenerator');
 const lettersRepo = require('../letters/letters.repository');
+const logger = require('../../utils/logger');
 
 const EXIT_CATEGORY = 'Exit';
 const ATTACHMENT_TYPE = 'GENERATED_DOC'; // must match chk_exit_attachment_type (migration 080)
@@ -237,7 +238,7 @@ async function generate(tenant, requestId, dto, actor) {
   }
 
   // Notify the employee in-app that documents were issued (best-effort).
-  try { require('./exitEvents.service').onDocumentsSent(tenant, Number(requestId), emailed).catch((e) => console.error('Exit workflow event error:', e)); }
+  try { require('./exitEvents.service').onDocumentsSent(tenant, Number(requestId), emailed).catch((e) => logger.error('[exit] workflow event error', { err: e.message })); }
   catch (_) { /* non-blocking */ }
 
   return {

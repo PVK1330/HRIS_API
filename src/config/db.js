@@ -129,7 +129,7 @@ async function withTransaction(fn) {
     try {
       await client.query("ROLLBACK");
     } catch (_) {
-      // ignore rollback failures, original error is propagated
+      logger.error('[db] ROLLBACK failed; connection may be in bad state', { err: _.message });
     }
     throw err;
   } finally {

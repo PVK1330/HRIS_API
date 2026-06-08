@@ -6,6 +6,7 @@ const graceEngine = require('./attendanceGrace.service');
 const calendar = require('./attendanceCalendar.service');
 const audit = require('./attendanceAudit.service');
 const autoReject = require('./attendanceAutoReject.service');
+const logger = require('../../../utils/logger');
 
 const CRON_DEVICE = 'attendance-cron';
 
@@ -80,7 +81,9 @@ async function processDailyAbsent(pool, dateStr) {
         employeeId,
         date: dateStr
       });
-    } catch (e) {}
+    } catch (notifyErr) {
+      logger.error('[attendanceCron] notifyAbsent failed', { employeeId, date: dateStr, err: notifyErr.message });
+    }
 
     marked += 1;
   }
@@ -339,7 +342,9 @@ async function processMissingCheckoutNotifications(pool, tenantDb, dateStr) {
         entityId: row.id
       });
       notified++;
-    } catch (e) {}
+    } catch (notifyErr) {
+      logger.error('[attendanceCron] notifyMissingCheckout failed', { employeeId: row.employee_id, date: row.date, err: notifyErr.message });
+    }
   }
   return { notified };
 }

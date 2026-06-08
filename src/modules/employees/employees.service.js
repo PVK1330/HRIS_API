@@ -6,8 +6,9 @@ const { hashPassword } = require("../../utils/password");
 
 const ApiError = require("../../utils/ApiError");
 const logger = require("../../utils/logger");
+const { upsertEntry: upsertIndexEntry, removeEntry: removeIndexEntry } = require("../../utils/userTenantIndex");
 const { sanitizeEmployeePayload } = require("../../utils/sanitize");
-const { runTenantMigrations } = require("../tenant/tenant.service");
+const { ensureMigrated } = require("../../utils/tenantMigration");
 const repo = require("./employees.repository");
 const { sendEmployeeWelcomeEmail, sendEmployeeActivationEmail } = require("./employees.mailer");
 const { generatePortalPassword } = require("../../utils/generatePortalPassword");
@@ -24,17 +25,6 @@ function omitPassword(obj) {
   delete o.password_hash;
   delete o.passwordHash;
   return o;
-}
-
-const _migrationCache = new Map();
-async function ensureMigrated(dbName) {
-  if (_migrationCache.has(dbName)) return _migrationCache.get(dbName);
-  const p = runTenantMigrations(dbName).catch((err) => {
-    _migrationCache.delete(dbName);
-    throw ApiError.internal("Database setup failed.");
-  });
-  _migrationCache.set(dbName, p);
-  return p;
 }
 
 function resolvePool(user) {
@@ -282,6 +272,10 @@ async function createEmployee(user, data) {
         logger.warn(`Policy auto-assign skipped: ${policyErr.message}`);
       }
 
+      if (full.work_email && full.portal_enabled && user.tenant_id) {
+        upsertIndexEntry(full.work_email, user.tenant_id, "employee").catch(() => {});
+      }
+
       if (welcomePlain && full.work_email) {
         try {
           await sendEmployeeWelcomeEmail({
@@ -387,6 +381,21 @@ async function updateEmployee(user, id, data, auth = null) {
   if (!updated) throw ApiError.notFound("Employee not found");
   await repo.syncEmployeeSections(pool, id, data);
   const full = await repo.findById(pool, id);
+
+  if (user.tenant_id) {
+    const oldEmail = existing.work_email;
+    const newEmail = full?.work_email ?? updated?.work_email;
+    const portalEnabled = full?.portal_enabled ?? updated?.portal_enabled;
+    if (oldEmail && newEmail && oldEmail !== newEmail) {
+      removeIndexEntry(oldEmail, user.tenant_id).catch(() => {});
+    }
+    if (newEmail && portalEnabled) {
+      upsertIndexEntry(newEmail, user.tenant_id, "employee").catch(() => {});
+    } else if (newEmail && !portalEnabled) {
+      removeIndexEntry(newEmail, user.tenant_id).catch(() => {});
+    }
+  }
+
   return omitPassword(full || updated);
 }
 
@@ -398,6 +407,9 @@ async function deleteEmployee(user, id, auth = null) {
   if (auth) assertEmployeeRecordAccess(auth, existing);
   const deleted = await repo.softDelete(pool, id);
   if (!deleted) throw ApiError.notFound("Employee not found");
+  if (existing.work_email && user.tenant_id) {
+    removeIndexEntry(existing.work_email, user.tenant_id).catch(() => {});
+  }
 }
 
 async function getFilterOptions(user) {
@@ -510,6 +522,10 @@ async function completeOnboardingActivation(user, id, auth = null) {
     username,
   });
   if (!activated) throw ApiError.notFound("Employee not found");
+
+  if (workEmail && user.tenant_id) {
+    upsertIndexEntry(workEmail, user.tenant_id, "employee").catch(() => {});
+  }
 
   const portalUrl = await resolvePortalLoginUrl(user);
   let emailSent = false;

@@ -6,6 +6,7 @@ const ApiError = require('../../utils/ApiError');
 const delivery = require('../notifications/notificationDelivery.service');
 const notify = require('../notifications/notifications.service');
 const workflowAudit = require('../workflow/workflowAudit.service');
+const logger = require('../../utils/logger');
 
 async function handleAssetAssignmentNotifications(tenant, assetId, actor = {}) {
   try {
@@ -82,7 +83,7 @@ async function handleAssetAssignmentNotifications(tenant, assetId, actor = {}) {
         subject: `Corporate Asset Handover Notice: ${asset.asset_id}`,
         text: `Dear ${asset.assigned_to_name},\n\n${message}\n\nPlease verify receipt and adhere to organizational hardware policy standards.\n\nRegards,\nHR & IT Operations`,
         html: mailHtml(asset.assigned_to_name)
-      }).catch(err => console.error('Asset assignment mail error:', err));
+      }).catch(err => logger.error('[assets] asset assignment mail error', { err: err.message }));
     }
 
     if (tenant?.adminEmail) {
@@ -91,7 +92,7 @@ async function handleAssetAssignmentNotifications(tenant, assetId, actor = {}) {
         subject: `[Admin Ledger] Asset Handover Completed: ${asset.asset_id}`,
         text: `Dear Administrator,\n\nAsset ${asset.asset_id} has been formally allocated to ${asset.assigned_to_name} (${asset.assigned_to_code}).\n\nRegards,\nHR & IT Operations`,
         html: mailHtml(tenant.name || 'Company Administrator')
-      }).catch(err => console.error('Admin asset assignment mail error:', err));
+      }).catch(err => logger.error('[assets] admin asset assignment mail error', { err: err.message }));
     }
 
     await workflowAudit.log(tenant, {
@@ -104,7 +105,7 @@ async function handleAssetAssignmentNotifications(tenant, assetId, actor = {}) {
       detail: { assetTag: asset.asset_id, employeeId: asset.employee_id },
     });
   } catch (err) {
-    console.error('Failed to dispatch asset allocation notifications', err);
+    logger.error('[assets] failed to dispatch allocation notifications', { err: err.message });
   }
 }
 
@@ -138,7 +139,7 @@ async function notifyAssetUnassigned(tenant, asset) {
       redirectUrl: '/admin/assets',
     });
   } catch (err) {
-    console.error('Failed to dispatch asset return notifications', err);
+    logger.error('[assets] failed to dispatch return notifications', { err: err.message });
   }
 }
 
@@ -159,7 +160,7 @@ async function notifyAssetStatusChange(tenant, asset, fromStatus, toStatus) {
       sendEmail: false,
     });
   } catch (err) {
-    console.error('Failed to dispatch asset status-change notification', err);
+    logger.error('[assets] failed to dispatch status-change notification', { err: err.message });
   }
 }
 
@@ -189,7 +190,7 @@ async function notifyAssetDeleted(tenant, asset) {
       redirectUrl: '/admin/assets',
     });
   } catch (err) {
-    console.error('Failed to dispatch asset deletion notifications', err);
+    logger.error('[assets] failed to dispatch deletion notifications', { err: err.message });
   }
 }
 

@@ -2,7 +2,7 @@
 
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
-const { runTenantMigrations } = require('../tenant/tenant.service');
+const { ensureMigrated } = require('../../utils/tenantMigration');
 const repository = require('./attendanceSettings.repository');
 const settingsAuth = require('./attendanceSettingsAuth.service');
 const settingsAudit = require('./attendanceSettingsAudit.service');
@@ -16,19 +16,6 @@ const {
 } = require('./attendanceSettings.options');
 
 const TIME_RE = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
-
-// Apply pending tenant migrations before touching attendance_settings, so newly added
-// columns (overtime/shift/regularisation/general settings) exist. Cached per process.
-const _migrated = new Map();
-async function ensureMigrated(dbName) {
-  if (_migrated.has(dbName)) return _migrated.get(dbName);
-  const p = runTenantMigrations(dbName).catch((err) => {
-    _migrated.delete(dbName);
-    throw err;
-  });
-  _migrated.set(dbName, p);
-  return p;
-}
 
 const CAMEL_TO_SNAKE = {
   workStartTime: 'work_start_time',

@@ -2,7 +2,7 @@
 
 const { getTenantPool } = require('../../../config/db');
 const ApiError = require('../../../utils/ApiError');
-const { runTenantMigrations } = require('../../tenant/tenant.service');
+const { ensureMigrated } = require('../../../utils/tenantMigration');
 const empRepo = require('../employees.repository');
 const repo = require('./leave.repository');
 const carryForward = require('./leaveCarryForward.service');
@@ -13,17 +13,7 @@ const { assertEmployeeRecordAccess } = require('../../../utils/applyDataScope');
 const leaveSettingsService = require('../../leaveSettings/leaveSettings.service');
 const tenantSettingsService = require('../../tenantSettings/tenantSettings.service');
 const exportEngine = require('../attendance/attendanceExport.service');
-
-const _cache = new Map();
-async function ensureMigrated(dbName) {
-  if (_cache.has(dbName)) return _cache.get(dbName);
-  const p = runTenantMigrations(dbName).catch((err) => {
-    _cache.delete(dbName);
-    throw ApiError.internal('Database setup failed.');
-  });
-  _cache.set(dbName, p);
-  return p;
-}
+const logger = require('../../../utils/logger');
 
 function getPool(user) {
   if (!user?.db_name) throw ApiError.unauthorized('Tenant not found');
@@ -359,7 +349,7 @@ async function applyLeave(user, auth, data) {
       entityType: 'leave',
       entityId: request.id,
       redirectUrl: '/admin/attendance/dashboard'
-    }).catch(err => console.error('Failed to notify manager:', err));
+    }).catch(err => logger.error('[leave] failed to notify manager', { err: err.message }));
   } else if (initialStatus === 'Approved') {
     await sendSystemNotification(user, {
       employeeId: data.employeeId,
@@ -369,7 +359,7 @@ async function applyLeave(user, auth, data) {
       entityType: 'leave',
       entityId: request.id,
       redirectUrl: '/attendance'
-    }).catch(err => console.error('Failed to notify employee:', err));
+    }).catch(err => logger.error('[leave] failed to notify employee', { err: err.message }));
   }
 
   return {
@@ -548,7 +538,7 @@ async function processLeave(user, auth, id, { action, reason }) {
       message: `A draft leave request for ${request.leave_type} (${request.total_days} days) has been submitted.`,
       type: 'leave_request', entityType: 'leave', entityId: request.id,
       redirectUrl: '/admin/attendance/dashboard'
-    }).catch(err => console.error(err));
+    }).catch(err => logger.error('[leave] failed to notify admin of draft submission', { err: err.message }));
 
   } else if (action === 'approve') {
     if (newStatus === 'Pending HR Approval') {
@@ -560,7 +550,7 @@ async function processLeave(user, auth, id, { action, reason }) {
         entityType: 'leave',
         entityId: request.id,
         redirectUrl: '/admin/attendance/dashboard'
-      }).catch(err => console.error(err));
+      }).catch(err => logger.error('[leave] failed to notify admin of pending HR approval', { err: err.message }));
     } else if (newStatus === 'Approved') {
       await sendSystemNotification(user, {
         employeeId: request.employee_id,
@@ -568,7 +558,7 @@ async function processLeave(user, auth, id, { action, reason }) {
         message: `Your leave request for ${request.leave_type} (${request.total_days} days) has been fully approved!`,
         type: 'leave_approved', entityType: 'leave', entityId: request.id,
         redirectUrl: '/attendance'
-      }).catch(err => console.error(err));
+      }).catch(err => logger.error('[leave] failed to notify employee of approval', { err: err.message }));
     }
   } else if (action === 'reject') {
     await sendSystemNotification(user, {
@@ -577,7 +567,7 @@ async function processLeave(user, auth, id, { action, reason }) {
       message: `Your leave request for ${request.leave_type} was rejected. Reason: ${reason || 'Not provided'}`,
       type: 'leave_rejected', entityType: 'leave', entityId: request.id,
       redirectUrl: '/attendance'
-    }).catch(err => console.error(err));
+    }).catch(err => logger.error('[leave] failed to notify employee of rejection', { err: err.message }));
   }
 
   return updated;

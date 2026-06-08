@@ -2,6 +2,7 @@
 
 const { superAdminPool } = require('../config/db');
 const ApiError = require('../utils/ApiError');
+const logger = require('../utils/logger');
 
 const TENANT_ID_RE = /^[a-z0-9_.-]{1,100}$/i;
 
@@ -53,7 +54,7 @@ async function tenantResolver(req, _res, next) {
     // Allow superadmin to pass without tenant context (they query all tenants)
     if (!tenantIdentifier) {
       if (req.user?.role === 'superadmin') {
-        console.log('[TENANT RESOLVER] Superadmin request without specific tenant context - allowed to proceed');
+        logger.debug('[tenant] superadmin request without tenant context');
         return next();
       }
       return next(new ApiError(401, 'Tenant context missing'));

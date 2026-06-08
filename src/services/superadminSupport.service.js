@@ -1,5 +1,6 @@
 const { pool, getTenantPool } = require('../config/db');
 const { sendMail } = require('../utils/mail');
+const logger = require('../utils/logger');
 
 /**
  * Superadmin Support Service
@@ -357,19 +358,19 @@ async function addReply(ticketId, superadminId, message, internalNotes = null) {
               if (isEmailValid) {
                 adminEmail = rawEmail;
                 adminName = admin.name || adminName;
-                console.log(`[Support Ticket] Selected admin recipient email: ${adminEmail}`);
+                logger.debug('[superadmin-support] selected admin recipient');
               } else {
-                console.warn(`[Support Ticket] Warning: Admin identifier '${rawEmail}' is not a valid email.`);
+                logger.warn('[superadmin-support] admin identifier is not a valid email');
               }
             }
           }
         } catch (err) {
-          console.error('Error fetching admin email:', err);
+          logger.error('[superadmin-support] error fetching admin email', { err: err.message });
         }
       }
 
       if (!adminEmail) {
-        console.warn('[Support Ticket] Warning: No valid admin email found. Skipping email notification.');
+        logger.warn('[superadmin-support] no valid admin email found, skipping notification');
       }
 
       if (adminEmail) {
@@ -563,19 +564,19 @@ async function updateTicket(ticketId, updates = {}) {
                     if (isEmailValid) {
                       adminEmail = rawEmail;
                       adminName = admin.name || adminName;
-                      console.log(`[Support Ticket] Selected admin recipient email: ${adminEmail}`);
+                      logger.debug('[superadmin-support] selected admin recipient');
                     } else {
-                      console.warn(`[Support Ticket] Warning: Admin identifier '${rawEmail}' is not a valid email.`);
+                      logger.warn('[superadmin-support] admin identifier is not a valid email');
                     }
                   }
                 }
               } catch (err) {
-                console.error('Error fetching admin email:', err);
+                logger.error('[superadmin-support] error fetching admin email', { err: err.message });
               }
             }
 
             if (!adminEmail) {
-              console.warn('[Support Ticket] Warning: No valid admin email found. Skipping email notification.');
+              logger.warn('[superadmin-support] no valid admin email found, skipping notification');
             }
 
             if (adminEmail) {
@@ -695,7 +696,7 @@ HRMS Support Team
 
     return null;
   } catch (error) {
-    console.error('Error updating ticket:', error);
+    logger.error('[superadmin-support] error updating ticket', { err: error.message });
     throw error;
   }
 }

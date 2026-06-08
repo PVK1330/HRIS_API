@@ -112,6 +112,52 @@ function validatePatch(fields) {
   assertRecoveryOptional(fields.blocked_account_recovery);
 }
 
+/**
+ * Fetch the tenant's password policy from its DB.
+ * Returns safe defaults when the row hasn't been seeded yet or the query fails
+ * (e.g. legacy tenant that hasn't run migration 015).
+ *
+ * @param {import('pg').Pool} pool  Tenant-specific pg Pool
+ * @returns {{ minimumLength: number, mustIncludeSpecialChars: boolean }}
+ */
+async function getPasswordPolicy(pool) {
+  try {
+    const row = await repository.getSettings(pool);
+    if (row) {
+      return {
+        minimumLength: row.minimum_length ?? 8,
+        mustIncludeSpecialChars: row.must_include_special_chars ?? false,
+      };
+    }
+  } catch (_) {
+    // table not yet migrated — fall through to defaults
+  }
+  return { minimumLength: 8, mustIncludeSpecialChars: false };
+}
+
+/**
+ * Throw ApiError 400 if `password` does not satisfy `policy`.
+ * Pass `policy = null` to use safe defaults (min 8, no special chars required).
+ *
+ * @param {string} password
+ * @param {{ minimumLength?: number, mustIncludeSpecialChars?: boolean } | null} policy
+ */
+function validatePasswordAgainstPolicy(password, policy) {
+  const min = policy?.minimumLength ?? 8;
+  const requireSpecial = policy?.mustIncludeSpecialChars ?? false;
+  const pw = String(password || '');
+  const errors = [];
+  if (pw.length < min) {
+    errors.push(`at least ${min} characters`);
+  }
+  if (requireSpecial && !/[^A-Za-z0-9]/.test(pw)) {
+    errors.push('at least one special character');
+  }
+  if (errors.length) {
+    throw new ApiError(400, `Password must contain ${errors.join(' and ')}.`);
+  }
+}
+
 async function getPasswordSecuritySettings(dbName) {
   const pool = getTenantPool(dbName);
   let row = await repository.getSettings(pool);
@@ -139,6 +185,8 @@ async function updatePasswordSecuritySettings(dbName, body) {
 
 module.exports = {
   VALID_RECOVERY_OPTIONS,
+  getPasswordPolicy,
+  validatePasswordAgainstPolicy,
   getPasswordSecuritySettings,
   updatePasswordSecuritySettings,
   mergePasswordSecurityFlat,

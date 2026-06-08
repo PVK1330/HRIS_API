@@ -2,6 +2,7 @@
 
 const ApiError = require("../utils/ApiError");
 const logger = require("../utils/logger");
+const env = require("../config/env");
 
 function notFoundHandler(req, _res, next) {
   next(new ApiError(404, `Route not found: ${req.method} ${req.originalUrl}`));
@@ -18,9 +19,11 @@ function errorHandler(err, req, res, _next) {
       ? "Internal Server Error"
       : err.message || "Internal Server Error";
 
+  // Always log the stack server-side (including production) so traces are
+  // never lost — they just don't leave the server.
   logger.error(
     `${req.method} ${req.originalUrl} -> ${statusCode} ${message}`,
-    isProd ? "" : err.stack || "",
+    err.stack || "",
   );
 
   const body = {
@@ -32,7 +35,9 @@ function errorHandler(err, req, res, _next) {
     body.errors = err.errors;
   }
 
-  if (!isProd && !isApiError && err.stack) {
+  // Expose the stack in the response ONLY when explicitly opted in via
+  // EXPOSE_STACK=true and never in production.
+  if (env.EXPOSE_STACK && !isProd && !isApiError && err.stack) {
     body.stack = err.stack;
   }
 

@@ -8,7 +8,7 @@ const env = require('../../../config/env');
 const ApiError = require('../../../utils/ApiError');
 const logger = require('../../../utils/logger');
 const { getTenantPool } = require('../../../config/db');
-const { runTenantMigrations } = require('../../tenant/tenant.service');
+const { ensureMigrated } = require('../../../utils/tenantMigration');
 const empRepo = require('../employees.repository');
 const docRepo = require('../documents/documents.repository');
 const { assertEmployeeRecordAccess } = require('../../../utils/applyDataScope');
@@ -21,17 +21,6 @@ const notifService = require('../../notifications/notifications.service');
 const checklistUtils = require('./utils/onboardingChecklist.utils');
 const onboardingEvents = require('./onboardingEvents.service');
 const workflowAudit = require('../../workflow/workflowAudit.service');
-
-const _migrationCache = new Map();
-async function ensureMigrated(dbName) {
-  if (_migrationCache.has(dbName)) return _migrationCache.get(dbName);
-  const p = runTenantMigrations(dbName).catch((err) => {
-    _migrationCache.delete(dbName);
-    throw ApiError.internal('Database setup failed.');
-  });
-  _migrationCache.set(dbName, p);
-  return p;
-}
 
 function resolvePool(user) {
   if (!user?.db_name) throw ApiError.unauthorized('Tenant database not found');
@@ -596,7 +585,9 @@ async function getOnboardingChecklist(user, employeeId, auth = null) {
       if (rows.length > 0) {
         response.signedOfferFileUrl = rows[0].file_url;
       }
-    } catch(err) {}
+    } catch (err) {
+      logger.debug('[onboarding] signed offer file URL lookup failed', { documentId: emp.signed_offer_document_id, err: err.message });
+    }
   }
   return response;
 }

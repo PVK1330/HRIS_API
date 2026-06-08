@@ -45,6 +45,8 @@ router.post(
   controller.verify2FA
 );
 
+router.post('/logout', controller.logout);
+
 /* --- Self-service 2FA enrollment (superadmin + sub-admins) --- */
 router.get('/mfa/status', authenticate, requireRole('superadmin'), controller.getMfaStatus);
 router.post('/mfa/setup', authenticate, requireRole('superadmin'), controller.setupMfa);

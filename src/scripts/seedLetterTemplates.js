@@ -55,14 +55,62 @@ const INDUSTRY_TEMPLATES = [
     category: 'Exit',
     description: 'Official confirmation of employee relief from duties.',
     body: `
-      <p>Date: {{today_date}}</p>
-      <p>Dear <strong>{{employee_name}}</strong>,</p>
-      <p>We write to confirm that you were employed by this organisation in the capacity of <strong>{{job_title}}</strong> within the <strong>{{department}}</strong> Department.</p>
-      <p>Your last day of service with the company was <strong>{{last_working_day}}</strong>, on which date you were formally relieved of all duties and responsibilities.</p>
-      <p>All company property, access credentials, and confidential information must be returned or relinquished in accordance with your contractual obligations and the Company's exit policy.</p>
-      <p>This letter serves as confirmation that you have been duly relieved from your position and that there are no outstanding obligations on the part of the Company with respect to your employment.</p>
-      <p>We wish you all the best in your future endeavors.</p>
-      <p>Yours sincerely,<br><strong>Human Resources Department</strong></p>
+      <div style="display: flex; justify-content: space-between; margin-bottom: 30px; font-size: 13px; color: #475569;">
+        <div></div>
+        <div style="text-align: right; line-height: 1.8;">
+          <div>Ref No: <strong>HR/RL/{{year}}/{{referenceNumber}}</strong></div>
+          <div>Date: <strong>{{today_date}}</strong></div>
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; justify-content: center; margin-bottom: 30px;">
+        <div style="flex-grow: 1; height: 1px; background-color: #e2e8f0;"></div>
+        <h2 style="margin: 0 20px; color: #10B981; font-size: 22px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px;">RELIEVING LETTER</h2>
+        <div style="flex-grow: 1; height: 1px; background-color: #e2e8f0;"></div>
+      </div>
+      <div style="background-color: #ecfdf5; border-left: 4px solid #10B981; border-radius: 8px; padding: 20px; margin-bottom: 30px; font-size: 13px;">
+        <table style="width: 100%; border-collapse: collapse;">
+          <tbody>
+            <tr>
+              <td style="padding: 8px 0; width: 25%; color: #64748b; text-transform: uppercase; font-size: 11px; font-weight: 600;">EMPLOYEE NAME</td>
+              <td style="padding: 8px 0; width: 25%; color: #1e293b; font-weight: 700;">{{employee_name}}</td>
+              <td style="padding: 8px 0; width: 25%; color: #64748b; text-transform: uppercase; font-size: 11px; font-weight: 600;">EMPLOYEE ID</td>
+              <td style="padding: 8px 0; width: 25%; color: #1e293b; font-weight: 700;">{{employee_id}}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #64748b; text-transform: uppercase; font-size: 11px; font-weight: 600;">DESIGNATION</td>
+              <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{{job_title}}</td>
+              <td style="padding: 8px 0; color: #64748b; text-transform: uppercase; font-size: 11px; font-weight: 600;">JOINING DATE</td>
+              <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{{joining_date}}</td>
+            </tr>
+            <tr>
+              <td style="padding: 8px 0; color: #64748b; text-transform: uppercase; font-size: 11px; font-weight: 600;">DEPARTMENT</td>
+              <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{{department}}</td>
+              <td style="padding: 8px 0; color: #64748b; text-transform: uppercase; font-size: 11px; font-weight: 600;">LAST WORKING DAY</td>
+              <td style="padding: 8px 0; color: #1e293b; font-weight: 700;">{{last_working_day}}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="font-size: 14px; line-height: 1.8; color: #334155; text-align: justify; margin-bottom: 40px;">
+        <p style="margin-bottom: 15px;">Dear <strong>{{employee_name}}</strong>,</p>
+        <p style="margin-bottom: 15px;">This is to certify that you were employed with <strong>{{company_name}}</strong> as <strong>{{job_title}}</strong> in the <strong>{{department}}</strong> department. Your tenure with us was from <strong>{{joining_date}}</strong> to your last working day on <strong>{{last_working_day}}</strong>.</p>
+        <p style="margin-bottom: 15px;">We confirm that your resignation has been accepted and you have been formally relieved from all your duties and responsibilities effective from the close of business hours on <strong>{{last_working_day}}</strong>.</p>
+        <p style="margin-bottom: 15px;">We also confirm that your full and final settlement has been processed and there are no outstanding dues payable by either party.</p>
+        <p>We appreciate your contributions during your tenure and wish you the very best in your future endeavors.</p>
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 50px;">
+        <div style="font-size: 14px; color: #334155;">
+          <p style="margin-bottom: 40px;">Yours sincerely,</p>
+          <p style="margin: 0; font-weight: 700; color: #1e293b;">Authorized Signatory</p>
+          <p style="margin: 4px 0;">Human Resources Department</p>
+          <p style="margin: 0;"><strong>{{company_name}}</strong></p>
+        </div>
+        <div style="text-align: center;">
+          <div style="width: 100px; height: 100px; border: 2px dashed #10B981; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 10px; color: #10B981; font-size: 11px; font-weight: 600; text-transform: uppercase; opacity: 0.7;">
+            Company Seal
+          </div>
+        </div>
+      </div>
     `
   },
   {

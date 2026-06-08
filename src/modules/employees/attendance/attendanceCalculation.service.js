@@ -24,6 +24,14 @@ function getDayOfWeek(dateStr) {
 
 function isWeekend(dateStr, settings) {
   const dow = getDayOfWeek(dateStr);
+  // Prefer the explicit Work Week list (General settings, e.g. "Mon,Tue,Wed,Thu,Fri"):
+  // any weekday NOT in it is a non-working day.
+  const workWeek = settings?.work_week_days;
+  if (workWeek && String(workWeek).trim()) {
+    const NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const working = new Set(String(workWeek).split(',').map((d) => d.trim()));
+    if (working.size) return !working.has(NAMES[dow]);
+  }
   const mode = settings?.weekend_mode || 'Saturday/Sunday';
   if (mode === 'Sunday Only') return dow === 0;
   if (mode === 'Custom Week Off') {
@@ -153,12 +161,26 @@ function computeFromPunch({
   const workStart = parseTimeToMinutes(shift?.start_time || settings?.work_start_time);
   const workEnd = parseTimeToMinutes(shift?.end_time || settings?.work_end_time);
   const breakMins = shift?.break_minutes ?? settings?.break_duration_minutes ?? 30;
-  const graceMins = shift?.grace_minutes ?? 0;
+  const graceMins = shift?.grace_minutes ?? settings?.grace_period_minutes ?? 0;
   const bufferMins = settings?.ten_minute_buffer ? 10 : 0;
   const minPresent = Number(
     shift?.minimum_hours ?? settings?.min_hours_for_present ?? 6,
   );
-  const requiredHours = Number(settings?.total_required_hours ?? 8);
+  // Half-day cutoff (General settings): worked hours below this count as a half
+  // day. Falls back to the presence threshold when not configured.
+  const halfDayThreshold = settings?.half_day_threshold_hours != null
+    ? Number(settings.half_day_threshold_hours)
+    : minPresent;
+  // Automated Quota Calculus: when enabled, derive the required daily hours from
+  // the operational window (end − start − break) instead of the manual quota.
+  // Falls back to the manual value if the window can't be resolved.
+  let requiredHours = Number(settings?.total_required_hours ?? 8);
+  if (settings?.auto_calculate_hours === true && workStart != null && workEnd != null) {
+    let windowMins = workEnd - workStart;
+    if (windowMins < 0) windowMins += 24 * 60; // overnight window
+    const derived = minutesToHours(Math.max(0, windowMins - breakMins));
+    if (derived > 0) requiredHours = derived;
+  }
   const otAfter = Number(shift?.overtime_after_hours ?? requiredHours);
   const otEligible = settings?.overtime_eligibility === true;
 
@@ -205,21 +227,21 @@ function computeFromPunch({
   if (!checkInTime && !checkOutTime) {
     status = 'Absent';
   } else if (lateMinutes > 0 && settings?.late_mark_auto_calculation !== false) {
-    const rawLateStatus = workedHours < minPresent ? 'Half Day' : 'Late';
+    const rawLateStatus = workedHours < halfDayThreshold ? 'Half Day' : 'Late';
     const graceResult = graceEngine.applyGraceToLateStatus({
       settings,
       rawStatus: rawLateStatus,
       lateMinutes,
       monthlyLateCountBefore,
       workedHours,
-      minPresent,
+      minPresent: halfDayThreshold,
     });
     status = graceResult.status;
     isLate = graceResult.is_late;
     graceApplied = graceResult.grace_applied;
   }
 
-  if (workedHours > 0 && workedHours < minPresent && status !== 'Late') {
+  if (workedHours > 0 && workedHours < halfDayThreshold && status !== 'Late') {
     const rule = settings?.early_departure_rule || 'Mark half day';
     if (rule.toLowerCase().includes('half')) status = 'Half Day';
     else if (earlyDepartureMinutes > 0) status = 'Half Day';

@@ -11,6 +11,8 @@ const { hasPermission } = require('../../../services/authz.service');
 const { P } = require('../../../constants/permissions');
 const { assertEmployeeRecordAccess } = require('../../../utils/applyDataScope');
 const leaveSettingsService = require('../../leaveSettings/leaveSettings.service');
+const tenantSettingsService = require('../../tenantSettings/tenantSettings.service');
+const exportEngine = require('../attendance/attendanceExport.service');
 
 const _cache = new Map();
 async function ensureMigrated(dbName) {
@@ -104,6 +106,62 @@ async function listLeave(user, auth, query = {}) {
   ]);
 
   return { requests, total, stats, year, limit, page: Math.max(1, parseInt(query.page, 10) || 1) };
+}
+
+/**
+ * Branded Excel/PDF export of leave requests. Role-scoped automatically: the
+ * data-scope on `auth` limits rows to self (employee), team (manager),
+ * department (head) or all (HR/admin) — the same scope used by the list view.
+ */
+async function exportLeave(user, auth, query, format, req) {
+  const pool = getPool(user);
+  await ensureMigrated(user.db_name);
+
+  const year = parseInt(query.year, 10) || new Date().getFullYear();
+  const filters = {
+    status: query.status || '',
+    year,
+    department: query.department || '',
+    leaveType: query.leaveType || '',
+    search: query.search || '',
+    limit: 10000,
+    offset: 0,
+  };
+  const requests = await repo.findAllRequests(pool, filters, auth);
+  const rows = requests.map((r) => ({
+    employee_name: r.employee_name,
+    emp_id: r.emp_id,
+    department: r.department,
+    leave_type: r.leave_type,
+    from_date: r.from_date,
+    to_date: r.to_date,
+    total_days: r.total_days,
+    status: r.status,
+    reason: r.reason,
+    rejection_reason: r.rejection_reason || '',
+  }));
+
+  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  const branding = await tenantSettingsService.getAdminSettings(user.db_name, baseUrl);
+  const generatedBy = user?.fullName || user?.email || 'System';
+  const filterParts = Object.entries({
+    year, status: filters.status, department: filters.department,
+    leaveType: filters.leaveType, search: filters.search,
+  }).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`);
+  const filtersSummary = filterParts.length ? filterParts.join(' | ') : 'none';
+
+  if (format === 'excel') {
+    const wb = await exportEngine.buildExcel(branding, 'leave', rows, filtersSummary);
+    const buffer = await wb.xlsx.writeBuffer();
+    return {
+      buffer,
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      filename: `leave-report-${year}.xlsx`,
+    };
+  }
+
+  const buffer = await exportEngine.buildPdf(branding, 'leave', rows, filtersSummary, generatedBy);
+  return { buffer, contentType: 'application/pdf', filename: `leave-report-${year}.pdf` };
 }
 
 async function getActiveLeaveTypes(user) {
@@ -330,7 +388,12 @@ async function applyLeave(user, auth, data) {
 
 // Roles permitted to give the FINAL (HR) approval.
 const HR_ROLES = new Set(['admin', 'superadmin', 'hr_admin', 'hr_executive', 'hr']);
-function isHrActor(user) {
+// HR-level (final) approval authority. An explicit HR/admin role qualifies, but so
+// does a tenant admin or anyone with an organisation-wide (ALL) data scope — those
+// users approve org-wide and already hold leave.approve here. Mirrors attendance's
+// hasHrApprovalScope so leave doesn't reject full-scope approvers by role string alone.
+function isHrActor(user, auth) {
+  if (auth?.isTenantAdmin || auth?.scope === 'ALL') return true;
   return HR_ROLES.has(String(user?.role || '').toLowerCase());
 }
 
@@ -392,9 +455,9 @@ async function processLeave(user, auth, id, { action, reason }) {
       newStatus = 'Pending HR Approval';
       stage = 'manager';
     } else if (request.status === 'Pending HR Approval') {
-      // Stage 2 — HR final approval. Restricted to HR/admin roles.
-      if (!isHrActor(user)) {
-        throw ApiError.forbidden('Final approval requires an HR or admin role');
+      // Stage 2 — HR final approval. HR/admin role, tenant admin, or ALL scope.
+      if (!isHrActor(user, auth)) {
+        throw ApiError.forbidden('Final approval requires HR/admin role or organisation-wide scope');
       }
       newStatus = 'Approved';
       stage = 'hr';
@@ -412,8 +475,8 @@ async function processLeave(user, auth, id, { action, reason }) {
       }
       newStatus = 'Rejected by Manager';
     } else if (request.status === 'Pending HR Approval') {
-      if (!isHrActor(user)) {
-        throw ApiError.forbidden('Final rejection requires an HR or admin role');
+      if (!isHrActor(user, auth)) {
+        throw ApiError.forbidden('Final rejection requires HR/admin role or organisation-wide scope');
       }
       newStatus = 'Rejected by HR';
     } else {
@@ -552,6 +615,7 @@ async function runCarryForward(user, { year } = {}) {
 module.exports = {
   getLeave,
   listLeave,
+  exportLeave,
   getActiveLeaveTypes,
   applyLeave,
   processLeave,

@@ -46,4 +46,20 @@ const carryForward = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, 'Leave carry-forward processed');
 });
 
-module.exports = { list, getTypes, listAll, apply, process, balances, carryForward };
+// GET /api/v1/leave/export/pdf
+const exportPdf = asyncHandler(async (req, res) => {
+  const { buffer, contentType, filename } = await service.exportLeave(req.user, req.auth, req.query, 'pdf', req);
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  return res.send(buffer);
+});
+
+// GET /api/v1/leave/export/excel
+const exportExcel = asyncHandler(async (req, res) => {
+  const { buffer, contentType, filename } = await service.exportLeave(req.user, req.auth, req.query, 'excel', req);
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  return res.send(buffer);
+});
+
+module.exports = { list, getTypes, listAll, apply, process, balances, carryForward, exportPdf, exportExcel };

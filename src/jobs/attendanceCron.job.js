@@ -72,6 +72,13 @@ async function processTenant(tenant) {
     logger.warn(`[attendanceCron] Holiday reminders skipped for ${tenant.db_name}`, e.message);
   }
 
+  // Auto-approve manager-absent regularizations BEFORE auto-reject so a request
+  // that advances past the absent manager isn't also caught by the reject sweep.
+  const approveResult = await cronService.processAutoApprove(pool, tenant.db_name);
+  if (approveResult.approved > 0) {
+    logger.info(`[attendanceCron] Auto-approved ${approveResult.approved} manager-absent regularizations`);
+  }
+
   const rejectResult = await cronService.processAutoReject(pool, tenant.db_name);
   if (rejectResult.rejected > 0) {
     logger.info(`[attendanceCron] Auto-rejected ${rejectResult.rejected} stale regularizations`);

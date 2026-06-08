@@ -348,6 +348,10 @@ async function processAutoReject(pool, tenantDb) {
   return autoReject.processAutoRejections(pool, tenantDb, { skipBatchAudit: true });
 }
 
+async function processAutoApprove(pool, tenantDb) {
+  return autoReject.processAutoApprovals(pool, tenantDb);
+}
+
 module.exports = {
   processDailyAbsent,
   processLateRecalc,
@@ -355,6 +359,7 @@ module.exports = {
   processAttendanceSummary,
   processMonthlyClosure,
   processAutoReject,
+  processAutoApprove,
   processMissingCheckoutNotifications,
   listActiveEmployeesWithoutAttendance,
 };

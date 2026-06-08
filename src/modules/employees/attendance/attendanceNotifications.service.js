@@ -8,6 +8,7 @@ const TYPES = {
   LATE: 'attendance.late',
   MISSING: 'attendance.missing',
   REG_SUBMITTED: 'attendance.regularization.submitted',
+  REG_FORWARDED: 'attendance.regularization.forwarded',
   REG_APPROVED: 'attendance.regularization.approved',
   REG_REJECTED: 'attendance.regularization.rejected',
   REG_AUTO_REJECTED: 'attendance.regularization.auto_rejected',
@@ -209,6 +210,39 @@ async function notifyRegSubmitted(pool, tenantDb, { employeeId, date, entityId, 
   }
 }
 
+// A stage approved → regularization advances. Notify the NEXT approver
+// ('department' → dept head, 'hr' → HR group) so it doesn't stall mid-workflow.
+async function notifyRegForwarded(pool, tenantDb, { employeeId, date, entityId, nextStage }) {
+  const tenant = tenantCtx(tenantDb);
+  const { name: employeeName } = await getEmployeeDetails(pool, employeeId);
+  const recipients = new Set();
+  let stageLabel = '';
+  if (nextStage === 'department') {
+    const deptManagerId = await getDepartmentManagerId(pool, employeeId);
+    if (deptManagerId) recipients.add(deptManagerId);
+    stageLabel = 'Department Head';
+  } else if (nextStage === 'hr') {
+    (await getHrAuditGroup(pool)).forEach((id) => recipients.add(id));
+    stageLabel = 'HR';
+  }
+  if (!recipients.size) return;
+
+  const tpl = await getTemplate(
+    pool, TYPES.REG_FORWARDED,
+    `Regularization Awaiting ${stageLabel} Approval: ${employeeName}`,
+    `${employeeName}'s attendance regularization for ${date} was approved at the previous stage and now awaits ${stageLabel} approval.`,
+    { date, name: employeeName, stage: stageLabel },
+  );
+  for (const rid of recipients) {
+    if (!(await checkAndLogHistory(pool, TYPES.REG_FORWARDED, entityId, rid))) continue;
+    await sendSystemNotification(tenant, {
+      recipientId: rid, recipientRole: 'employee', type: TYPES.REG_FORWARDED,
+      title: tpl.subject, message: tpl.body, entityType: 'attendance', entityId: String(entityId),
+      sendEmail: true, redirectUrl: '/admin/attendance/regularizations',
+    });
+  }
+}
+
 // 6. Regularization Approved
 async function notifyRegApproved(pool, tenantDb, { employeeId, date, entityId }) {
   if (!(await checkAndLogHistory(pool, TYPES.REG_APPROVED, entityId, employeeId))) return;
@@ -377,6 +411,30 @@ async function notifyOtForwardedToDept(pool, tenantDb, { employeeId, date, entit
   }
 }
 
+// Dept Head approved → overtime now awaits HR. Notify the HR/admin group so the
+// request doesn't stall at the final stage.
+async function notifyOtForwardedToHr(pool, tenantDb, { employeeId, date, entityId, hours }) {
+  const tenant = tenantCtx(tenantDb);
+  const { name: employeeName } = await getEmployeeDetails(pool, employeeId);
+  const recipients = new Set(await getHrAuditGroup(pool));
+  if (!recipients.size) return;
+
+  const tpl = await getTemplate(
+    pool, TYPES.OT_FORWARDED,
+    `Overtime Awaiting HR Approval: ${employeeName}`,
+    `${employeeName}'s overtime of ${hours} hour(s) on ${date} was approved by the department head and now awaits HR approval.`,
+    { date, hours, name: employeeName },
+  );
+  for (const rid of recipients) {
+    if (!(await checkAndLogHistory(pool, TYPES.OT_FORWARDED, entityId, rid))) continue;
+    await sendSystemNotification(tenant, {
+      recipientId: rid, recipientRole: 'employee', type: TYPES.OT_FORWARDED,
+      title: tpl.subject, message: tpl.body, entityType: 'attendance', entityId: String(entityId),
+      sendEmail: true, redirectUrl: '/admin/attendance/overtime',
+    });
+  }
+}
+
 // 12-15. Holidays
 async function notifyHolidays(pool, tenantDb, type, { holidayId, name, date, affectedEmployees }) {
   const tenant = tenantCtx(tenantDb);
@@ -405,6 +463,7 @@ module.exports = {
   notifyLateArrival,
   notifyMissingCheckout,
   notifyRegSubmitted,
+  notifyRegForwarded,
   notifyRegApproved,
   notifyRegRejected,
   notifyRegAutoRejected,
@@ -414,5 +473,6 @@ module.exports = {
   notifyOtApproved,
   notifyOtRejected,
   notifyOtForwardedToDept,
+  notifyOtForwardedToHr,
   notifyHolidays
 };

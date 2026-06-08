@@ -144,7 +144,7 @@ async function assertCanModifyEmployee(auth, pool, employeeId) {
  * @param {string} currentStatus - the record's current regularization_status or overtime_status
  * @param {object} emp - employee row (must include reporting_manager_id, department_id, department)
  */
-function assertCanActOnStage(auth, currentStatus, emp, action = 'approve', requestType = 'request') {
+function assertCanActOnStatusStage(auth, currentStatus, emp, action = 'approve', requestType = 'request') {
   if (!auth) throw ApiError.unauthorized('Not authenticated');
 
   // Override: tenant admins and attendance managers can always act.
@@ -304,6 +304,46 @@ async function assertCanApproveRegularization(auth, pool, record, pendingStep, a
   return assertCanActOnPendingStep(auth, pool, record, pendingStep, action);
 }
 
+/**
+ * Map an overtime status to its current approval stage.
+ * Pending → manager, Manager_Approved → department, Dept_Approved → hr.
+ */
+function overtimeStatusToStage(status) {
+  if (status === 'Pending') return 'manager';
+  if (status === 'Manager_Approved') return 'department';
+  if (status === 'Dept_Approved') return 'hr';
+  return null;
+}
+
+/**
+ * Non-throwing counterpart of the assert* stage checks: returns true iff `auth`
+ * is the responsible approver for `stage` of `record` (employee `emp`) right now.
+ * Used to compute the per-record `can_act` flag the UI uses to show/hide the
+ * Approve/Reject buttons for the CURRENT level only.
+ */
+function canActOnStage(auth, emp, stage, record) {
+  if (!auth || !stage || !emp) return false;
+  // No self-approval, ever.
+  if (record && Number(record.employee_id) === Number(auth.employeeId)) return false;
+  // Tenant admin / attendance.manage can act on any stage.
+  if (canOverrideApproval(auth)) return true;
+  if (!hasApprovalPermission(auth, 'approve')) return false;
+
+  switch (stage) {
+    case 'manager':
+      // Stage 1 is the reporting manager; if none, the dept head / HR steps in.
+      return emp.reporting_manager_id
+        ? isDirectReport(auth, emp)
+        : (isInManagedDepartment(auth, emp) || hasHrApprovalScope(auth));
+    case 'department':
+      return isInManagedDepartment(auth, emp) || hasHrApprovalScope(auth);
+    case 'hr':
+      return hasHrApprovalScope(auth);
+    default:
+      return false;
+  }
+}
+
 module.exports = {
   canViewAll,
   canViewTeam,
@@ -314,10 +354,12 @@ module.exports = {
   assertNotSelfApproval,
   assertCanViewEmployee,
   assertCanModifyEmployee,
-  assertCanActOnStage,
+  assertCanActOnStatusStage,
   assertCanActOnPendingStep,
   assertCanActOnStage,
   assertCanApproveRegularization,
+  canActOnStage,
+  overtimeStatusToStage,
   loadEmployee,
   isDirectReport,
   isInManagedDepartment,

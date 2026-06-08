@@ -642,14 +642,21 @@ async function getOvertimeRecords(pool, { status, search, limit = 100, offset = 
             a.overtime_rejection_reason,
             TO_CHAR(a.overtime_approved_at, 'YYYY-MM-DD') AS overtime_approved_at,
             (a.overtime_forwarded_at IS NOT NULL) AS forwarded,
-            a.overtime_manager_approved_by, a.overtime_manager_approved_at,
-            a.overtime_dept_approved_by,    a.overtime_dept_approved_at,
-            a.overtime_hr_approved_by,      a.overtime_hr_approved_at,
+            a.overtime_manager_approved_by, a.overtime_manager_approved_at, a.overtime_manager_remarks,
+            a.overtime_dept_approved_by,    a.overtime_dept_approved_at,    a.overtime_dept_remarks,
+            a.overtime_hr_approved_by,      a.overtime_hr_approved_at,      a.overtime_hr_remarks,
             e.id AS employee_id, e.full_name AS employee_name, e.emp_id, e.department,
-            app.full_name AS approver_name
+            e.reporting_manager_id, e.department_id,
+            app.full_name AS approver_name,
+            mgrapp.full_name AS overtime_manager_approver_name,
+            deptapp.full_name AS overtime_dept_approver_name,
+            hrapp.full_name AS overtime_hr_approver_name
      FROM attendance a
      JOIN employees e ON e.id = a.employee_id AND e.deleted_at IS NULL
      LEFT JOIN employees app ON app.id = a.overtime_approved_by
+     LEFT JOIN employees mgrapp ON mgrapp.id = a.overtime_manager_approved_by
+     LEFT JOIN employees deptapp ON deptapp.id = a.overtime_dept_approved_by
+     LEFT JOIN employees hrapp ON hrapp.id = a.overtime_hr_approved_by
      WHERE ${scoped.conditions.join(' AND ')}
      ORDER BY a.date DESC
      LIMIT $${scoped.params.length - 1} OFFSET $${scoped.params.length}`,

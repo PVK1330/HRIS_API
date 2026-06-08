@@ -97,46 +97,69 @@ async function generatePdfFromHtml(htmlBody, tenant = {}) {
         .header {
           display: flex;
           justify-content: space-between;
-          align-items: center;
+          align-items: flex-start;
+          padding-top: 15px;
           padding-bottom: 20px;
-          border-bottom: 2px solid #0F766E;
+          border-top: 4px solid #10B981;
+          border-bottom: 1px solid #e2e8f0;
           margin-bottom: 40px;
         }
-        .header img {
+        .header-left {
+          display: flex;
+          align-items: center;
+          gap: 15px;
+        }
+        .header-left img {
           max-width: 150px;
           max-height: 60px;
         }
-        .header .company-details {
-          text-align: right;
-          font-size: 12px;
-          color: #64748b;
+        .header-company {
+          display: flex;
+          flex-direction: column;
         }
-        .header .company-details strong {
-          color: #0F766E;
-          font-size: 16px;
+        .header-company-name {
+          font-size: 18px;
+          font-weight: 700;
+          color: #1e293b;
+          text-transform: uppercase;
+        }
+        .header-dept {
+          font-size: 11px;
+          font-weight: 600;
+          color: #10B981;
+          letter-spacing: 1px;
         }
         .content {
           margin-top: 20px;
         }
         .footer {
           margin-top: 60px;
-          padding-top: 20px;
-          border-top: 1px solid #e2e8f0;
+          padding-top: 15px;
+          border-top: 1px solid #10B981;
           text-align: center;
-          font-size: 10px;
-          color: #94a3b8;
+          font-size: 11px;
+          color: #64748b;
+        }
+        .footer-details {
+          display: flex;
+          justify-content: center;
+          gap: 15px;
+          margin-bottom: 8px;
+          color: #475569;
         }
       </style>
     </head>
     <body>
       <div class="header">
-        <div>
-          ${logoDataUri ? `<img src="${logoDataUri}" alt="Logo">` : `<h2>${companyName}</h2>`}
+        <div class="header-left">
+          ${logoDataUri ? `<img src="${logoDataUri}" alt="Logo">` : ``}
+          <div class="header-company">
+            <span class="header-company-name">${companyName}</span>
+            <span class="header-dept">HUMAN RESOURCES DIVISION</span>
+          </div>
         </div>
-        <div class="company-details">
-          <strong>${companyName}</strong><br>
-          ${companyAddress}<br>
-          ${companyEmail}
+        <div style="text-align: right; font-size: 12px; color: #475569;">
+          <!-- Specific document details like Ref No can be injected in content -->
         </div>
       </div>
       
@@ -145,7 +168,12 @@ async function generatePdfFromHtml(htmlBody, tenant = {}) {
       </div>
 
       <div class="footer">
-        This document is electronically generated and requires no physical signature.
+        <div class="footer-details">
+          <span>${companyAddress}</span>
+          <span>|</span>
+          <span>${companyEmail}</span>
+        </div>
+        <div>This document is electronically generated and requires no physical signature.</div>
       </div>
     </body>
     </html>

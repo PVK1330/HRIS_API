@@ -692,7 +692,32 @@ async function getOvertimeRecords(auth, user, query = {}) {
     { status: query.status || '', search: query.search || '', limit, offset },
     auth,
   );
-  return { records, total: records.length };
+  const enriched = records.map((r) => enrichWithCanAct(auth, r, authz.overtimeStatusToStage(r.overtime_status)));
+  return { records: enriched, total: enriched.length };
+}
+
+// Stage → human label used by both modules for the pending-approver column / banners.
+const STAGE_LABELS = { manager: 'Reporting Manager', department: 'Department Head', hr: 'HR' };
+
+/**
+ * Attach `can_act` (is the current viewer the responsible approver for this
+ * record's current stage right now) plus the stage label. Drives whether the UI
+ * shows Approve/Reject for the CURRENT level only.
+ */
+function enrichWithCanAct(auth, row, stage) {
+  const emp = {
+    id: row.employee_id,
+    reporting_manager_id: row.reporting_manager_id,
+    department_id: row.department_id,
+    department: row.department,
+  };
+  const canAct = stage ? authz.canActOnStage(auth, emp, stage, { employee_id: row.employee_id }) : false;
+  return {
+    ...row,
+    pending_stage: stage,
+    pending_stage_label: stage ? STAGE_LABELS[stage] : null,
+    can_act: canAct,
+  };
 }
 
 /**
@@ -722,7 +747,7 @@ async function processOvertime(auth, user, id, { action, reason }, req) {
   if (!emp) throw ApiError.notFound('Employee not found');
 
   // Scope-based stage authorization.
-  authz.assertCanActOnStage(auth, record.overtime_status, emp, action, 'overtime');
+  authz.assertCanActOnStatusStage(auth, record.overtime_status, emp, action, 'overtime');
 
   const approverId = actorEmployeeId(user);
 
@@ -776,6 +801,12 @@ async function processOvertime(auth, user, id, { action, reason }, req) {
     } else if (newStatus === 'Manager_Approved') {
       // Notify Dept Head that it's now in their queue.
       await notify.notifyOtForwardedToDept(pool, user.db_name, {
+        employeeId: record.employee_id, date: record.date,
+        entityId: record.id, hours: record.overtime_hours,
+      });
+    } else if (newStatus === 'Dept_Approved') {
+      // Notify HR that it's now in their queue for final approval.
+      await notify.notifyOtForwardedToHr(pool, user.db_name, {
         employeeId: record.employee_id, date: record.date,
         entityId: record.id, hours: record.overtime_hours,
       });
@@ -992,7 +1023,7 @@ async function regularize(auth, user, id, { action, reason }, req) {
       },
       record.check_in_time,
       record.check_out_time,
-      newRegStatus,
+      regStatus,
     );
 
     const updated = await repo.applyRegularizationDecision(client, id, {
@@ -1026,11 +1057,19 @@ async function regularize(auth, user, id, { action, reason }, req) {
       ...meta,
     });
 
-    if (action === 'approve' && newRegStatus === 'Approved') {
+    if (action === 'approve' && regStatus === 'Approved') {
       await notify.notifyRegApproved(pool, user.db_name, {
         employeeId: record.employee_id,
         date: record.date,
         entityId: record.id,
+      });
+    } else if (action === 'approve' && regStatus === 'Pending' && nextStage && nextStage !== 'done') {
+      // Advanced to the next stage — notify that stage's approver.
+      await notify.notifyRegForwarded(pool, user.db_name, {
+        employeeId: record.employee_id,
+        date: record.date,
+        entityId: record.id,
+        nextStage,
       });
     } else if (action === 'reject') {
       await notify.notifyRegRejected(pool, user.db_name, {

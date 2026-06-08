@@ -4,7 +4,9 @@ const { Router } = require('express');
 const {
   authenticate,
   loadAuthContext,
+  requirePermission,
 } = require('../middlewares/auth.middleware');
+const { P } = require('../constants/permissions');
 const ctrl = require('../controllers/performanceExport.controller');
 
 const router = Router();
@@ -13,9 +15,9 @@ const router = Router();
 router.use(authenticate, loadAuthContext);
 
 // Get all performance cycles
-router.get('/cycles', ctrl.getPerformanceCycles);
+router.get('/cycles', requirePermission(P.PERFORMANCE_VIEW), ctrl.getPerformanceCycles);
 
 // Export performance data
-router.post('/export', ctrl.exportPerformanceData);
+router.post('/export', requirePermission(P.PERFORMANCE_VIEW), ctrl.exportPerformanceData);
 
 module.exports = router;

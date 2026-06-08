@@ -568,6 +568,62 @@ function generatePdf(data) {
   });
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// CSV GENERATION
+// ────────────────────────────────────────────────────────────────────────
+
+/** Escape a value for safe CSV output (RFC 4180). */
+function csvCell(value) {
+  if (value === null || value === undefined) return '';
+  const str = String(value);
+  if (/[",\n\r]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+/** Build a single-assessment CSV report from the same completeData used by the PDF. */
+function generateCsv(data) {
+  const rows = [];
+  rows.push(['Field', 'Value']);
+  rows.push(['Employee Name', data.employeeName]);
+  rows.push(['Employee Code', data.employeeCode]);
+  rows.push(['Department', data.departmentName]);
+  rows.push(['Manager', data.managerName]);
+  rows.push(['Performance Cycle', data.performanceCycle]);
+  rows.push(['Cycle Duration', data.cycleDuration]);
+  rows.push(['Overall Rating', data.overallRating]);
+  rows.push(['Performance Band', data.performanceBand]);
+  rows.push(['Key Contributions', data.keyContributions]);
+  rows.push(['Growth Objectives', data.growthObjectives]);
+  rows.push(['Remarks', data.remarks]);
+  rows.push(['Goal Title', data.goalTitle]);
+  rows.push(['Priority', data.priority]);
+  rows.push(['KPI / Target', data.kpiTarget]);
+  rows.push(['Goal Due Date', data.goalDueDate]);
+  rows.push(['Weightage', data.weightage]);
+  rows.push(['Employee Status', data.employeeStatus]);
+  rows.push(['Employee Progress (%)', data.employeeProgress]);
+  rows.push(['Employee Comments', data.employeeComments]);
+  rows.push(['Completion Notes', data.completionNotes]);
+  rows.push([]);
+  rows.push(['Competency', 'Rating']);
+  (data.competencyRatings || []).forEach((cr) => {
+    rows.push([cr.competencyName, cr.rating]);
+  });
+  rows.push([]);
+  rows.push(['Report Generated', data.reportGeneratedDate]);
+
+  // Prefix BOM so Excel renders UTF-8 correctly
+  const csv = '﻿' + rows.map((r) => r.map(csvCell).join(',')).join('\r\n');
+
+  return {
+    data: Buffer.from(csv, 'utf8'),
+    contentType: 'text/csv; charset=utf-8',
+    contentDisposition: 'attachment; filename=employee-performance-report.csv',
+  };
+}
+
 module.exports = {
   fetchCycles,
   exportData,

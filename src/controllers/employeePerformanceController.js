@@ -5,6 +5,7 @@ const ApiResponse = require('../utils/ApiResponse');
 const ApiError = require('../utils/ApiError');
 const { EmployeePerformance } = require('../models/EmployeePerformance');
 const { getTenantPool } = require('../config/db');
+const notify = require('../modules/notifications/notifications.service');
 
 /**
  * Get tenant database pool with validation
@@ -98,6 +99,33 @@ const createAssessment = asyncHandler(async (req, res) => {
     managerStatus
   }, req.user.id);
   console.log('Created assessment:', assessment);
+
+  // Notify the employee (and their manager) that an assessment was assigned
+  const tenant = { db_name: req.user.db_name };
+  const cycleLabel = performanceCycle || assessment?.performanceCycle?.cycleName || 'the current cycle';
+  if (empIdToUse) {
+    notify.sendSystemNotification(tenant, {
+      employeeId: Number(empIdToUse),
+      title: 'New Performance Assessment Assigned',
+      message: `A performance assessment has been assigned to you for ${cycleLabel}.`,
+      type: 'info',
+      entityType: 'employee_performance',
+      entityId: assessment.id,
+      redirectUrl: '/admin/employee-profile',
+    }).catch(() => null);
+  }
+  if (managerId) {
+    notify.sendSystemNotification(tenant, {
+      employeeId: Number(managerId),
+      title: 'Performance Assessment Awaiting Goals',
+      message: `An assessment was assigned to your team member for ${cycleLabel}. Please set their goals and KPIs.`,
+      type: 'info',
+      entityType: 'employee_performance',
+      entityId: assessment.id,
+      redirectUrl: '/admin/manager-performance',
+    }).catch(() => null);
+  }
+
   return ApiResponse.created(res, assessment, 'Employee performance assessment created successfully');
 
 });
@@ -208,6 +236,82 @@ const getSummaryMetrics = asyncHandler(async (req, res) => {
   const pool = getTenantDbPool(req.user);
   const metrics = await EmployeePerformance.getSummary(pool);
   return ApiResponse.ok(res, metrics, 'Employee performance summary retrieved successfully');
+});
+
+/**
+ * GET /api/employee-performance/analytics
+ * Aggregated, tenant-scoped analytics for the Performance Reports dashboard.
+ */
+const getPerformanceAnalytics = asyncHandler(async (req, res) => {
+  const pool = getTenantDbPool(req.user);
+
+  const [byDeptRes, bandRes, statusRes, cycleRatingRes, summaryRes] = await Promise.all([
+    // Assessments per department
+    pool.query(`
+      SELECT COALESCE(d.name, 'Unassigned') AS name, COUNT(ep.id)::int AS value
+      FROM employee_performance ep
+      LEFT JOIN departments d ON d.id = ep.department_id AND d.deleted_at IS NULL
+      WHERE ep.deleted_at IS NULL
+      GROUP BY COALESCE(d.name, 'Unassigned')
+      ORDER BY value DESC
+      LIMIT 8;
+    `),
+    // Distribution by performance band
+    pool.query(`
+      SELECT COALESCE(performance_band, 'Unrated') AS name, COUNT(*)::int AS count
+      FROM employee_performance
+      WHERE deleted_at IS NULL
+      GROUP BY COALESCE(performance_band, 'Unrated')
+      ORDER BY count DESC;
+    `),
+    // Distribution by employee execution status
+    pool.query(`
+      SELECT COALESCE(employee_status, 'Not Started') AS name, COUNT(*)::int AS count
+      FROM employee_performance
+      WHERE deleted_at IS NULL
+      GROUP BY COALESCE(employee_status, 'Not Started')
+      ORDER BY count DESC;
+    `),
+    // Average overall rating per recent cycle
+    pool.query(`
+      SELECT pc.cycle_name AS cycle,
+             ROUND(AVG(ep.overall_rating)::numeric, 2)::float AS rate
+      FROM employee_performance ep
+      JOIN performance_cycles pc ON pc.id = ep.performance_cycle_id
+      WHERE ep.deleted_at IS NULL AND ep.overall_rating IS NOT NULL
+      GROUP BY pc.id, pc.cycle_name, pc.start_date
+      ORDER BY pc.start_date DESC NULLS LAST
+      LIMIT 6;
+    `),
+    // Headline metrics
+    pool.query(`
+      SELECT
+        COUNT(*)::int AS total,
+        ROUND(AVG(overall_rating)::numeric, 2)::float AS avg_rating,
+        COUNT(*) FILTER (WHERE employee_status = 'Completed')::int AS completed,
+        COUNT(*) FILTER (WHERE employee_status = 'Approved')::int AS approved
+      FROM employee_performance
+      WHERE deleted_at IS NULL;
+    `),
+  ]);
+
+  const summaryRow = summaryRes.rows[0] || {};
+
+  const analytics = {
+    byDepartment: byDeptRes.rows,
+    performanceDist: bandRes.rows,
+    byStatus: statusRes.rows,
+    // Oldest → newest so the trend reads left to right
+    ratingTrend: cycleRatingRes.rows.slice().reverse(),
+    summary: {
+      total: summaryRow.total || 0,
+      avgRating: summaryRow.avg_rating || 0,
+      completed: summaryRow.completed || 0,
+      approved: summaryRow.approved || 0,
+    },
+  };
+
+  return ApiResponse.ok(res, analytics, 'Performance analytics retrieved successfully');
 });
 
 /**
@@ -442,6 +546,19 @@ const updateManagerGoals = asyncHandler(async (req, res) => {
     throw ApiError.notFound('Assessment not found or you do not have access to it');
   }
 
+  // Notify the employee that their manager has set/updated goals
+  if (updated.employeeId) {
+    notify.sendSystemNotification({ db_name: req.user.db_name }, {
+      employeeId: Number(updated.employeeId),
+      title: 'Performance Goals Updated',
+      message: `Your manager has set goals for "${goalTitle.trim()}". Review them and start tracking your progress.`,
+      type: 'info',
+      entityType: 'employee_performance',
+      entityId: updated.id,
+      redirectUrl: '/admin/employee-profile',
+    }).catch(() => null);
+  }
+
   return ApiResponse.ok(res, updated, 'Manager goal details updated successfully');
 });
 
@@ -566,8 +683,19 @@ const updateEmployeeProgress = asyncHandler(async (req, res) => {
     throw ApiError.notFound('Assessment not found or you do not have permission to update it');
   }
 
-  console.log('updated employee progress', updated)
-  console.log('employee progress updated successfully', updated)
+  // When the employee marks their goal as Completed, alert admins/HR for review
+  if (String(updated.employeeStatus) === 'Completed') {
+    notify.sendSystemNotification({ db_name: req.user.db_name }, {
+      forAdmin: true,
+      title: 'Performance Goal Completed',
+      message: `${updated.employee?.fullName || 'An employee'} has marked their performance goal as completed and it is ready for review.`,
+      type: 'info',
+      entityType: 'employee_performance',
+      entityId: updated.id,
+      redirectUrl: '/admin/performance',
+    }).catch(() => null);
+  }
+
   return ApiResponse.ok(res, updated, 'Employee progress updated successfully');
 });
 
@@ -587,9 +715,29 @@ const approveAssessment = asyncHandler(async (req, res) => {
   const existing = await EmployeePerformance.findById(pool, assessmentId);
   if (!existing) throw ApiError.notFound('Assessment not found');
 
+  // Guard: a user cannot approve their own performance assessment
+  const approverEmployeeId = req.user.employeeId || req.user.employee_id;
+  if (approverEmployeeId && Number(existing.employeeId) === Number(approverEmployeeId)) {
+    throw ApiError.forbidden('You cannot approve your own performance assessment');
+  }
+
   // Approve the assessment
   const approved = await EmployeePerformance.approve(pool, assessmentId, req.user.id);
   if (!approved) throw ApiError.internalServerError('Failed to approve assessment');
+
+  // Notify the employee that their assessment has been approved
+  const subjectEmployeeId = approved.employeeId || existing.employeeId;
+  if (subjectEmployeeId) {
+    notify.sendSystemNotification({ db_name: req.user.db_name }, {
+      employeeId: Number(subjectEmployeeId),
+      title: 'Performance Assessment Approved',
+      message: 'Your performance assessment has been reviewed and approved.',
+      type: 'success',
+      entityType: 'employee_performance',
+      entityId: approved.id,
+      redirectUrl: '/admin/employee-profile',
+    }).catch(() => null);
+  }
 
   return ApiResponse.ok(res, approved, 'Assessment approved successfully');
 });
@@ -598,6 +746,7 @@ module.exports = {
   createAssessment,
   getAllAssessments,
   getSummaryMetrics,
+  getPerformanceAnalytics,
   getAssessmentById,
   updateAssessment,
   deleteAssessment,

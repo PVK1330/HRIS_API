@@ -2,7 +2,7 @@
 
 const ApiError = require('../../utils/ApiError');
 const { superAdminPool } = require('../../config/db');
-const { runTenantMigrations } = require('../tenant/tenant.service');
+const { ensureMigrated } = require('../../utils/tenantMigration');
 const { getTenantPool } = require('../../config/db');
 
 const rbacRepo = require('./rbac.repository');
@@ -11,10 +11,6 @@ const notify = require('../notifications/notifications.service');
 function resolvePool(dbName) {
   if (!dbName) throw ApiError.unauthorized('Tenant database not found');
   return getTenantPool(dbName);
-}
-
-async function ensureMigrated(dbName) {
-  return runTenantMigrations(dbName);
 }
 
 async function listPermissions(req) {

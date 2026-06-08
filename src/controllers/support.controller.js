@@ -4,6 +4,7 @@ const ApiError = require('../utils/ApiError');
 const supportService = require('../services/support.service');
 const { pushNotification } = require('../modules/notifications/notifications.service');
 const socket = require('../socket');
+const logger = require('../utils/logger');
 
 function buildConversation(row) {
   const status = row.status || 'Waiting'
@@ -115,7 +116,7 @@ async function createTicket(req, res, next) {
 
       
     } catch (err) {
-      console.error('[TICKET NOTIFICATION] Failed to send support ticket notification:', err);
+      logger.error('[support] failed to send ticket notification', { err: err.message });
       // Don't fail the response, notification is optional
     }
 
@@ -123,7 +124,7 @@ async function createTicket(req, res, next) {
     try {
       socket.emitTicketCreated(ticket);
     } catch (err) {
-      console.error('Failed to emit ticket created socket event:', err);
+      logger.error('[support] failed to emit ticket created event', { err: err.message });
     }
 
     return res.status(201).json({
@@ -194,7 +195,7 @@ async function updateTicket(req, res, next) {
         forAdmin: false
       });
     } catch (err) {
-      console.error('Failed to send ticket update notification:', err);
+      logger.error('[support] failed to send ticket update notification', { err: err.message });
       // Don't fail the response, notification is optional
     }
 
@@ -202,7 +203,7 @@ async function updateTicket(req, res, next) {
     try {
       socket.emitTicketUpdate(ticket);
     } catch (err) {
-      console.error('Failed to emit ticket updated socket event:', err);
+      logger.error('[support] failed to emit ticket updated event', { err: err.message });
     }
     return res.json({ success: true, data: transformTicket(ticket) });
   } catch (err) {

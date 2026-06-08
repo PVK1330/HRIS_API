@@ -3,6 +3,7 @@
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
 const notify = require('../notifications/notifications.service');
+const logger = require('../../utils/logger');
 
 const STATUSES = new Set([
   'Draft',
@@ -24,7 +25,7 @@ async function ensureTableColumns(pool) {
       'ALTER TABLE expenses ADD COLUMN IF NOT EXISTS expense_category_id INTEGER;',
     );
   } catch (err) {
-    console.error('Error running migrations/alters for expenses table:', err);
+    logger.error('[expenses] migration error', { err: err.message });
   }
 }
 

@@ -1,5 +1,7 @@
 'use strict';
 
+const logger = require('../../utils/logger');
+
 /**
  * exitStageEngine — stage-advance algorithm + status transitions for the workflow engine.
  *
@@ -128,7 +130,7 @@ async function seedStageEntry(client, requestId, stage) {
      WHERE id = $3`,
     [stage.id, deptId, requestId],
   );
-  console.log(`[Exit Workflow] Request ${requestId} current_stage_id updated to ${stage.id}.`);
+  logger.info('[exit] stage updated', { requestId, stageId: stage.id });
 
   // Open PENDING slot for the stage occurrence (authoritative SLA clock).
   await client.query(
@@ -182,7 +184,7 @@ async function seedStageEntry(client, requestId, stage) {
         await client.query('RELEASE SAVEPOINT seed_assets');
       } catch (e) {
         await client.query('ROLLBACK TO SAVEPOINT seed_assets');
-        console.error('[exit] asset checklist seeding skipped:', e.message);
+        logger.warn('[exit] asset checklist seeding skipped', { err: e.message });
       }
     }
   }
@@ -221,11 +223,11 @@ async function advanceStage(client, request, stage) {
   // 2. approval-mode satisfaction
   const satisfied = await isStageSatisfied(client, request, stage);
   if (!satisfied) {
-    console.log(`[Exit Workflow] Request ${request.id} Stage ${stage.id} not satisfied (approvals_pending).`);
+    logger.debug('[exit] stage approvals pending', { requestId: request.id, stageId: stage.id });
     return { advanced: false, reason: 'approvals_pending' };
   }
 
-  console.log(`[Exit Workflow] Request ${request.id} Stage ${stage.id} COMPLETED.`);
+  logger.info('[exit] stage completed', { requestId: request.id, stageId: stage.id });
 
 
   // 3. mark stage COMPLETE + close the PENDING slot
@@ -239,12 +241,12 @@ async function advanceStage(client, request, stage) {
   // 4/5. next stage or finish
   const next = await getNextStage(client, request.workflow_id, stage.stage_order);
   if (next) {
-    console.log(`[Exit Workflow] Request ${request.id} resolved NEXT STAGE: ${next.id} (${next.name}).`);
+    logger.info('[exit] next stage resolved', { requestId: request.id, nextStageId: next.id });
     await seedStageEntry(client, request.id, next);
     return { advanced: true, completed: false, nextStageId: next.id };
   }
   
-  console.log(`[Exit Workflow] Request ${request.id} resolved NEXT STAGE: NONE (Workflow Completed).`);
+  logger.info('[exit] workflow completed', { requestId: request.id });
 
   await client.query(
     `UPDATE exit_requests

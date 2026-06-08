@@ -129,7 +129,9 @@ class Mailer {
 
     // Replace stale instance.
     if (Mailer._instance && Mailer._instance._transporter) {
-      try { Mailer._instance._transporter.close(); } catch (_) { /* ignore */ }
+      try { Mailer._instance._transporter.close(); } catch (_) {
+        logger.debug('[mailer] transporter.close() failed on rebuild', { err: _.message });
+      }
     }
 
     Mailer._instance = new Mailer(cfg);
@@ -140,7 +142,9 @@ class Mailer {
   /** Force the next getInstance() to rebuild from DB. Call after Settings update. */
   static invalidate() {
     if (Mailer._instance && Mailer._instance._transporter) {
-      try { Mailer._instance._transporter.close(); } catch (_) { /* ignore */ }
+      try { Mailer._instance._transporter.close(); } catch (_) {
+        logger.debug('[mailer] transporter.close() failed on invalidate', { err: _.message });
+      }
     }
     Mailer._instance = null;
     Mailer._cacheKey = null;

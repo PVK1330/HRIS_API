@@ -4,7 +4,7 @@ const { getTenantPool, superAdminPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
 const logger   = require('../../utils/logger');
 const repo     = require('./letters.repository');
-const { runTenantMigrations } = require('../tenant/tenant.service');
+const { ensureMigrated } = require('../../utils/tenantMigration');
 const notify   = require('../notifications/notifications.service');
 
 /**
@@ -16,24 +16,6 @@ function resolvePool(user) {
     throw ApiError.unauthorized('Tenant database not found in token');
   }
   return getTenantPool(user.db_name);
-}
-
-/**
- * Ensure the letter_templates table exists in the tenant DB.
- * Runs pending migrations idempotently — safe to call on every request
- * because runTenantMigrations tracks applied files and skips them.
- * We cache a per-db_name promise so we only run once per server lifetime.
- */
-const _migrationCache = new Map();
-async function ensureMigrated(dbName) {
-  if (_migrationCache.has(dbName)) return _migrationCache.get(dbName);
-  const p = runTenantMigrations(dbName).catch((err) => {
-    _migrationCache.delete(dbName); // allow retry on next request
-    logger.error(`[letters] auto-migration failed for ${dbName}:`, err.message);
-    throw ApiError.internal('Database setup failed. Please contact support.');
-  });
-  _migrationCache.set(dbName, p);
-  return p;
 }
 
 // ─── Templates ────────────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ const ApiError = require('../../utils/ApiError');
 const plansRepo = require('../superadmin/plans.repository');
 const tenantRepo = require('../tenant/tenant.repository');
 const stripeCheckout = require('./stripeCheckout.service');
+const logger = require('../../utils/logger');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -32,8 +33,7 @@ async function provisionPlanAccess(tenantId, planId) {
     }
   } catch (err) {
     // Non-fatal: payment still succeeds even if feature provisioning hiccups.
-    // eslint-disable-next-line no-console
-    console.error('[tenantBilling] provisionPlanAccess failed:', err.message);
+    logger.error('[billing] provisionPlanAccess failed', { err: err.message });
   }
 }
 

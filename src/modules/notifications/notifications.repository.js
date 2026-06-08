@@ -1,6 +1,7 @@
 'use strict';
 
 const { ensureMessagingEmployeeId } = require('../messages/messagingIdentity');
+const logger = require('../../utils/logger');
 
 async function create(pool, { employeeId, forAdmin, recipientId, recipientRole, title, message, type, priority, ticketId, entityType, entityId, redirectUrl }) {
   const { rows } = await pool.query(`
@@ -24,7 +25,7 @@ async function listForUser(pool, user) {
   const isSuperadmin = role === 'superadmin';
   const isAdminRole = ['admin', 'hradmin', 'supportadmin', 'billingadmin'].includes(role);
 
-  console.log('[NOTIFICATIONS] listForUser - userId:', user.id, 'role:', role, 'isSuperadmin:', isSuperadmin, 'isAdminRole:', isAdminRole);
+  logger.debug('[notifications] listForUser', { userId: user.id, role, isSuperadmin, isAdminRole });
 
   let whereCondition = '';
   let params = [];
@@ -90,12 +91,12 @@ async function listForUser(pool, user) {
     LIMIT 100
   `;
 
-  console.log('[NOTIFICATIONS] Query:', query);
-  console.log('[NOTIFICATIONS] Params:', params, '(count:', params.length, ')');
+  logger.debug('[notifications] query built', { query });
+  logger.debug('[notifications] query params', { count: params.length });
 
   const { rows } = await pool.query(query, params);
 
-  console.log('[NOTIFICATIONS] Returned', rows.length, 'notifications for user', user.id);
+  logger.debug('[notifications] returned rows', { count: rows.length, userId: user.id });
 
   return rows.map(r => ({
     id: r.id,
@@ -169,8 +170,8 @@ async function markAllAsRead(pool, user) {
     params = [user.id, user.email || ''];
   }
 
-  console.log('[NOTIFICATIONS] markAllAsRead query:', updateQuery);
-  console.log('[NOTIFICATIONS] markAllAsRead params:', params, '(count:', params.length, ')');
+  logger.debug('[notifications] markAllAsRead query built');
+  logger.debug('[notifications] markAllAsRead params', { count: params.length });
 
   await pool.query(updateQuery, params);
   return true;

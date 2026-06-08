@@ -19,6 +19,7 @@ const env = require('../../config/env');
 const delivery = require('../notifications/notificationDelivery.service');
 const workflowAudit = require('../workflow/workflowAudit.service');
 const { getHROrAdminRecipients } = require('../employees/onboarding/utils/onboardingRecipients.utils');
+const logger = require('../../utils/logger');
 
 function notify() { return require('../notifications/notifications.service'); }
 
@@ -41,7 +42,9 @@ async function sendTemplate(to, templateSlug, variables, attachments = []) {
     const { Mailer } = require('../../helpers/mailer/mailer');
     const mailer = await Mailer.getInstance();
     await mailer.send({ to, templateSlug, variables, attachments });
-  } catch (_) { /* template missing / SMTP not configured — non-blocking */ }
+  } catch (mailErr) {
+    logger.warn('[exitEvents] template email failed', { to, templateSlug, err: mailErr.message });
+  }
 }
 
 async function pushSafe(tenant, payload, dedupMeta) {
@@ -57,9 +60,9 @@ async function pushSafe(tenant, payload, dedupMeta) {
       ...payload,
       type: payload.type || 'exit_management',
     }, meta);
-    console.log(`[Exit Workflow] Push notification queued: type=${meta.notificationType} recipient=${meta.recipientId} entityId=${meta.entityId}`);
+    logger.info('[exit] push notification queued', { notificationType: meta.notificationType, recipientId: meta.recipientId, entityId: meta.entityId });
   } catch (err) {
-    console.error(`[Exit Workflow] pushSafe error:`, err.message);
+    logger.error('[exit] pushSafe error', { err: err.message });
   }
 }
 
@@ -218,7 +221,7 @@ async function createStageTasks(pool, requestId, stageId, stageName, recipients)
            )`,
           [requestId, stageId, r.employee_id, item.label, `Checklist item ID: ${item.id}`, dueDays],
         );
-        console.log(`[Exit Workflow] Created checklist task (Item ${item.id}) for stage ${stageId}, employee ${r.employee_id}.`);
+        logger.debug('[exit] created checklist task', { itemId: item.id, stageId, employeeId: r.employee_id });
       }
     } else {
       await pool.query(
@@ -230,7 +233,7 @@ async function createStageTasks(pool, requestId, stageId, stageName, recipients)
          )`,
         [requestId, stageId, r.employee_id, `Review Exit Request: ${stageName || 'Stage'}`, dueDays],
       );
-      console.log(`[Exit Workflow] Created review task for stage ${stageId}, employee ${r.employee_id}.`);
+      logger.debug('[exit] created review task', { stageId, employeeId: r.employee_id });
     }
   }
 }
@@ -305,7 +308,9 @@ async function onStageEntered(tenant, requestId, options = {}) {
       entityId: `${requestId}_stage_${req.current_stage_id}`,
       recipientId: null,
     });
-  } catch (_) { /* non-blocking */ }
+  } catch (notifyErr) {
+    logger.warn('[exitEvents] stage-entered notifications failed', { requestId, err: notifyErr.message });
+  }
 }
 
 async function onSubmitted(tenant, requestId) {
@@ -484,7 +489,7 @@ async function onCompleted(tenant, requestId) {
         }
       }
     } catch (err) {
-      console.error('[onCompleted] Auto-generation of documents failed:', err);
+      logger.error('[exit] document auto-generation failed', { err: err.message });
     }
 
     await pushSafe(tenant, { priority: 'NORMAL',
@@ -533,9 +538,9 @@ async function onCompleted(tenant, requestId) {
          WHERE id = $1`,
         [req.employee_id]
       );
-      console.log(`[onCompleted] Deactivated employee ${req.employee_id}`);
+      logger.info('[exit] employee deactivated', { employeeId: req.employee_id });
     } catch (e) {
-      console.error('[onCompleted] Failed to deactivate employee account:', e);
+      logger.error('[exit] failed to deactivate employee account', { err: e.message });
     }
   } catch (_) { /* non-blocking */ }
 }
@@ -1071,7 +1076,7 @@ async function completeTask(tenant, taskId, exitUser) {
         [itemId]
       );
     }
-    onTaskCompleted(tenant, task).catch((e) => console.error('Exit workflow event error:', e));
+    onTaskCompleted(tenant, task).catch((e) => logger.error('[exit] workflow event error', { err: e.message }));
   }
   return completed;
 }

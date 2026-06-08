@@ -16,34 +16,11 @@ const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
 const logger = require('../../utils/logger');
 const repo = require('./performanceCycles.repository');
-const { runTenantMigrations } = require('../tenant/tenant.service');
+const { ensureMigrated } = require('../../utils/tenantMigration');
 const notify = require('../notifications/notifications.service');
 
 function cycleLabel(cycle, data) {
   return cycle?.name || cycle?.cycle_name || data?.cycleName || data?.name || 'Performance cycle';
-}
-
-// Migration cache to avoid running migrations multiple times
-const _migrationCache = new Map();
-
-/**
- * Ensure tenant database is migrated before accessing it
- * @param {string} dbName - Tenant database name
- * @returns {Promise<void>}
- */
-async function ensureMigrated(dbName) {
-  if (_migrationCache.has(dbName)) {
-    return _migrationCache.get(dbName);
-  }
-
-  const migrationPromise = runTenantMigrations(dbName).catch((err) => {
-    _migrationCache.delete(dbName);
-    logger.error(`Migration failed for ${dbName}:`, err);
-    throw ApiError.internal('Database setup failed.');
-  });
-
-  _migrationCache.set(dbName, migrationPromise);
-  return migrationPromise;
 }
 
 /**

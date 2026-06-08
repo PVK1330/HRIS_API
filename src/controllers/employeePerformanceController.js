@@ -6,6 +6,7 @@ const ApiError = require('../utils/ApiError');
 const { EmployeePerformance } = require('../models/EmployeePerformance');
 const { getTenantPool } = require('../config/db');
 const notify = require('../modules/notifications/notifications.service');
+const logger = require('../utils/logger');
 
 /**
  * Get tenant database pool with validation
@@ -98,7 +99,6 @@ const createAssessment = asyncHandler(async (req, res) => {
     priority,
     managerStatus
   }, req.user.id);
-  console.log('Created assessment:', assessment);
 
   // Notify the employee (and their manager) that an assessment was assigned
   const tenant = { db_name: req.user.db_name };
@@ -187,8 +187,7 @@ const getManagerReviewList = asyncHandler(async (req, res) => {
 
   const managerEmployeeId = req.user.employeeId || req.user.employee_id || req.user.id;
 
-  console.log('Manager logged user:', req.user);
-  console.log('Manager filter id:', managerEmployeeId);
+  logger.debug('[performance] manager filter', { managerEmployeeId });
 
   const result = await EmployeePerformance.findByManagerId(pool, managerEmployeeId, {
     search,
@@ -582,7 +581,7 @@ const getManagerAssignedAssessments = asyncHandler(async (req, res) => {
 
   const managerEmployeeId = req.user.employeeId || req.user.employee_id || req.user.id;
 
-  console.log('Manager assigned assessments - Manager Employee ID:', managerEmployeeId);
+  logger.debug('[performance] getManagerAssignedAssessments', { managerEmployeeId });
 
   const result = await EmployeePerformance.findByManagerId(pool, managerEmployeeId, {
     search,

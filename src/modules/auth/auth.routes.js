@@ -4,7 +4,7 @@ const { Router } = require('express');
 const { body } = require('express-validator');
 const validate = require('../../middlewares/validate.middleware');
 const controller = require('./auth.controller');
-const { authLimiter } = require('../../middlewares/rateLimit.middleware');
+const { authLimiter, otpLimiter, refreshLimiter } = require('../../middlewares/rateLimit.middleware');
 const { authenticate } = require('../../middlewares/auth.middleware');
 
 const router = Router();
@@ -54,7 +54,7 @@ router.post(
 
 router.post(
   '/verify-otp',
-  authLimiter,
+  otpLimiter,
   [
     body('email').isEmail().withMessage('Valid email is required'),
     body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
@@ -65,11 +65,11 @@ router.post(
 
 router.post(
   '/reset-password',
-  authLimiter,
+  otpLimiter,
   [
     body('email').isEmail().withMessage('Valid email is required'),
     body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
-    body('newPassword').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+    body('newPassword').notEmpty().withMessage('New password is required'),
   ],
   validate,
   controller.resetPassword,
@@ -92,13 +92,28 @@ router.post(
   authenticate,
   [
     body('currentPassword').notEmpty().withMessage('Current password is required'),
-    body('newPassword').isLength({ min: 8 }).withMessage('New password must be at least 8 characters'),
+    body('newPassword').notEmpty().withMessage('New password is required'),
   ],
   validate,
   controller.changePassword,
 );
 
 router.get('/access-profile', authenticate, controller.getAccessProfile);
+
+router.post(
+  '/exchange-impersonation-code',
+  authLimiter,
+  [
+    body('code')
+      .isString().withMessage('code must be a string')
+      .isLength({ min: 64, max: 64 }).withMessage('Invalid code format'),
+  ],
+  validate,
+  controller.exchangeImpersonationCode,
+);
+
+router.post('/refresh', refreshLimiter, controller.refresh);
+router.post('/logout', controller.logout);
 
 /* --- Self-service MFA enrollment --- */
 router.get('/mfa/status', authenticate, controller.getMfaStatus);

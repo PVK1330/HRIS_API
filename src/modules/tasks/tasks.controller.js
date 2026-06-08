@@ -4,20 +4,8 @@ const { Task, TaskComment, TaskAttachment } = require('./tasks.model');
 const ApiResponse = require('../../utils/ApiResponse');
 const ApiError = require('../../utils/ApiError');
 const notificationService = require('../notifications/notifications.service');
-const { runTenantMigrations } = require('../tenant/tenant.service');
+const { ensureMigrated } = require('../../utils/tenantMigration');
 const { getTenantPool } = require('../../config/db');
-
-const _migrationCache = new Map();
-async function ensureMigrated(dbName) {
-  if (!dbName) return;
-  if (_migrationCache.has(dbName)) return _migrationCache.get(dbName);
-  const p = runTenantMigrations(dbName).catch((err) => {
-    _migrationCache.delete(dbName);
-    throw err;
-  });
-  _migrationCache.set(dbName, p);
-  return p;
-}
 
 async function resolvePool(req) {
   const dbName = req.user?.db_name || req.tenant?.dbName || req.tenant?.db_name;

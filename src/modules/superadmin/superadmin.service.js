@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const { comparePassword } = require('../../utils/password');
 const jwt = require('jsonwebtoken');
@@ -9,6 +10,26 @@ const ApiError = require('../../utils/ApiError');
 const repo = require('./superadmin.repository');
 const { sendMail } = require('../../utils/mail');
 const { renderEmail } = require('../../utils/emailTemplate');
+const logger = require('../../utils/logger');
+const { superAdminPool } = require('../../config/db');
+
+async function issueSuperadminRefreshToken(userId, role) {
+  const jti = crypto.randomUUID();
+  const expiresMs = 30 * 24 * 60 * 60 * 1000;
+  const expiresAt = new Date(Date.now() + expiresMs);
+
+  await superAdminPool.query(
+    `INSERT INTO public.refresh_tokens (jti, user_id, role, expires_at)
+     VALUES ($1, $2, $3, $4)`,
+    [jti, String(userId), role, expiresAt],
+  );
+
+  return jwt.sign(
+    { jti, sub: String(userId), role, tenant_id: null, db_name: null, userType: role, purpose: 'refresh' },
+    env.JWT.refreshSecret,
+    { expiresIn: env.JWT.refreshExpiresIn },
+  );
+}
 
 /**
  * Authenticates a superadmin and returns a signed JWT plus public profile.
@@ -40,24 +61,28 @@ async function login({ email, password }) {
 
   await repo.touchLastLogin(record.id);
 
+  const role = record.role || 'superadmin';
   const token = jwt.sign(
     {
       id: record.id,
       email: record.email,
-      role: 'superadmin',
+      role,
       tenant_id: null,
     },
     env.JWT.secret,
     { expiresIn: env.JWT.expiresIn }
   );
 
+  const refreshToken = await issueSuperadminRefreshToken(record.id, role);
+
   return {
     token,
+    refreshToken,
     superadmin: {
       id: record.id,
       name: record.name,
       email: record.email,
-      role: record.role || 'superadmin',
+      role,
     },
   };
 }
@@ -82,24 +107,28 @@ async function verify2FA({ userId, code }) {
 
   await repo.touchLastLogin(record.id);
 
+  const role = record.role || 'superadmin';
   const token = jwt.sign(
     {
       id: record.id,
       email: record.email,
-      role: 'superadmin',
+      role,
       tenant_id: null,
     },
     env.JWT.secret,
     { expiresIn: env.JWT.expiresIn }
   );
 
+  const refreshToken = await issueSuperadminRefreshToken(record.id, role);
+
   return {
     token,
+    refreshToken,
     superadmin: {
       id: record.id,
       name: record.name,
       email: record.email,
-      role: record.role || 'superadmin',
+      role,
     },
   };
 }
@@ -241,7 +270,7 @@ async function createAdminUser({ name, email, password, role, status }) {
     });
   } catch (error) {
     // We don't want to fail user creation if email fails, but we should log it
-    console.error('Failed to send admin invitation email:', error);
+    logger.error('[superadmin] failed to send admin invitation email', { err: error.message });
   }
 
   return user;
@@ -370,7 +399,7 @@ async function createAnnouncement({ title, message, audience, type }) {
 
     const failed = sendResults.filter((result) => result.status === 'rejected').length;
     if (failed > 0) {
-      console.error(`Announcement email send failures: ${failed}/${recipients.length}`);
+      logger.warn('[superadmin] announcement email send failures', { failed, total: recipients.length });
     }
   }
 

@@ -166,9 +166,14 @@ const env = Object.freeze({
   },
 
   RATE_LIMIT: {
-    // General API limiter — applies to every request.
+    // General API limiter — applies to every (non-static, non-preflight) request,
+    // per client IP. A data-rich SPA fires many calls per page load plus polling,
+    // so this must be generous or normal users get blanket-429'd. 1000/15min/IP is
+    // coarse abuse protection, not per-action throttling (auth/OTP have their own
+    // strict limiters). Raise RATE_LIMIT_MAX further for offices behind a shared
+    // NAT/proxy where many users share one public IP.
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000, // 900000 (15 min)
-    max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 100,
+    max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 1000,
     // Auth endpoints (login) — counts only failed requests.
     authMax: parseInt(process.env.AUTH_RATE_LIMIT_MAX, 10) || 10,
     // OTP verification (verify-otp + reset-password) — counts every attempt.
@@ -184,6 +189,21 @@ const env = Object.freeze({
   },
   EXIT_TASK_DUE_DAYS: Math.max(1, parseInt(process.env.EXIT_TASK_DUE_DAYS, 10) || 7),
   DISABLE_RATE_LIMIT: process.env.DISABLE_RATE_LIMIT === 'true',
+  // Express "trust proxy" setting. When the API runs behind a reverse proxy /
+  // load balancer (nginx, Vercel, Render, Heroku, …) this MUST be set so the
+  // rate limiter keys on the real client IP from X-Forwarded-For instead of the
+  // proxy's single IP — otherwise every user shares one bucket and all of them
+  // get throttled at once. Set TRUST_PROXY=1 for a single proxy hop. Leave unset
+  // (false) for direct/local connections. Accepts a number, true/false, or a
+  // subnet string (passed straight to app.set('trust proxy', ...)).
+  TRUST_PROXY: (() => {
+    const v = process.env.TRUST_PROXY;
+    if (v === undefined || v === '') return false;
+    if (v === 'true') return true;
+    if (v === 'false') return false;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : v;
+  })(),
 
   /**
    * Opt-in: include error stack traces in HTTP error responses.

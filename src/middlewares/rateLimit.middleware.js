@@ -29,7 +29,17 @@ const generalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many requests, please try again later.' },
-  skip: () => isRateLimitDisabled,
+  // Don't burn the budget on requests that aren't real API calls: CORS
+  // preflight (OPTIONS) doubles every cross-origin request, the health probe is
+  // polled by uptime checks, and static uploads (avatars/documents) can be
+  // dozens of GETs per page. Counting these was a big source of false 429s.
+  skip: (req) => {
+    if (isRateLimitDisabled) return true;
+    if (req.method === 'OPTIONS') return true;
+    if (req.path === '/health') return true;
+    if (req.path.startsWith('/uploads')) return true;
+    return false;
+  },
 });
 
 // Strict limit for auth endpoints (login, register)

@@ -63,6 +63,12 @@ const app = express();
 
 /* -------------------- Security & parsers -------------------- */
 
+// Trust the reverse proxy (if configured) so req.ip is the real client IP from
+// X-Forwarded-For. Without this, behind a proxy every user shares the proxy's
+// single IP and the rate limiter throttles them all together. Defaults to false
+// (direct connection); set TRUST_PROXY=1 in production behind one proxy hop.
+app.set('trust proxy', env.TRUST_PROXY);
+
 app.disable('x-powered-by');
 app.use(cors(createCorsOptions()));
 

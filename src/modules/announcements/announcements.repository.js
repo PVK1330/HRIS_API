@@ -102,6 +102,20 @@ async function markDispatched(pool, id) {
   return rows[0];
 }
 
+// Atomically claim an announcement for dispatch: flips dispatched_at from NULL
+// to NOW() in a single UPDATE. Returns the row only to the caller that won the
+// claim (null if it was already dispatched), so concurrent runs can't double-send.
+async function claimForDispatch(pool, id) {
+  const { rows } = await pool.query(
+    `UPDATE announcements
+     SET dispatched_at = NOW(), status = 'Published', updated_at = NOW()
+     WHERE id = $1 AND dispatched_at IS NULL
+     RETURNING *`,
+    [id],
+  );
+  return rows[0] || null;
+}
+
 async function findDueScheduled(pool) {
   await ensureDispatchColumn(pool);
   const { rows } = await pool.query(
@@ -170,6 +184,7 @@ module.exports = {
   create,
   update,
   markDispatched,
+  claimForDispatch,
   resetDispatch,
   findDueScheduled,
   remove,

@@ -50,11 +50,19 @@ async function login({ email, password }) {
     throw ApiError.unauthorized('Invalid email or password');
   }
 
-  // 2FA Challenge
+  // 2FA Challenge — issue a short-lived signed step-up token instead of
+  // returning the raw user id. verify-2fa must not be reachable without first
+  // passing password auth; returning a bare id let an attacker brute-force a
+  // 6-digit TOTP against an enumerable id and take over the account password-less.
   if (record.two_factor_enabled) {
+    const mfaToken = jwt.sign(
+      { purpose: 'sa_mfa_login', sub: record.id, email: record.email },
+      env.JWT.secret,
+      { expiresIn: '10m' }
+    );
     return {
       mfaRequired: true,
-      userId: record.id,
+      mfaToken,
       email: record.email,
     };
   }
@@ -89,16 +97,34 @@ async function login({ email, password }) {
 
 const speakeasy = require('speakeasy');
 
-async function verify2FA({ userId, code }) {
-  const record = await repo.findById(userId);
+async function verify2FA({ mfaToken, code }) {
+  if (!mfaToken) {
+    throw ApiError.badRequest('Missing verification session token');
+  }
+
+  let payload;
+  try {
+    payload = jwt.verify(mfaToken, env.JWT.secret);
+  } catch (err) {
+    throw ApiError.unauthorized('Your verification session has expired. Please sign in again.');
+  }
+  if (!payload || payload.purpose !== 'sa_mfa_login') {
+    throw ApiError.unauthorized('Invalid verification session');
+  }
+
+  const record = await repo.findById(payload.sub);
   if (!record) {
     throw ApiError.notFound('User not found');
+  }
+  if (!record.two_factor_enabled || !record.two_factor_secret) {
+    throw ApiError.unauthorized('Two-factor authentication is not configured for this account.');
   }
 
   const verified = speakeasy.totp.verify({
     secret: record.two_factor_secret,
     encoding: 'base32',
-    token: code,
+    token: String(code || '').trim(),
+    window: 1,
   });
 
   if (!verified) {

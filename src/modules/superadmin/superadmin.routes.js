@@ -5,6 +5,7 @@ const { body } = require('express-validator');
 
 const validate = require('../../middlewares/validate.middleware');
 const { authenticate, requireRole } = require('../../middlewares/auth.middleware');
+const { authLimiter, otpLimiter } = require('../../middlewares/rateLimit.middleware');
 const controller = require('./superadmin.controller');
 const featuresRouter = require('./features.routes');
 const plansRouter = require('./plans.routes');
@@ -17,6 +18,7 @@ const router = Router();
  */
 router.post(
   '/login',
+  authLimiter,
   [
     body('email')
       .exists({ checkFalsy: true }).withMessage('email is required').bail()
@@ -37,8 +39,9 @@ router.post(
  */
 router.post(
   '/verify-2fa',
+  otpLimiter,
   [
-    body('userId').exists().withMessage('userId is required'),
+    body('mfaToken').exists({ checkFalsy: true }).withMessage('mfaToken is required'),
     body('code').isLength({ min: 6, max: 6 }).withMessage('code must be 6 digits'),
   ],
   validate,

@@ -1,11 +1,11 @@
 // src/services/paymentService.js
-const { superadminPool } = require('../config/db');
+const { superAdminPool } = require('../config/db');
 
 /**
  * Process manual payment for tenant subscription
  */
 async function processManualPayment(paymentData, superadminId) {
-  const client = await superadminPool.connect();
+  const client = await superAdminPool.connect();
   
   try {
     await client.query('BEGIN');
@@ -132,7 +132,7 @@ async function getTenantPayments(tenantId, filters = {}) {
 
   query += ' ORDER BY p.created_at DESC';
 
-  const result = await superadminPool.query(query, params);
+  const result = await superAdminPool.query(query, params);
   return result.rows;
 }
 
@@ -176,7 +176,7 @@ async function getAllPayments(filters = {}) {
 
   query += ' ORDER BY p.created_at DESC';
 
-  const result = await superadminPool.query(query, params);
+  const result = await superAdminPool.query(query, params);
   return result.rows;
 }
 
@@ -184,7 +184,7 @@ async function getAllPayments(filters = {}) {
  * Get payment by ID
  */
 async function getPaymentById(paymentId) {
-  const result = await superadminPool.query(
+  const result = await superAdminPool.query(
     `SELECT p.*, t.company_name, t.admin_email, sp.plan_name
      FROM public.payments p
      JOIN public.tenants t ON p.tenant_id = t.id
@@ -199,7 +199,7 @@ async function getPaymentById(paymentId) {
  * Refund payment
  */
 async function refundPayment(paymentId, refundData, superadminId) {
-  const result = await superadminPool.query(
+  const result = await superAdminPool.query(
     `UPDATE public.payments
      SET status = 'refunded', notes = COALESCE($2, notes) || ' | Refunded: ' || $3, updated_at = NOW()
      WHERE id = $1
@@ -216,7 +216,7 @@ async function getPaymentStats(tenantId = null) {
   let whereClause = tenantId ? 'WHERE p.tenant_id = $1' : 'WHERE 1=1';
   const params = tenantId ? [tenantId] : [];
 
-  const result = await superadminPool.query(
+  const result = await superAdminPool.query(
     `SELECT 
       COUNT(*) as total_payments,
       SUM(CASE WHEN status = 'completed' THEN amount ELSE 0 END) as total_collected,

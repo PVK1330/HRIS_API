@@ -32,7 +32,7 @@ const login = asyncHandler(async (req, res) => {
   if (result.mfaRequired) {
     return ApiResponse.ok(
       res,
-      { mfaRequired: true, userId: result.userId, email: result.email },
+      { mfaRequired: true, mfaToken: result.mfaToken, email: result.email },
       'Two-factor authentication required'
     );
   }
@@ -47,9 +47,9 @@ const login = asyncHandler(async (req, res) => {
  * POST /api/v1/superadmin/verify-2fa
  */
 const verify2FA = asyncHandler(async (req, res) => {
-  const { userId, code } = req.body;
+  const { mfaToken, code } = req.body;
 
-  const { refreshToken, token, superadmin } = await service.verify2FA({ userId, code });
+  const { refreshToken, token, superadmin } = await service.verify2FA({ mfaToken, code });
   if (refreshToken) setRefreshCookie(res, refreshToken);
 
   return ApiResponse.ok(res, { token, superadmin }, 'Verification successful');

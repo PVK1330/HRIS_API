@@ -444,6 +444,15 @@ async function processLeave(user, auth, id, { action, reason }) {
       }
       newStatus = 'Pending HR Approval';
       stage = 'manager';
+    } else if (request.status === 'Pending Dept Approval') {
+      // Stage 1b — Department Head (used when the employee has no reporting
+      // manager, so the manager stage is skipped). Requires leave-approval
+      // permission so an employee cannot self-approve at this stage.
+      if (!hasPermission(auth, P.LEAVE_APPROVE)) {
+        throw ApiError.forbidden('Department approval requires leave-approval permission');
+      }
+      newStatus = 'Pending HR Approval';
+      stage = 'department';
     } else if (request.status === 'Pending HR Approval') {
       // Stage 2 — HR final approval. HR/admin role, tenant admin, or ALL scope.
       if (!isHrActor(user, auth)) {
@@ -464,6 +473,11 @@ async function processLeave(user, auth, id, { action, reason }) {
         throw ApiError.forbidden('You can only reject requests for your direct reports.');
       }
       newStatus = 'Rejected by Manager';
+    } else if (request.status === 'Pending Dept Approval') {
+      if (!hasPermission(auth, P.LEAVE_APPROVE)) {
+        throw ApiError.forbidden('Department rejection requires leave-approval permission');
+      }
+      newStatus = 'Rejected by Dept';
     } else if (request.status === 'Pending HR Approval') {
       if (!isHrActor(user, auth)) {
         throw ApiError.forbidden('Final rejection requires HR/admin role or organisation-wide scope');
@@ -474,7 +488,7 @@ async function processLeave(user, auth, id, { action, reason }) {
     }
 
   } else { // cancel
-    if (!['Pending Manager Approval', 'Pending HR Approval', 'Approved', 'Draft'].includes(request.status)) {
+    if (!['Pending Manager Approval', 'Pending Dept Approval', 'Pending HR Approval', 'Approved', 'Draft'].includes(request.status)) {
       throw ApiError.badRequest(`Cannot cancel a request with status "${request.status}"`);
     }
     newStatus = 'Cancelled';

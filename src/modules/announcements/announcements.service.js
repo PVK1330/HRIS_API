@@ -141,6 +141,13 @@ async function sendInAppNotifications(tenant, announcement, recipients) {
 async function dispatchAnnouncement(tenant, pool, announcement) {
   if (!announcement || announcement.dispatched_at) return announcement;
 
+  // Atomically claim the announcement before sending. Only the worker that
+  // flips dispatched_at from NULL to NOW() proceeds; overlapping cron runs or
+  // concurrent publishes get null back and skip, preventing duplicate sends.
+  const claimed = await repo.claimForDispatch(pool, announcement.id);
+  if (!claimed) return announcement;
+  announcement = claimed;
+
   const channels = announcement.dispatch_channels || 'Both';
   const sendInApp = channels === 'In App' || channels === 'Both';
   const sendEmail = channels === 'Email' || channels === 'Both';
@@ -157,7 +164,8 @@ async function dispatchAnnouncement(tenant, pool, announcement) {
     await sendAnnouncementEmails(pool, announcement, recipients);
   }
 
-  return repo.markDispatched(pool, announcement.id);
+  // dispatched_at + status were already set by the atomic claim above.
+  return announcement;
 }
 
 async function listAnnouncements(pool, user) {

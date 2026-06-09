@@ -475,26 +475,42 @@ async function deleteVisaRecord(tenant, id) {
 /**
  * Rows for cron: expiring within N days (inclusive of today), still active visa records.
  */
-async function findExpiringSoonForTenant(pool, daysAhead) {
+// Records expiring within `daysAhead` that have NOT already been alerted in the
+// last `resendAfterDays` days. The dedup window stops the daily cron from
+// re-emailing the same employee/HR for the same visa every single day.
+async function findExpiringSoonForTenant(pool, daysAhead, resendAfterDays = 7) {
   const { rows } = await pool.query(
     `SELECT evr.*, e.full_name, e.work_email, e.emp_id
      FROM employee_visa_records evr
      INNER JOIN employees e ON e.id = evr.employee_id AND e.deleted_at IS NULL
      WHERE evr.is_active = true
        AND evr.visa_expiry_date >= CURRENT_DATE
-       AND evr.visa_expiry_date <= CURRENT_DATE + ($1::int * INTERVAL '1 day')`,
-    [daysAhead],
+       AND evr.visa_expiry_date <= CURRENT_DATE + ($1::int * INTERVAL '1 day')
+       AND NOT EXISTS (
+         SELECT 1 FROM visa_alert_logs l
+         WHERE l.visa_record_id = evr.id
+           AND l.alert_type = 'visa_expiring'
+           AND l.sent_at > NOW() - ($2::int * INTERVAL '1 day')
+       )`,
+    [daysAhead, resendAfterDays],
   );
   return rows;
 }
 
-async function findExpiredForTenant(pool) {
+async function findExpiredForTenant(pool, resendAfterDays = 7) {
   const { rows } = await pool.query(
     `SELECT evr.*, e.full_name, e.work_email, e.emp_id
      FROM employee_visa_records evr
      INNER JOIN employees e ON e.id = evr.employee_id AND e.deleted_at IS NULL
      WHERE evr.is_active = true
-       AND evr.visa_expiry_date < CURRENT_DATE`,
+       AND evr.visa_expiry_date < CURRENT_DATE
+       AND NOT EXISTS (
+         SELECT 1 FROM visa_alert_logs l
+         WHERE l.visa_record_id = evr.id
+           AND l.alert_type = 'visa_expired'
+           AND l.sent_at > NOW() - ($1::int * INTERVAL '1 day')
+       )`,
+    [resendAfterDays],
   );
   return rows;
 }

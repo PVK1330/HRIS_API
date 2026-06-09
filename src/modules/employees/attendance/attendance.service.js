@@ -392,6 +392,13 @@ async function checkIn(auth, user, body, req) {
     if (body.date || body.checkInTime || body.checkOutTime) {
       throw ApiError.badRequest('Employees cannot set date or punch times manually');
     }
+    // WFH marking allowed (General settings): block self check-in as Work From Home when off.
+    if (body.workMode === 'Work From Home') {
+      const s = await calc.loadSettings(pool);
+      if (s?.wfh_marking_allowed === false) {
+        throw ApiError.badRequest('Work From Home marking is disabled by your organisation.');
+      }
+    }
   }
 
   req._punchCtx = await punchContext(pool, user.db_name, req);
@@ -516,6 +523,33 @@ async function submitRegularization(auth, user, body, req) {
 
   const dateStr = body.date;
   if (!dateStr) throw ApiError.badRequest('date required');
+
+  const actorId = actorEmployeeId(user);
+  const isSelfSubmission = Number(employeeId) === Number(actorId);
+
+  // Allow self-requests: when off, employees can't raise their own corrections —
+  // only a manager/admin acting on their behalf can.
+  const allowSelf = settings?.regularization_allow_self !== false;
+  if (!allowSelf && isSelfSubmission && !authz.canOverrideApproval(auth)) {
+    throw ApiError.forbidden('Self-regularisation is turned off. Ask your manager to submit it.');
+  }
+
+  // Max per month (0 = unlimited): cap requests per employee for the calendar
+  // month of the date being regularised. Rejected requests don't count.
+  const maxPerMonth = Number(settings?.regularization_max_per_month ?? 0);
+  if (maxPerMonth > 0) {
+    const [yy, mm] = String(dateStr).slice(0, 10).split('-').map(Number);
+    const { rows: cntRows } = await pool.query(
+      `SELECT COUNT(*)::int AS cnt FROM attendance
+       WHERE employee_id = $1
+         AND COALESCE(regularization_status, 'None') NOT IN ('None', 'Rejected')
+         AND EXTRACT(YEAR FROM date) = $2 AND EXTRACT(MONTH FROM date) = $3`,
+      [Number(employeeId), yy, mm],
+    );
+    if ((cntRows[0]?.cnt ?? 0) >= maxPerMonth) {
+      throw ApiError.badRequest(`Monthly regularisation limit reached (${maxPerMonth} per month).`);
+    }
+  }
 
   // Escalation: if the employee has no reporting manager, skip directly to Manager_Approved
   // so the Department Head becomes the first effective approver.

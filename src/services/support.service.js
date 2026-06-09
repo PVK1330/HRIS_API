@@ -48,10 +48,12 @@ async function createTicket(user, tenant, ticketData) {
   const { rows } = await pool.query(query, values);
   const ticketRecord = rows[0];
 
-  // Send email to superadmin about new ticket (non-blocking)
+  // Send email to superadmin about new ticket (non-blocking).
+  // `ticketId` is declared OUTSIDE the try so the catch can still reference it
+  // — previously it was scoped inside the try, so any email failure threw a
+  // ReferenceError in the catch and turned a successful ticket creation into a 500.
+  const ticketId = `TKT-${String(ticketRecord.id).padStart(3, '0')}`;
   try {
-    const ticketId = `TKT-${String(ticketRecord.id).padStart(3, '0')}`;
-    
     let superadminEmail = null;
     try {
       const saResult = await pool.query(`

@@ -17,6 +17,8 @@ const REPORT_TITLES = {
   absenteeism: 'Absenteeism Report',
   regularization: 'Regularization Report',
   payroll: 'Payroll Attendance Report',
+  leave: 'Leave & Absence Report',
+  leave_balance: 'Leave Balance Report',
 };
 
 function formatDate(d) {

@@ -31,6 +31,17 @@ adminRouter.use(requirePermission(P.LEAVE_VIEW));
 
 adminRouter.get('/types', ctrl.getTypes);
 
+// Branded exports — role-scoped by the caller's data scope (self / team / dept / all).
+const exportFilters = [
+  query('year').optional().isInt({ min: 2000, max: 2100 }),
+  query('status').optional().isString().trim(),
+  query('department').optional().isString().trim(),
+  query('leaveType').optional().isString().trim(),
+  query('search').optional().isString().trim(),
+];
+adminRouter.get('/export/pdf', exportFilters, validate, ctrl.exportPdf);
+adminRouter.get('/export/excel', exportFilters, validate, ctrl.exportExcel);
+
 adminRouter.get('/balances', [
   query('year').optional().isInt({ min: 2000, max: 2100 }),
   query('department').optional().isString().trim(),

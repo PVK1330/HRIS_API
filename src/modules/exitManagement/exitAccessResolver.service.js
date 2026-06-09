@@ -255,6 +255,12 @@ function permittedActionsFor(accessCtx) {
       && (accessCtx.isOrgExitAdmin || accessCtx.ownsCurrentStage || accessCtx.completedPrevStage)) {
     actions.add('generate_documents');
   }
+  // Withdrawing an exit request is restricted to its data subject (the exiting employee) or the
+  // org exit admin — NOT every viewer. Status gating (only SUBMITTED/IN_PROGRESS) stays in the
+  // service; here we only constrain WHO may attempt it.
+  if (accessCtx.isSubject || accessCtx.isOrgExitAdmin) {
+    actions.add('withdraw');
+  }
   return actions;
 }
 

@@ -108,9 +108,27 @@ async function runAllTenants() {
   }
 }
 
+// Only one process should run the cron. Under PM2 cluster / multi-instance,
+// every worker would otherwise schedule and double-fire the daily sweep. We
+// run only on the leader instance, identified by either:
+//   - CRON_LEADER === 'true'         (explicit opt-in)
+//   - NODE_APP_INSTANCE === '0'      (PM2 sets this per-worker)
+// Defaults to enabled when neither var is set, so single-instance deployments
+// keep working without any extra configuration.
+function isCronLeader() {
+  const { CRON_LEADER, NODE_APP_INSTANCE } = process.env;
+  if (CRON_LEADER !== undefined) return CRON_LEADER === 'true';
+  if (NODE_APP_INSTANCE !== undefined) return NODE_APP_INSTANCE === '0';
+  return true;
+}
+
 function startAttendanceCron() {
   if (process.env.DISABLE_ATTENDANCE_CRON === 'true') {
     logger.debug('Attendance cron disabled');
+    return;
+  }
+  if (!isCronLeader()) {
+    logger.debug('[attendanceCron] not cron leader for this instance — skipping schedule');
     return;
   }
   cron.schedule('15 1 * * *', () => {

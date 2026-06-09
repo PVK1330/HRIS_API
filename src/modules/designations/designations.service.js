@@ -298,8 +298,9 @@ async function createDesignation(tenant, data) {
   const pool = await getTenantPool(tenant.dbName);
   const st = normalizePayloadStatus(data, true);
   const departmentId = data.department_id ?? data.departmentId;
-  const { rows: drows } = await pool.query(`SELECT id FROM departments WHERE id = $1`, [departmentId]);
+  const { rows: drows } = await pool.query(`SELECT id, name FROM departments WHERE id = $1`, [departmentId]);
   if (!drows.length) throw new ApiError(400, 'department_id does not exist');
+  const departmentName = drows[0].name;
 
   await assertUniqueDesignation(pool, data.name, departmentId);
 
@@ -312,7 +313,7 @@ async function createDesignation(tenant, data) {
     [
       data.name.trim(),
       departmentId,
-      null,
+      departmentName,
       grade,
       st.is_active,
       st.status,
@@ -339,10 +340,12 @@ async function updateDesignation(tenant, id, data) {
 
   const depRaw = data.department_id ?? data.departmentId;
   let departmentId;
+  let departmentName;
   if (depRaw !== undefined) {
     departmentId = parseInt(String(depRaw), 10);
-    const { rows: drows } = await pool.query(`SELECT id FROM departments WHERE id = $1`, [departmentId]);
+    const { rows: drows } = await pool.query(`SELECT id, name FROM departments WHERE id = $1`, [departmentId]);
     if (!drows.length) throw new ApiError(400, 'department_id does not exist');
+    departmentName = drows[0].name;
   }
 
   // Pre-check (name, department) uniqueness whenever either changes. Resolves the
@@ -366,7 +369,8 @@ async function updateDesignation(tenant, id, data) {
   if (depRaw !== undefined) {
     params.push(departmentId);
     fields.push(`department_id = $${n++}`);
-    params.push(null);
+    // Keep the denormalized label in sync with the new department.
+    params.push(departmentName);
     fields.push(`department_name = $${n++}`);
   }
   if (data.description !== undefined) {

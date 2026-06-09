@@ -86,30 +86,48 @@ async function getRequestEmployeeId(pool, requestId) {
 }
 
 /** Every asset currently/previously assigned to the exiting employee. Outstanding
- *  ('Issued') first so the clearance owner sees what is still to be collected. */
+ *  ('Issued') first so the clearance owner sees what is still to be collected.
+ *
+ *  Sourced from `assets` — the SAME table seedStageEntry() reads when it instantiates the
+ *  COLLECT_ASSET checklist items — so the clearance list, the return action, and the seeded
+ *  checklist all stay consistent (previously this read employee_assets, so returns never
+ *  matched the seeded items and a block_until_checklist_complete stage could deadlock).
+ *  `assets` columns are mapped to the legacy field names the UI expects. */
 async function listEmployeeAssets(tenant, requestId) {
   const pool = await getTenantPool(tenant.dbName);
   const employeeId = await getRequestEmployeeId(pool, requestId);
   const { rows } = await pool.query(
-    `SELECT id, asset_tag, asset_name, category, serial_number, condition, status,
-            assigned_date, returned_date, notes
-     FROM employee_assets
-     WHERE employee_id = $1
-     ORDER BY (status = 'Issued') DESC, category, asset_name`,
+    `SELECT a.id,
+            COALESCE(a.asset_id, a.serial_number, 'AST-' || a.id::text) AS asset_tag,
+            COALESCE(ac.name, a.type, 'Asset') AS asset_name,
+            COALESCE(ac.name, a.type, '—')     AS category,
+            a.serial_number, a.condition, a.status,
+            TO_CHAR(a.issue_date, 'YYYY-MM-DD') AS assigned_date,
+            NULL::text AS returned_date,
+            a.notes
+     FROM assets a
+     LEFT JOIN asset_categories ac ON ac.id = a.category_id
+     WHERE a.employee_id = $1
+     ORDER BY (LOWER(COALESCE(a.status, '')) NOT IN ('available','returned','retired','disposed','lost')) DESC,
+              category, asset_name`,
     [employeeId],
   );
-  const outstanding = rows.filter((r) => r.status === 'Issued').length;
+  const outstanding = rows.filter(
+    (r) => !['available', 'returned', 'retired', 'disposed', 'lost'].includes(String(r.status || '').toLowerCase()),
+  ).length;
   return { assets: rows, outstanding, total: rows.length };
 }
 
 /** Mark one of the employee's assets returned (clearance action). Guarded by the route's
- *  authorizeExitAccess({action:'complete_checklist'}) — the caller owns the current stage. */
+ *  authorizeExitAccess({action:'complete_checklist'}) — the caller owns the current stage.
+ *  Operates on the canonical `assets` table (matching seedStageEntry) and resolves the seeded
+ *  COLLECT_ASSET checklist item so a block_until_checklist_complete stage can advance. */
 async function markAssetReturned(tenant, requestId, assetId, data, actor) {
   const pool = await getTenantPool(tenant.dbName);
   const employeeId = await getRequestEmployeeId(pool, requestId);
 
   const { rows: existing } = await pool.query(
-    `SELECT * FROM employee_assets WHERE id = $1 AND employee_id = $2`,
+    `SELECT * FROM assets WHERE id = $1 AND employee_id = $2`,
     [assetId, employeeId],
   );
   if (!existing.length) throw ApiError.notFound('Asset not found for this employee');
@@ -119,18 +137,34 @@ async function markAssetReturned(tenant, requestId, assetId, data, actor) {
     ? data.status : 'Returned';
 
   const { rows } = await pool.query(
-    `UPDATE employee_assets
+    `UPDATE assets
        SET status = $1,
-           returned_date = ${status === 'Issued' ? 'NULL' : 'CURRENT_DATE'},
            condition = COALESCE($2, condition),
            notes = COALESCE($3, notes),
            updated_at = NOW()
      WHERE id = $4 AND employee_id = $5
-     RETURNING id, asset_tag, asset_name, category, serial_number, condition, status,
-               assigned_date, returned_date, notes`,
+     RETURNING id,
+               COALESCE(asset_id, serial_number, 'AST-' || id::text) AS asset_tag,
+               type AS asset_name, type AS category,
+               serial_number, condition, status,
+               TO_CHAR(issue_date, 'YYYY-MM-DD') AS assigned_date,
+               NULL::text AS returned_date, notes`,
     [status, data.condition || null, data.notes || null, assetId, employeeId],
   );
   const updated = rows[0];
+  if (updated && status !== 'Issued') {
+    // Resolve the matching seeded COLLECT_ASSET checklist item (label embeds the asset's
+    // tag/serial) so block_until_checklist_complete stages can advance once assets are cleared.
+    const code = existing[0].asset_id || existing[0].serial_number || '';
+    await pool.query(
+      `UPDATE exit_request_checklist_items
+         SET status = 'COMPLETED', completed_at = NOW(), completed_by = COALESCE($3, completed_by), updated_at = NOW()
+       WHERE exit_request_id = $1 AND item_type = 'COLLECT_ASSET'
+         AND status NOT IN ('COMPLETED','SKIPPED','NA')
+         AND ($2 = '' OR label LIKE '%' || $2 || '%')`,
+      [requestId, code, actor?.employeeId || null],
+    );
+  }
   if (updated && status === 'Returned') {
     const assetsService = require('../assets/assets.service');
     assetsService.logAssetReturned(

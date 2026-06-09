@@ -20,7 +20,7 @@
   });
 
   const stats = asyncHandler(async (req, res) => {
-    const result = await dashboard.getWidgets(req.tenant, req.exitUser);
+    const result = await dashboard.getDashboardWidgets(req.tenant, req.exitUser);
     return ApiResponse.ok(res, result, 'Stats retrieved successfully');
   });
 

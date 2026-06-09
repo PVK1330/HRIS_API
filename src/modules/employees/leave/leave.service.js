@@ -269,13 +269,23 @@ async function applyLeave(user, auth, data) {
     );
   }
 
-  // Notice Period Check
+  // Notice Period Check — measured in business days (excluding weekends and
+  // public holidays) rather than raw calendar days, so a weekend/holiday gap
+  // can't satisfy a notice requirement.
   if (leaveTypeCfg.notice_period_required > 0) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const from = new Date(fromDate);
-    const diffDays = Math.ceil((from - today) / (1000 * 60 * 60 * 24));
-    if (diffDays < leaveTypeCfg.notice_period_required) {
+    let noticeDays;
+    if (from <= today) {
+      noticeDays = 0;
+    } else {
+      // calcWorkingDays is inclusive of both endpoints; the leave's start day
+      // itself isn't notice, so subtract 1 to get business days of advance notice.
+      const todayStr = today.toISOString().slice(0, 10);
+      noticeDays = Math.max(0, (await calcWorkingDays(pool, todayStr, fromDate)) - 1);
+    }
+    if (noticeDays < leaveTypeCfg.notice_period_required) {
       throw ApiError.badRequest(
         `"${leaveTypeCfg.name}" requires at least ${leaveTypeCfg.notice_period_required} days of notice. Please select a later date.`
       );
@@ -326,7 +336,13 @@ async function applyLeave(user, auth, data) {
     const balance = await ensureBalance(
       pool, data.employeeId, leaveTypeCfg.name, year, leaveTypeCfg.annual_entitlement_days
     );
-    const remaining = (balance.total_allocated + balance.carry_forward) - balance.used;
+    // `used` only reflects HR-approved deductions. Also reserve days already tied
+    // up in other not-yet-final (pending) requests so an employee can't stack
+    // multiple pending applications that together exceed their balance.
+    const pendingDays = await repo.getPendingDaysForType(
+      pool, data.employeeId, leaveTypeCfg.name, year
+    );
+    const remaining = (balance.total_allocated + balance.carry_forward) - balance.used - pendingDays;
     if (remaining < totalDays) {
       throw ApiError.badRequest(
         `Insufficient ${leaveTypeCfg.name} balance. ` +
@@ -484,10 +500,13 @@ async function processLeave(user, auth, id, { action, reason }) {
 
   } else if (action === 'approve') {
     if (request.status === 'Pending Manager Approval') {
-      // Stage 1 — Reporting Manager
+      // Stage 1 — Reporting Manager. A team-scoped approver (manager-level,
+      // regardless of the literal role name) may only act on their direct
+      // reports. Broader scopes (DEPARTMENT / ALL) are already constrained by
+      // assertEmployeeRecordAccess above.
       if (
-        user.role === 'manager'
-        && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)
+        String(auth?.scope || '').toUpperCase() === 'TEAM'
+        && Number(request.reporting_manager_id) !== Number(auth?.employeeId)
       ) {
         throw ApiError.forbidden('You can only approve requests for your direct reports.');
       }
@@ -515,9 +534,11 @@ async function processLeave(user, auth, id, { action, reason }) {
 
   } else if (action === 'reject') {
     if (request.status === 'Pending Manager Approval') {
+      // Same scope-based guard as approve: a team-scoped (manager-level)
+      // approver may only reject their direct reports' requests.
       if (
-        user.role === 'manager'
-        && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)
+        String(auth?.scope || '').toUpperCase() === 'TEAM'
+        && Number(request.reporting_manager_id) !== Number(auth?.employeeId)
       ) {
         throw ApiError.forbidden('You can only reject requests for your direct reports.');
       }
@@ -578,10 +599,17 @@ async function processLeave(user, auth, id, { action, reason }) {
         }
         await repo.incrementUsed(client, request.employee_id, request.leave_type, year, request.total_days);
       } else if (newStatus === 'Cancelled' && request.status === 'Approved') {
+        // Year guard: only restore into the leave's own year while that year is
+        // still open (current or future). If the leave is from a prior year that
+        // has already rolled over via carry-forward, its consumption now lives in
+        // the current year's balance — restoring into the closed past year would
+        // resurrect a stale row and leave the current balance over-deducted.
+        const currentYear  = new Date().getFullYear();
+        const restoreYear  = year < currentYear ? currentYear : year;
         await repo.lockBalanceForUpdate(
-          client, request.employee_id, request.leave_type, year, annualDays
+          client, request.employee_id, request.leave_type, restoreYear, annualDays
         );
-        await repo.incrementUsed(client, request.employee_id, request.leave_type, year, -request.total_days);
+        await repo.incrementUsed(client, request.employee_id, request.leave_type, restoreYear, -request.total_days);
       }
     }
 

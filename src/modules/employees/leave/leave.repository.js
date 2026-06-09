@@ -117,7 +117,7 @@ async function findRequestById(pool, id) {
 async function insertRequest(pool, data) {
   const {
     employeeId, leaveType, fromDate, toDate, totalDays,
-    reason, handoverNote, alternatContact, supportingDocumentUrl,
+    reason, handoverNote, alternateContact, supportingDocumentUrl,
     status = 'Pending Manager Approval',
   } = data;
 
@@ -132,7 +132,7 @@ async function insertRequest(pool, data) {
                TO_CHAR(created_at,'DD/MM/YYYY') AS "createdAt"`,
     [
       employeeId, leaveType, fromDate, toDate, totalDays,
-      reason, handoverNote || null, alternatContact || null,
+      reason, handoverNote || null, alternateContact || null,
       supportingDocumentUrl || null, status,
     ]
   );
@@ -245,6 +245,26 @@ async function findOverlappingRequest(pool, employeeId, fromDate, toDate) {
     [employeeId, fromDate, toDate]
   );
   return rows[0] || null;
+}
+
+/**
+ * Sum the days an employee has tied up in not-yet-final requests (pending any
+ * approval stage) for a given leave type and year. These reserve balance even
+ * though `used` is only incremented on final HR approval — so they must be
+ * counted when validating a new application, otherwise an employee can stack
+ * multiple pending requests that together exceed their balance.
+ */
+async function getPendingDaysForType(pool, employeeId, leaveType, year) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(total_days), 0)::float AS pending_days
+     FROM leave_requests
+     WHERE employee_id = $1
+       AND leave_type = $2
+       AND EXTRACT(YEAR FROM from_date) = $3
+       AND status IN ('Pending Manager Approval', 'Pending Dept Approval', 'Pending HR Approval')`,
+    [employeeId, leaveType, year]
+  );
+  return rows[0].pending_days;
 }
 
 async function getBalances(pool, employeeId, year) {
@@ -376,7 +396,7 @@ module.exports = {
   findActiveLeaveType,
   findActiveLeaveTypeById,
   getActiveLeaveTypes,
-  getBalanceForType, findOverlappingRequest,
+  getBalanceForType, findOverlappingRequest, getPendingDaysForType,
   getBalances, getAllBalances, upsertBalance,
   lockBalanceForUpdate, incrementUsed,
   getStats,

@@ -264,7 +264,13 @@ async function getDownload(tenant, requestId, attachmentId) {
   if (!rows.length) throw ApiError.notFound('Document not found');
   const row = rows[0];
   const rel = String(row.file_url).replace(/^\/uploads\//, '');
-  const absPath = path.resolve(env.UPLOAD.dir, rel);
+  const uploadsRoot = path.resolve(env.UPLOAD.dir);
+  const absPath = path.resolve(uploadsRoot, rel);
+  // Containment guard: never let a crafted file_url (e.g. containing '..')
+  // resolve outside the uploads root.
+  if (absPath !== uploadsRoot && !absPath.startsWith(uploadsRoot + path.sep)) {
+    throw ApiError.notFound('Document not found');
+  }
   if (!fs.existsSync(absPath)) throw ApiError.notFound('Document file is missing on disk');
   return { absPath, fileName: row.file_name, mimeType: row.mime_type || 'application/pdf' };
 }

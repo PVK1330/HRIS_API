@@ -45,7 +45,7 @@ const exportList = asyncHandler(async (req, res) => {
 });
 
 const listManagers = asyncHandler(async (req, res) => {
-  const managers = await service.listDepartmentManagers(req.tenant);
+  const managers = await service.listDepartmentManagers(req.tenant, req.query);
   return ApiResponse.ok(res, managers, 'Managers retrieved successfully');
 });
 

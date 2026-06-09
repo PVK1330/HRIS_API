@@ -400,6 +400,13 @@ async function approveStage(tenant, id, exitUser, comments) {
       }
     }
 
+    // SEQUENTIAL stages: enforce approver_order — an approver may only act once every
+    // approver with a lower approver_order has already approved this occurrence.
+    const seq = await engine.sequentialGate(client, request, stage, exitUser);
+    if (!seq.ok) {
+      throw ApiError.badRequest('Earlier approvers must approve this stage before you can act.');
+    }
+
     await recordAction(client, request, 'APPROVE', exitUser, comments);
     const result = await engine.advanceStage(client, request, stage);
     
@@ -567,7 +574,8 @@ async function escalateStage(tenant, id, exitUser, comments) {
     if (request.status !== 'IN_PROGRESS') throw ApiError.badRequest('This exit request is not active');
     const stage = await engine.getStage(client, request.current_stage_id);
 
-    if (stage.escalation_action === 'REASSIGN' && (stage.escalation_to_user_id || stage.escalation_to_role_id)) {
+    const hasEscalationTarget = Boolean(stage.escalation_to_user_id || stage.escalation_to_role_id);
+    if (stage.escalation_action === 'REASSIGN' && hasEscalationTarget) {
       // best-effort: move ownership toward the escalation target's department if a user is set
       if (stage.escalation_to_user_id) {
         const { rows: ed } = await client.query(`SELECT department_id FROM employees WHERE id = $1`, [stage.escalation_to_user_id]);
@@ -575,6 +583,19 @@ async function escalateStage(tenant, id, exitUser, comments) {
           await client.query(`UPDATE exit_requests SET current_owner_department_id = $1, updated_at = NOW() WHERE id = $2`, [ed[0].department_id, id]);
         }
       }
+    } else if (!hasEscalationTarget) {
+      // NOTIFY (or REASSIGN) with no configured target: routing has nowhere to go. Don't silently
+      // no-op — record it so admins can see the escalation landed only on the admin fallback and
+      // the stage's escalation config needs attention.
+      logger.warn('[exit] escalation has no configured target; falling back to admin notification only', {
+        requestId: Number(id), stageId: request.current_stage_id, escalationAction: stage.escalation_action || null,
+      });
+      const workflowAudit = require('../workflow/workflowAudit.service');
+      await workflowAudit.log(tenant, {
+        module: 'exit', action: 'escalation_no_target', entityType: 'exit_request', entityId: Number(id),
+        actorEmployeeId: exitUser?.employeeId || null, actorName: exitUser?.actorName || null,
+        detail: { stageName: stage.name, escalationAction: stage.escalation_action || null },
+      });
     }
     await recordAction(client, request, 'ESCALATE', exitUser, comments || 'Manual escalation');
     await client.query(
@@ -627,14 +648,13 @@ async function withdrawExitRequest(tenant, id, exitUser, reason) {
     if (!['SUBMITTED', 'IN_PROGRESS'].includes(request.status)) {
       throw ApiError.badRequest('Only active exit requests can be withdrawn');
     }
-    // Only the employee who raised the exit (or an org exit admin) may withdraw
-    // it. The route only enforces 'view' access, which many roles have, so the
-    // ownership check must happen here to stop a viewer from cancelling someone
-    // else's exit and silently reactivating their employment.
+    // Only the employee who raised the exit (or an org exit admin) may withdraw it. The route
+    // guard ('withdraw') already restricts this to the data subject / org admin, but re-check
+    // here defensively so the service stays safe regardless of how it is invoked.
     if (Number(exitUser?.employeeId) !== Number(request.employee_id) && !exitUser?.isOrgExitAdmin) {
       throw ApiError.forbidden('You are not allowed to withdraw this exit request');
     }
-    await recordAction(client, request, 'COMMENT', exitUser, `Withdrawal: ${reason || 'requested by employee'}`);
+    await recordAction(client, request, 'WITHDRAW', exitUser, `Withdrawal: ${reason || 'requested by employee'}`);
     await client.query(
       `UPDATE exit_requests
          SET status = 'WITHDRAWN', withdrawal_status = 'approved', withdrawal_reason = $1,
@@ -642,9 +662,19 @@ async function withdrawExitRequest(tenant, id, exitUser, reason) {
              current_owner_department_id = NULL, updated_at = NOW()
        WHERE id = $2`, [reason || null, id],
     );
+    // Restore the employee to a fully-active state. The exit lifecycle can touch TWO separate
+    // columns — advanceStage() sets employment_status='Terminated' and onCompleted() sets
+    // status='EXITED' + deleted_at — so withdraw must reverse BOTH to avoid a half-separated
+    // employee (previously only employment_status was restored).
     await client.query(
-      `UPDATE employees SET employment_status = 'Active', updated_at = NOW()
-       WHERE id = $1 AND employment_status IN ('Notice Period','Resigned')`,
+      `UPDATE employees
+         SET employment_status = CASE
+               WHEN employment_status IN ('Notice Period','Resigned','Terminated') THEN 'Active'
+               ELSE employment_status END,
+             status = CASE WHEN status = 'EXITED' THEN 'ACTIVE' ELSE status END,
+             deleted_at = NULL,
+             updated_at = NOW()
+       WHERE id = $1`,
       [request.employee_id],
     );
     await client.query('COMMIT');

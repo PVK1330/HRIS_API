@@ -48,13 +48,16 @@ function formatMessagePayload(msg) {
   };
 }
 
-function emitMessageRealtime(conversationId, participants, employeeId, msg) {
+function emitMessageRealtime(conversationId, participants, employeeId, msg, clientMsgId = null) {
   try {
     const { getIo } = require('../../socket');
     const io = getIo();
     if (!io) return;
 
     const payload = formatMessagePayload(msg);
+    // Echo the sender's client-generated temp id so their other tabs/devices can
+    // reconcile the optimistic placeholder by id instead of by body text.
+    if (clientMsgId) payload.client_msg_id = clientMsgId;
     const preview = payload.body || (payload.attachment_name ? `📎 ${payload.attachment_name}` : 'Attachment');
     const otherId = otherParticipantId(participants, employeeId);
 

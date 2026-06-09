@@ -61,6 +61,62 @@ function authenticate(req, _res, next) {
   }
 }
 
+/**
+ * Authenticate a request for a static upload (private file download).
+ *
+ * Browsers cannot attach an Authorization header to <img>/document requests,
+ * so for file URLs we additionally accept the JWT via a `?token=` query param.
+ * This gates private /uploads behind a valid login (closes the world-readable
+ * hole). NOTE: this is authentication only — it does not perform per-file
+ * ownership checks, so a logged-in user could still fetch another user's file
+ * if they guess the URL. A streaming endpoint with per-resource authz is the
+ * follow-up for full IDOR protection.
+ */
+function authenticateUpload(req, _res, next) {
+  try {
+    const header = req.headers.authorization || req.headers.Authorization;
+    let token = null;
+    if (header && typeof header === 'string' && header.startsWith('Bearer ')) {
+      token = header.slice('Bearer '.length).trim();
+    } else if (req.query && typeof req.query.token === 'string') {
+      token = req.query.token.trim();
+    }
+
+    if (!token) {
+      return next(ApiError.unauthorized('Authentication required to access this file'));
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, env.JWT.secret);
+    } catch (err) {
+      const msg =
+        err && err.name === 'TokenExpiredError'
+          ? 'Token has expired'
+          : 'Invalid or malformed token';
+      return next(ApiError.unauthorized(msg));
+    }
+
+    if (!decoded || !decoded.id || !decoded.role) {
+      return next(ApiError.unauthorized('Invalid token payload'));
+    }
+
+    req.user = {
+      id: decoded.id,
+      email: decoded.email,
+      role: decoded.role,
+      tenant_id: decoded.tenant_id || null,
+      db_name: decoded.db_name || null,
+      employeeId: decoded.employeeId || null,
+      userType: decoded.userType || decoded.role,
+    };
+
+    return next();
+  } catch (err) {
+    return next(err);
+  }
+}
+
 function requireRole(...allowedRoles) {
   const allowed = allowedRoles.flat().filter(Boolean);
   return function roleGuard(req, _res, next) {
@@ -185,6 +241,7 @@ function requireAnyPermission(...permissionKeys) {
 
 module.exports = {
   authenticate,
+  authenticateUpload,
   requireRole,
   loadAuthContext,
   requirePermission,

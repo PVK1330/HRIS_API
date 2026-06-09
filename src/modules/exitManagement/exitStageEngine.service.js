@@ -87,6 +87,58 @@ async function approvalsThisOccurrence(client, requestId, stageId, stageEnteredA
   return rows[0].n;
 }
 
+/**
+ * SEQUENTIAL gate: in SEQUENTIAL mode an approver may only act once every approver with a
+ * STRICTLY LOWER approver_order has already approved this stage occurrence. Returns
+ * { ok:true } when allowed, or { ok:false, waitingOn } when an earlier order is still pending.
+ *
+ * The acting user's order is the MINIMUM approver_order across the assignment rows
+ * (exit_stage_users / exit_stage_roles / exit_stage_departments) that match them; rows with a
+ * NULL approver_order are treated as unordered (run last, no blocking) so legacy/unordered
+ * configs behave like ALL.
+ */
+async function sequentialGate(client, request, stage, actor) {
+  if (stage.approval_mode !== 'SEQUENTIAL') return { ok: true };
+  const empId = actor?.employeeId || null;
+  const roleId = actor?.rbacRoleId || null;
+  const deptId = actor?.departmentId || null;
+
+  const { rows: orderRows } = await client.query(
+    `SELECT MIN(approver_order) AS ord FROM (
+       SELECT approver_order FROM exit_stage_users       WHERE stage_id = $1 AND employee_id = $2
+       UNION ALL
+       SELECT approver_order FROM exit_stage_roles       WHERE stage_id = $1 AND role_id = $3
+       UNION ALL
+       SELECT approver_order FROM exit_stage_departments WHERE stage_id = $1 AND department_id = $4
+     ) o WHERE approver_order IS NOT NULL`,
+    [stage.id, empId, roleId, deptId],
+  );
+  const myOrder = orderRows[0]?.ord;
+  // Unordered approver (NULL order) — nothing to enforce.
+  if (myOrder === null || myOrder === undefined) return { ok: true };
+
+  // Count distinct lower-order approvers configured for this stage.
+  const { rows: lowerRows } = await client.query(
+    `SELECT COUNT(*)::int AS n FROM (
+       SELECT employee_id AS who, 'user' AS kind, approver_order FROM exit_stage_users       WHERE stage_id = $1
+       UNION ALL
+       SELECT role_id     AS who, 'role' AS kind, approver_order FROM exit_stage_roles       WHERE stage_id = $1
+       UNION ALL
+       SELECT department_id AS who, 'dept' AS kind, approver_order FROM exit_stage_departments WHERE stage_id = $1
+     ) a WHERE approver_order IS NOT NULL AND approver_order < $2`,
+    [stage.id, myOrder],
+  );
+  const lowerRequired = lowerRows[0].n;
+  if (lowerRequired === 0) return { ok: true };
+
+  // Count APPROVE rows recorded for this occurrence — these represent earlier approvers acting.
+  const approvals = await approvalsThisOccurrence(client, request.id, stage.id, request.stage_entered_at);
+  if (approvals < lowerRequired) {
+    return { ok: false, waitingOn: lowerRequired - approvals };
+  }
+  return { ok: true };
+}
+
 async function isStageSatisfied(client, request, stage) {
   const approvals = await approvalsThisOccurrence(client, request.id, stage.id, request.stage_entered_at);
   const required = await requiredApproverCount(client, stage.id);
@@ -94,6 +146,8 @@ async function isStageSatisfied(client, request, stage) {
     case 'ANY':        return approvals >= 1;
     case 'QUORUM':     return approvals >= (stage.quorum_count || 1);
     case 'ALL':        return required > 0 ? approvals >= required : approvals >= 1;
+    // SEQUENTIAL shares the ALL completion threshold (every approver must approve); the
+    // ORDER between them is enforced separately by sequentialGate() at approve time.
     case 'SEQUENTIAL': return required > 0 ? approvals >= required : approvals >= 1;
     default:           return approvals >= 1;
   }
@@ -116,9 +170,10 @@ async function isChecklistComplete(client, requestId, stageId) {
 
 async function seedStageEntry(client, requestId, stage) {
   const deptId = await primaryDeptForStage(client, stage.id);
-  const slaDue = stage.sla_hours
-    ? `NOW() + (${Number(stage.sla_hours)} || ' hours')::interval`
-    : 'NULL';
+  // SLA clock as a parameterized interval (NULL when no SLA configured). Coerce to a finite
+  // number; anything else disables the clock rather than risking a bad interval.
+  const slaHours = Number(stage.sla_hours);
+  const slaDueHours = Number.isFinite(slaHours) && slaHours > 0 ? slaHours : null;
 
   await client.query(
     `UPDATE exit_requests
@@ -136,8 +191,10 @@ async function seedStageEntry(client, requestId, stage) {
   await client.query(
     `INSERT INTO exit_approvals
        (exit_request_id, stage_id, department_id, action, actor_name, sla_due_at)
-     VALUES ($1, $2, $3, 'PENDING', 'System', ${slaDue})`,
-    [requestId, stage.id, deptId],
+     VALUES ($1, $2, $3, 'PENDING', 'System',
+             CASE WHEN $4::numeric IS NULL THEN NULL
+                  ELSE NOW() + make_interval(hours => $4::int) END)`,
+    [requestId, stage.id, deptId, slaDueHours],
   );
 
   // Instantiate stage checklist templates into per-request items.
@@ -275,6 +332,7 @@ module.exports = {
   getStageByOrder,
   primaryDeptForStage,
   requiredApproverCount,
+  sequentialGate,
   isStageSatisfied,
   isChecklistComplete,
   seedStageEntry,

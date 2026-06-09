@@ -55,7 +55,7 @@ const performanceExportRoutes = require('./routes/performance.routes');
 const supportRoutes = require('./routes/support.routes');
 const superadminSupportRoutes = require('./routes/superadminSupport.routes');
 const { getCyclesDropdown, getCompetenciesDropdown } = require('./controllers/employeePerformanceController');
-const { authenticate, loadAuthContext } = require('./middlewares/auth.middleware');
+const { authenticate, authenticateUpload, loadAuthContext } = require('./middlewares/auth.middleware');
 
 const { generalLimiter } = require('./middlewares/rateLimit.middleware');
 
@@ -136,17 +136,18 @@ const STATIC_OPTS = {
   setHeaders: setUploadHeaders,
 };
 
-app.use('/uploads', express.static(UPLOADS_DIR, STATIC_OPTS));
+// Public branding assets — logos are shown on login / branding screens before
+// any user is authenticated, so they stay open. These specific mounts come
+// FIRST so they win over the private catch-all below.
+app.use('/uploads/logos', express.static(LOGOS_DIR, STATIC_OPTS));
+app.use('/uploads/tenant-logos', express.static(TENANT_LOGOS_DIR, STATIC_OPTS));
+app.use('/uploads/superadmin-logos', express.static(SUPERADMIN_LOGOS_DIR, STATIC_OPTS));
 
-app.use(
-  '/uploads/tenant-logos',
-  express.static(TENANT_LOGOS_DIR, STATIC_OPTS),
-);
-
-app.use(
-  '/uploads/superadmin-logos',
-  express.static(SUPERADMIN_LOGOS_DIR, STATIC_OPTS),
-);
+// Everything else under /uploads is private (offer letters, candidate ID docs,
+// exit/resignation letters, message attachments, policy files, etc.). Require a
+// valid JWT, accepted via the Authorization header OR a `?token=` query param
+// (browsers can't set headers on <img>/document requests). See CC-1.
+app.use('/uploads', authenticateUpload, express.static(UPLOADS_DIR, STATIC_OPTS));
 
 /* -------------------- Health -------------------- */
 

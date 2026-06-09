@@ -28,7 +28,7 @@ router.post(
   requirePermission(P.ONBOARDING_MANAGE),
   [
     param('id').isInt({ min: 1 }),
-    body('step').optional().isInt({ min: 1, max: 10 }),
+    body('step').optional().isInt({ min: 1, max: 3 }),
   ],
   validate,
   ctrl.notifyStep,

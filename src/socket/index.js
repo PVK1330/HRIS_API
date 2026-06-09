@@ -21,16 +21,33 @@ const { emitMessageRealtime, formatMessagePayload } = require('../modules/messag
 //   onlineUsers: Map<dbName, Map<employeeId, Set<socketId>>>
 const onlineUsers = new Map();
 
+// Heartbeat/TTL so presence expires on ungraceful disconnect (lost network,
+// killed tab) where no 'disconnect' event fires. Each socket records a last-seen
+// timestamp, refreshed on any client heartbeat/activity; a periodic sweep drops
+// sockets whose last-seen is older than PRESENCE_TTL_MS and announces offline.
+// In-process only (no Redis) — sufficient for a single-node deployment.
+//   socketSeen: Map<socketId, { dbName, employeeId, lastSeen }>
+const socketSeen = new Map();
+const PRESENCE_TTL_MS = 60 * 1000;
+const PRESENCE_SWEEP_MS = 20 * 1000;
+
+function touchSocket(socketId) {
+  const entry = socketSeen.get(socketId);
+  if (entry) entry.lastSeen = Date.now();
+}
+
 function addOnline(dbName, employeeId, socketId) {
   const key = Number(employeeId);
   if (!onlineUsers.has(dbName)) onlineUsers.set(dbName, new Map());
   const tenantMap = onlineUsers.get(dbName);
   if (!tenantMap.has(key)) tenantMap.set(key, new Set());
   tenantMap.get(key).add(socketId);
+  socketSeen.set(socketId, { dbName, employeeId: key, lastSeen: Date.now() });
 }
 
 function removeOnline(dbName, employeeId, socketId) {
   const key = Number(employeeId);
+  socketSeen.delete(socketId);
   const tenantMap = onlineUsers.get(dbName);
   if (!tenantMap) return;
   const sockets = tenantMap.get(key);
@@ -78,6 +95,25 @@ function initSocket(httpServer) {
     transports: ['websocket', 'polling'],
   });
   ioInstance = io;
+
+  // TTL sweep: drop presence for sockets that went silent (ungraceful
+  // disconnect) and announce offline to the owning tenant once their last
+  // socket is gone. Runs in-process; .unref() so it never blocks shutdown.
+  const sweepTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [socketId, entry] of socketSeen) {
+      if (now - entry.lastSeen <= PRESENCE_TTL_MS) continue;
+      const { dbName, employeeId } = entry;
+      removeOnline(dbName, employeeId, socketId);
+      const sock = io.sockets.sockets.get(socketId);
+      if (sock) sock.disconnect(true);
+      if (!isOnline(dbName, employeeId)) {
+        io.to(`tenant:${dbName}`).emit('user:offline', { userId: employeeId });
+      }
+      logger.debug(`[socket] presence TTL expired for ${socketId} (employee ${employeeId})`);
+    }
+  }, PRESENCE_SWEEP_MS);
+  if (sweepTimer.unref) sweepTimer.unref();
 
   io.use((socket, next) => {
     try {
@@ -135,6 +171,12 @@ function initSocket(httpServer) {
 
     logger.debug(`Socket connected: ${socket.id} (employee ${userId})`);
 
+    // Heartbeat: clients emit 'heartbeat' periodically; any inbound packet also
+    // refreshes last-seen so an active connection never gets swept. Socket.io's
+    // own ping/pong covers most drops, but this gives an explicit app-level TTL.
+    socket.on('heartbeat', () => touchSocket(socket.id));
+    socket.onAny(() => touchSocket(socket.id));
+
     socket.on('join_exit', (payload) => {
       const exitId = resolveExitId(payload);
       if (exitId) socket.join(`exit:${exitId}`);
@@ -155,7 +197,7 @@ function initSocket(httpServer) {
       if (cid) socket.leave(`conv:${cid}`);
     });
 
-    socket.on('send_message', async ({ conversationId: rawConvId, body }, ack) => {
+    socket.on('send_message', async ({ conversationId: rawConvId, body, clientMsgId }, ack) => {
       try {
         const conversationId = parseConversationId(rawConvId);
         if (!conversationId || !body?.trim()) {
@@ -178,8 +220,10 @@ function initSocket(httpServer) {
           body: body.trim(),
         });
 
-        emitMessageRealtime(conversationId, participants, senderId, msg);
-        ack?.({ ok: true, message: formatMessagePayload(msg) });
+        emitMessageRealtime(conversationId, participants, senderId, msg, clientMsgId);
+        const ackPayload = formatMessagePayload(msg);
+        if (clientMsgId) ackPayload.client_msg_id = clientMsgId;
+        ack?.({ ok: true, message: ackPayload });
       } catch (err) {
         logger.error('send_message socket error:', err);
         ack?.({ error: err.message || 'Failed to send message' });

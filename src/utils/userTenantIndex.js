@@ -147,10 +147,21 @@ async function backfillTenant(tenantId, dbName) {
     ),
   ]);
 
-  const entries = [
-    ...admins.map((r) => [normalizeLoginId(r.email), tenantId, 'admin']),
-    ...employees.map((r) => [normalizeLoginId(r.work_email), tenantId, 'employee']),
-  ].filter(([e]) => Boolean(e));
+  // De-dupe by normalized email within this tenant. A single
+  // INSERT ... ON CONFLICT DO UPDATE cannot touch the same (normalized_email,
+  // tenant_id) row twice in one command (Postgres "cannot affect row a second
+  // time"), which happens whenever an admin email == an employee work_email.
+  // Admin precedence: process admins last so they win the dedupe.
+  const byEmail = new Map();
+  for (const r of employees) {
+    const e = normalizeLoginId(r.work_email);
+    if (e) byEmail.set(e, [e, tenantId, 'employee']);
+  }
+  for (const r of admins) {
+    const e = normalizeLoginId(r.email);
+    if (e) byEmail.set(e, [e, tenantId, 'admin']);
+  }
+  const entries = [...byEmail.values()];
 
   if (!entries.length) return;
 

@@ -69,6 +69,19 @@ function mapRow(r) {
   };
 }
 
+// Count employees by department_id (stable across renames). Falls back to the
+// legacy string match only for rows whose department_id was never backfilled.
+function empCountSql() {
+  return `(
+    SELECT COUNT(*)::int FROM employees e
+    WHERE e.deleted_at IS NULL
+      AND (
+        e.department_id = d.id
+        OR (e.department_id IS NULL AND e.department IS NOT DISTINCT FROM d.name)
+      )
+  )`;
+}
+
 function buildWhereClause(query) {
   const conditions = ['1=1'];
   const params = [];
@@ -131,10 +144,22 @@ async function assertParentExists(pool, parentId, selfId = null) {
   if (selfId && parentId === selfId) throw new ApiError(400, 'Department cannot be its own parent');
 }
 
+// Mirror parent_id validation: the head of department must be an existing,
+// non-soft-deleted employee — otherwise we'd silently store a dangling manager.
+async function assertManagerExists(pool, managerId) {
+  if (!managerId) return;
+  const { rows } = await pool.query(
+    `SELECT id FROM employees WHERE id = $1 AND deleted_at IS NULL`,
+    [managerId],
+  );
+  if (!rows.length) throw new ApiError(400, 'manager_id does not exist or is inactive');
+}
+
 async function listDepartments(tenant, query = {}) {
   const pool = await getTenantPool(tenant.dbName);
   const page = Math.max(1, parseInt(query.page, 10) || 1);
-  const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 10));
+  // Honor the client-requested limit (e.g. dropdowns request 500) up to a sane max.
+  const limit = Math.min(500, Math.max(1, parseInt(query.limit, 10) || 10));
   const offset = (page - 1) * limit;
   const sortBy = SORT_COL[query.sortBy] ? query.sortBy : 'created_at';
   const sortOrder = String(query.sortOrder || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
@@ -165,7 +190,7 @@ async function listDepartments(tenant, query = {}) {
        d.created_at,
        d.updated_at,
        mgr.full_name AS head,
-       (SELECT COUNT(*)::int FROM employees e WHERE e.deleted_at IS NULL AND e.department = d.name) AS employee_count
+       ${empCountSql()} AS employee_count
      FROM departments d
      LEFT JOIN departments p ON p.id = d.parent_id
      LEFT JOIN employees mgr ON mgr.id = d.manager_id AND mgr.deleted_at IS NULL
@@ -234,7 +259,7 @@ async function listAllForExport(tenant, query) {
        d.created_at,
        d.updated_at,
        mgr.full_name AS head,
-       (SELECT COUNT(*)::int FROM employees e WHERE e.deleted_at IS NULL AND e.department = d.name) AS employee_count
+       ${empCountSql()} AS employee_count
      FROM departments d
      LEFT JOIN departments p ON p.id = d.parent_id
      LEFT JOIN employees mgr ON mgr.id = d.manager_id AND mgr.deleted_at IS NULL
@@ -260,14 +285,26 @@ async function getFilterOptions(tenant) {
   };
 }
 
-async function listDepartmentManagers(tenant) {
+async function listDepartmentManagers(tenant, query = {}) {
   const pool = await getTenantPool(tenant.dbName);
+  // Optional server-side search + parameterized limit (capped) so the picker
+  // can scale past a fixed 500-row cutoff instead of silently truncating.
+  const limit = Math.min(2000, Math.max(1, parseInt(query.limit, 10) || 500));
+  const search = String(query.search || '').trim();
+  const params = [];
+  let where = 'deleted_at IS NULL';
+  if (search) {
+    params.push(`%${search}%`);
+    where += ` AND (full_name ILIKE $${params.length} OR emp_id ILIKE $${params.length})`;
+  }
+  params.push(limit);
   const { rows } = await pool.query(
     `SELECT id, full_name AS name, emp_id
      FROM employees
-     WHERE deleted_at IS NULL
+     WHERE ${where}
      ORDER BY full_name ASC
-     LIMIT 500`,
+     LIMIT $${params.length}`,
+    params,
   );
   return rows;
 }
@@ -279,7 +316,7 @@ async function getDepartment(tenant, id) {
       d.*,
       p.name AS parent_name,
       mgr.full_name AS head,
-      (SELECT COUNT(*)::int FROM employees e WHERE e.deleted_at IS NULL AND e.department = d.name) AS employee_count
+      ${empCountSql()} AS employee_count
     FROM departments d
     LEFT JOIN departments p ON p.id = d.parent_id
     LEFT JOIN employees mgr ON mgr.id = d.manager_id AND mgr.deleted_at IS NULL
@@ -306,6 +343,7 @@ async function createDepartment(tenant, data) {
 
   await assertUniqueDepartmentName(pool, data.name);
   await assertParentExists(pool, parentId, null);
+  await assertManagerExists(pool, Number.isInteger(managerId) && managerId > 0 ? managerId : null);
 
   // User-supplied code → validate uniqueness (409 on dup); else auto-generate a
   // collision-resistant unique one.
@@ -411,7 +449,9 @@ async function updateDepartment(tenant, id, data) {
       managerRaw !== null && String(managerRaw).trim() !== ''
         ? parseInt(String(managerRaw), 10)
         : null;
-    params.push(Number.isInteger(managerId) && managerId > 0 ? managerId : null);
+    const validManagerId = Number.isInteger(managerId) && managerId > 0 ? managerId : null;
+    await assertManagerExists(pool, validManagerId);
+    params.push(validManagerId);
     fields.push(`manager_id = $${n++}`);
   }
   if (data.manager_emp_id !== undefined) {
@@ -432,6 +472,15 @@ async function updateDepartment(tenant, id, data) {
     params,
   );
   if (!rows.length) throw new ApiError(404, 'Department not found');
+
+  // Renaming a department must keep designations' denormalized department_name in sync.
+  if (data.name !== undefined) {
+    await pool.query(
+      `UPDATE designations SET department_name = $1, updated_at = NOW() WHERE department_id = $2`,
+      [data.name.trim(), id],
+    );
+  }
+
   const result = await getDepartment(tenant, id);
 
   notify.pushNotification(tenant, {
@@ -470,11 +519,40 @@ async function deleteDepartment(tenant, id) {
     `SELECT name FROM departments WHERE id = $1`,
     [id],
   );
+  if (!existingRows.length) throw new ApiError(404, 'Department not found');
+
+  // FK CASCADE/SET NULL only fires on a hard DELETE; a soft-delete UPDATE would
+  // leave employees attached. Block the soft-delete while employees are assigned
+  // (by id, or by legacy string for un-backfilled rows).
+  const { rows: assignedRows } = await pool.query(
+    `SELECT COUNT(*)::int AS count FROM employees e
+     WHERE e.deleted_at IS NULL
+       AND (
+         e.department_id = $1
+         OR (e.department_id IS NULL AND e.department IS NOT DISTINCT FROM $2)
+       )`,
+    [id, existingRows[0].name],
+  );
+  const assigned = assignedRows[0]?.count ?? 0;
+  if (assigned > 0) {
+    throw new ApiError(
+      409,
+      `Cannot delete department: ${assigned} employee${assigned === 1 ? ' is' : 's are'} still assigned.`,
+    );
+  }
+
   const { rowCount } = await pool.query(
     `UPDATE departments SET is_active = false, status = 'inactive', updated_at = NOW() WHERE id = $1`,
     [id],
   );
   if (!rowCount) throw new ApiError(404, 'Department not found');
+
+  // Keep designations consistent with their (now inactive) department.
+  await pool.query(
+    `UPDATE designations SET is_active = false, status = 'inactive', updated_at = NOW()
+     WHERE department_id = $1 AND is_active = true`,
+    [id],
+  );
 
   notify.pushNotification(tenant, {
     forAdmin: true,

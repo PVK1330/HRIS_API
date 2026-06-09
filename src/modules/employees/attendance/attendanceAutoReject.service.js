@@ -8,6 +8,12 @@ const calc = require('./attendanceCalculation.service');
 async function findStalePendingRegularizations(pool, maxDays) {
   const days = Math.max(1, Number(maxDays) || 3);
   const { rows } = await pool.query(
+    // Scope the auto-reject sweep to requests stuck at the FIRST (manager) stage —
+    // the same stage the manager-absent auto-approve (findStuckManagerStageRegularizations)
+    // is able to rescue. A request that has already advanced to the department/HR
+    // stage simply has a present-but-slow approver and has no auto-approve counterpart,
+    // so blindly auto-rejecting it would penalise the employee for the approver's delay.
+    // Conservatively, we only auto-reject manager-stage (or legacy un-staged) requests.
     `SELECT a.id, a.employee_id,
             TO_CHAR(a.date, 'YYYY-MM-DD') AS date,
             a.regularization_status, a.regularization_reason,
@@ -16,6 +22,7 @@ async function findStalePendingRegularizations(pool, maxDays) {
      FROM attendance a
      JOIN employees e ON e.id = a.employee_id AND e.deleted_at IS NULL
      WHERE a.regularization_status = 'Pending'
+       AND (a.reg_current_stage = 'manager' OR a.reg_current_stage IS NULL)
        AND a.updated_at < NOW() - ($1::int * INTERVAL '1 day')
      ORDER BY a.updated_at ASC`,
     [days],

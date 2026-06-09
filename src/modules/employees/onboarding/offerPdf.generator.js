@@ -73,8 +73,9 @@ async function generateOfferLetterPdf({
   
   if (pool) {
     const { rows: templates } = await pool.query(`
-      SELECT body FROM letter_templates 
-      WHERE name ILIKE '%Offer Letter%' OR category = 'Recruitment' AND name ILIKE '%Offer%'
+      SELECT body FROM letter_templates
+      WHERE name ILIKE '%Offer Letter%' OR (category = 'Recruitment' AND name ILIKE '%Offer%')
+      ORDER BY id
       LIMIT 1
     `);
     if (templates.length > 0) {

@@ -326,7 +326,7 @@ async function onSubmitted(tenant, requestId) {
   const hrAdmins = await getHROrAdminRecipients(pool);
 
   const notifyList = [
-    { id: req.reporting_manager_id, role: 'Manager' },
+    { id: req.reporting_to, role: 'Manager' },
     { id: req.dept_head_id, role: 'Department Head' }
   ].filter(x => x.id && x.id !== req.employee_id);
 

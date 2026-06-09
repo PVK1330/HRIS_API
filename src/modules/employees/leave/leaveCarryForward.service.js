@@ -36,17 +36,18 @@ async function processCarryForward(pool, targetYear) {
     const carry = carryAllowed ? Math.max(0, Math.min(remaining, cap)) : 0;
     const annual = Math.max(0, r.annual_entitlement_days || 0);
 
-    // Insert a fresh target-year balance, or just refresh its carry-forward if the row
-    // already exists (e.g. employee already applied for leave in the new year). We never
-    // clobber `used` on an existing row, and only seed total_allocated when it is still 0.
+    // Insert a fresh target-year balance, or refresh it if the row already exists
+    // (e.g. employee already applied for leave in the new year). The leave_type's
+    // annual entitlement is the source of truth, so always re-seed total_allocated
+    // from it — this keeps a re-run idempotent and picks up any mid-year
+    // entitlement change instead of letting allocated/carry desync. We never
+    // clobber `used` on an existing row.
     await pool.query(
       `INSERT INTO leave_balances (employee_id, leave_type, year, total_allocated, used, carry_forward)
        VALUES ($1, $2, $3, $4, 0, $5)
        ON CONFLICT (employee_id, leave_type, year) DO UPDATE SET
          carry_forward   = EXCLUDED.carry_forward,
-         total_allocated = CASE WHEN leave_balances.total_allocated = 0
-                                THEN EXCLUDED.total_allocated
-                                ELSE leave_balances.total_allocated END,
+         total_allocated = EXCLUDED.total_allocated,
          updated_at      = NOW()`,
       [r.employee_id, r.leave_type, year, annual, carry],
     );

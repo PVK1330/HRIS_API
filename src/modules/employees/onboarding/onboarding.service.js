@@ -21,6 +21,7 @@ const notifService = require('../../notifications/notifications.service');
 const checklistUtils = require('./utils/onboardingChecklist.utils');
 const onboardingEvents = require('./onboardingEvents.service');
 const workflowAudit = require('../../workflow/workflowAudit.service');
+const { getHROrAdminRecipients } = require('./utils/onboardingRecipients.utils');
 
 function resolvePool(user) {
   if (!user?.db_name) throw ApiError.unauthorized('Tenant database not found');
@@ -41,11 +42,23 @@ async function resolveHrInboxEmails(user) {
         [user.tenant_id],
       );
       if (rows[0]?.admin_email) return [rows[0].admin_email];
-      if (rows[0]?.name) return [];
     } catch (err) {
       logger.warn(`Tenant HR email lookup failed: ${err.message}`);
     }
   }
+
+  // Fall back to active HR/Admin users' work emails so acceptance emails are not silently skipped.
+  try {
+    const pool = resolvePool(user);
+    const recipients = await getHROrAdminRecipients(pool);
+    const emails = recipients
+      .map((r) => String(r.work_email || '').trim())
+      .filter(Boolean);
+    if (emails.length) return emails;
+  } catch (err) {
+    logger.warn(`HR/Admin recipient email lookup failed: ${err.message}`);
+  }
+
   return [];
 }
 
@@ -718,7 +731,7 @@ async function uploadSignedOfferByHr(user, employeeId, file, auth = null) {
   if (!file?.buffer) throw ApiError.badRequest('File is required');
 
   const docService = require('../documents/documents.service');
-  const created = await docService.createDocument(
+  const { document: created } = await docService.createDocument(
     user,
     employeeId,
     {

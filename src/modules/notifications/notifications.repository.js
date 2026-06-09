@@ -33,12 +33,16 @@ async function listForUser(pool, user) {
   const messagingEmpId = await ensureMessagingEmployeeId(pool, user);
 
   if (isSuperadmin) {
-    // Superadmin should only see notifications specifically for superadmin
-    // No parameters needed for this query
-    whereCondition = `
-      WHERE recipient_role = 'superadmin'
-         OR (for_admin = true AND recipient_role IS NULL)  -- Backward compatibility
-    `;
+    // Superadmin sees ONLY notifications explicitly addressed to the superadmin
+    // role (e.g. support tickets created via support.controller, which set
+    // recipient_role = 'superadmin').
+    //
+    // Tenant-admin notifications use `for_admin = true` with
+    // `recipient_role IS NULL`. The old "backward compatibility" clause matched
+    // those too — and because the superadmin list scans EVERY tenant DB, it
+    // leaked every org's admin activity (leave, expenses, assets, onboarding,
+    // exit, …) into the superadmin's feed. It is removed deliberately.
+    whereCondition = `WHERE recipient_role = 'superadmin'`;
   } else if (isAdminRole) {
     // Admin should see:
     // 1. Generic tenant-admin notifications (for_admin = true, no specific role)
@@ -140,12 +144,12 @@ async function markAllAsRead(pool, user) {
   let params = [];
 
   if (isSuperadmin) {
-    // Superadmin marks all superadmin notifications as read
+    // Mark only genuine superadmin notifications as read — must mirror the
+    // listForUser superadmin filter (no for_admin backward-compat clause).
     updateQuery = `
       UPDATE notifications
       SET is_read = true
       WHERE recipient_role = 'superadmin'
-         OR (for_admin = true AND recipient_role IS NULL)
     `;
   } else if (isAdminRole) {
     // Admin marks their own notifications as read

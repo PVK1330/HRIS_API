@@ -383,6 +383,23 @@ async function approveStage(tenant, id, exitUser, comments) {
     const stage = await engine.getStage(client, request.current_stage_id);
     if (!stage) throw ApiError.badRequest('No active stage');
 
+    // Prevent the same actor from approving the current stage occurrence more
+    // than once. Without this, a single approver could insert multiple APPROVE
+    // rows and single-handedly satisfy an ALL/QUORUM multi-approver stage.
+    if (exitUser?.employeeId) {
+      const { rows: existing } = await client.query(
+        `SELECT 1 FROM exit_approvals
+          WHERE exit_request_id = $1 AND stage_id = $2 AND action = 'APPROVE'
+            AND actor_id = $3
+            AND ($4::timestamptz IS NULL OR created_at >= $4)
+          LIMIT 1`,
+        [request.id, request.current_stage_id, exitUser.employeeId, request.stage_entered_at || null],
+      );
+      if (existing.length) {
+        throw ApiError.badRequest('You have already approved this stage.');
+      }
+    }
+
     await recordAction(client, request, 'APPROVE', exitUser, comments);
     const result = await engine.advanceStage(client, request, stage);
     
@@ -609,6 +626,13 @@ async function withdrawExitRequest(tenant, id, exitUser, reason) {
     if (!request) throw ApiError.notFound('Exit request not found');
     if (!['SUBMITTED', 'IN_PROGRESS'].includes(request.status)) {
       throw ApiError.badRequest('Only active exit requests can be withdrawn');
+    }
+    // Only the employee who raised the exit (or an org exit admin) may withdraw
+    // it. The route only enforces 'view' access, which many roles have, so the
+    // ownership check must happen here to stop a viewer from cancelling someone
+    // else's exit and silently reactivating their employment.
+    if (Number(exitUser?.employeeId) !== Number(request.employee_id) && !exitUser?.isOrgExitAdmin) {
+      throw ApiError.forbidden('You are not allowed to withdraw this exit request');
     }
     await recordAction(client, request, 'COMMENT', exitUser, `Withdrawal: ${reason || 'requested by employee'}`);
     await client.query(

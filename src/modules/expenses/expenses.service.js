@@ -389,6 +389,11 @@ async function updateExpenseStatus(tenant, id, payload, userId) {
   await ensureTableColumns(pool);
 
   const status = payload.status;
+  // Reject unknown status strings so the catch-all UPDATE branch below cannot
+  // persist an arbitrary status and corrupt the approval/payment workflow.
+  if (!status || !STATUSES.has(status)) {
+    throw new ApiError(400, `Invalid expense status: ${status}`);
+  }
   const rejectionReason = payload.rejectionReason ?? payload.rejection_reason;
   const approver = userId || null;
   const isReject = status === 'Rejected' || status === 'Declined';

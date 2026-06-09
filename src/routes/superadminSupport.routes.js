@@ -1,40 +1,42 @@
 const express = require('express');
-const { authenticate } = require('../middlewares/auth.middleware');
+const { authenticate, requireRole } = require('../middlewares/auth.middleware');
 const superadminSupportController = require('../controllers/superadminSupport.controller');
 
 const router = express.Router();
 
 /**
  * Superadmin Support Ticket Routes
- * All routes require superadmin authentication
- * Middleware: authenticate
+ * All routes require SUPERADMIN authentication. These endpoints iterate across
+ * every tenant database, so they must never be reachable by a regular tenant
+ * user — enforce the superadmin role on the whole router.
  */
+router.use(authenticate, requireRole('superadmin'));
 
 // Get statistics for all tickets
-router.get('/stats', authenticate, superadminSupportController.getStats);
+router.get('/stats', superadminSupportController.getStats);
 
 // Get all tickets with filtering and pagination
-router.get('/', authenticate, superadminSupportController.listAllTickets);
-router.get('/tickets', authenticate, superadminSupportController.listAllTickets);
+router.get('/', superadminSupportController.listAllTickets);
+router.get('/tickets', superadminSupportController.listAllTickets);
 
 // Get single ticket details
-router.get('/:id', authenticate, superadminSupportController.getTicketDetails);
-router.get('/tickets/:id', authenticate, superadminSupportController.getTicketDetails);
+router.get('/:id', superadminSupportController.getTicketDetails);
+router.get('/tickets/:id', superadminSupportController.getTicketDetails);
 
 // Update ticket fields, status, and assignation
-router.patch('/:id', authenticate, superadminSupportController.updateTicket);
-router.patch('/tickets/:id', authenticate, superadminSupportController.updateTicket);
+router.patch('/:id', superadminSupportController.updateTicket);
+router.patch('/tickets/:id', superadminSupportController.updateTicket);
 
 // Delete ticket
-router.delete('/:id', authenticate, superadminSupportController.deleteTicket);
-router.delete('/tickets/:id', authenticate, superadminSupportController.deleteTicket);
+router.delete('/:id', superadminSupportController.deleteTicket);
+router.delete('/tickets/:id', superadminSupportController.deleteTicket);
 
 // Update ticket status
-router.put('/:id/status', authenticate, superadminSupportController.updateStatus);
-router.put('/tickets/:id/status', authenticate, superadminSupportController.updateStatus);
+router.put('/:id/status', superadminSupportController.updateStatus);
+router.put('/tickets/:id/status', superadminSupportController.updateStatus);
 
 // Add reply/response to ticket
-router.post('/:id/reply', authenticate, superadminSupportController.addReply);
-router.post('/tickets/:id/reply', authenticate, superadminSupportController.addReply);
+router.post('/:id/reply', superadminSupportController.addReply);
+router.post('/tickets/:id/reply', superadminSupportController.addReply);
 
 module.exports = router;

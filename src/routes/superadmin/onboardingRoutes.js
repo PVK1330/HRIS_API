@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const { superadminOnboardTenant, completeOnboarding } = require('../../services/onboardingService');
-const { superadminPool } = require('../../config/db');
+const { superAdminPool } = require('../../config/db');
 const logger = require('../../utils/logger');
 
 /**
@@ -34,7 +34,7 @@ router.post('/tenant', async (req, res) => {
  */
 router.get('/pending', async (req, res) => {
   try {
-    const result = await superadminPool.query(
+    const result = await superAdminPool.query(
       `SELECT id, company_name, admin_email, admin_name, admin_phone,
               plan_id, subscription_status, onboarding_status, created_at
        FROM public.tenants
@@ -72,7 +72,7 @@ router.put('/:tenantId/complete', async (req, res) => {
  */
 router.get('/subscription-plans', async (req, res) => {
   try {
-    const result = await superadminPool.query(
+    const result = await superAdminPool.query(
       `SELECT id, plan_name, plan_code, plan_description, monthly_price, annual_price, user_quota,
               storage_quota_gb, company_quota, trial_days, support_level, is_popular, is_custom, is_active
        FROM public.subscription_plans

@@ -144,7 +144,7 @@ async function findAll(pool, options = {}) {
 
   // Add search filter for cycle name
   if (search.trim()) {
-    query += ` AND LOWER(cycle_name) LIKE LOWER($${paramCount}%)`;
+    query += ` AND LOWER(cycle_name) LIKE LOWER($${paramCount})`;
     values.push(`%${search}%`);
     paramCount++;
   }
@@ -171,7 +171,7 @@ async function findAll(pool, options = {}) {
   let countParamCount = 1;
 
   if (search.trim()) {
-    countQuery += ` AND LOWER(cycle_name) LIKE LOWER($${countParamCount}%)`;
+    countQuery += ` AND LOWER(cycle_name) LIKE LOWER($${countParamCount})`;
     countValues.push(`%${search}%`);
     countParamCount++;
   }

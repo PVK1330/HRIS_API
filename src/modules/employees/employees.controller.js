@@ -116,8 +116,15 @@ const completeOnboarding = asyncHandler(async (req, res) => {
 });
 
 const gdprExport = asyncHandler(async (req, res) => {
-  const employee = await service.getEmployee(req.user, req.user.id, req.auth);
-  streamGdprPdf(res, employee, req.user.id);
+  // GDPR self-export: always export the authenticated user's OWN employee record.
+  // For admin/HR tokens req.user.id is the account id (not the employees row),
+  // so use the linked employeeId to avoid returning another person's data.
+  const selfEmployeeId = req.user.employeeId || req.user.id;
+  if (!selfEmployeeId) {
+    throw ApiError.badRequest('No employee profile is linked to your account');
+  }
+  const employee = await service.getEmployee(req.user, selfEmployeeId, req.auth);
+  streamGdprPdf(res, employee, selfEmployeeId);
 });
 
 module.exports = {

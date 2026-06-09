@@ -7,6 +7,7 @@ const { EmployeePerformance } = require('../models/EmployeePerformance');
 const { getTenantPool } = require('../config/db');
 const notify = require('../modules/notifications/notifications.service');
 const logger = require('../utils/logger');
+const { P, permissionSatisfied } = require('../constants/permissions');
 
 /**
  * Get tenant database pool with validation
@@ -16,6 +17,23 @@ function getTenantDbPool(user) {
     throw ApiError.unauthorized('Tenant not found');
   }
   return getTenantPool(user.db_name);
+}
+
+/**
+ * Endpoints under `/employee/:employeeId` are reachable with the self-only
+ * `performance.view.own` permission. Unless the caller also holds the broad
+ * `performance.view` (or is a tenant admin), restrict them to their own record
+ * so one employee cannot read a colleague's performance data via the path param.
+ */
+function assertCanViewEmployeePerformance(req, employeeId) {
+  const auth = req.auth;
+  const canViewAny = auth && (auth.isTenantAdmin || permissionSatisfied(auth.permissions, P.PERFORMANCE_VIEW));
+  if (canViewAny) return;
+
+  const self = req.user.employeeId || req.user.employee_id;
+  if (!self || Number(self) !== Number(employeeId)) {
+    throw ApiError.forbidden('You can only view your own performance data');
+  }
 }
 
 /**
@@ -212,7 +230,9 @@ const getManagerReviewList = asyncHandler(async (req, res) => {
  */
 const getManagerReviewById = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const managerId = req.user.id;
+  // manager_id stores the manager's employee id, not the account id — match the
+  // convention used by findByManagerId / updateManagerGoals.
+  const managerId = req.user.employeeId || req.user.employee_id || req.user.id;
   const pool = getTenantDbPool(req.user);
 
   const assessmentId = parseInt(id, 10);
@@ -468,6 +488,7 @@ const getAssessmentsByEmployeeId = asyncHandler(async (req, res) => {
   const pool = getTenantDbPool(req.user);
 
   if (!employeeId) throw ApiError.badRequest('Employee ID is required');
+  assertCanViewEmployeePerformance(req, employeeId);
 
   const assessments = await EmployeePerformance.findByEmployeeId(pool, employeeId);
 
@@ -483,6 +504,7 @@ const getEmployeePerformanceSummary = asyncHandler(async (req, res) => {
   const pool = getTenantDbPool(req.user);
 
   if (!employeeId) throw ApiError.badRequest('Employee ID is required');
+  assertCanViewEmployeePerformance(req, employeeId);
 
   const summary = await EmployeePerformance.getEmployeeSummary(pool, employeeId);
 

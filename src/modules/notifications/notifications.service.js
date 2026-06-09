@@ -238,7 +238,7 @@ async function deleteNotification(user, id, tenant = null) {
   if (!dbName) return true;
   await ensureMigrated(dbName);
   const pool = await getTenantPool(dbName);
-  return repo.remove(pool, id);
+  return repo.remove(pool, id, user);
 }
 
 module.exports = {

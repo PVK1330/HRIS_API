@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
-const { superadminPool } = require('../config/db');
+const { superAdminPool } = require('../config/db');
 const { createTenantSchema } = require('../modules/tenant/tenant.service');
 const { isValidTimezone } = require('../utils/timezone');
 const env = require('../config/env');
@@ -10,7 +10,7 @@ const ApiError = require('../utils/ApiError');
  * Superadmin onboards a new tenant (Admin company)
  */
 async function superadminOnboardTenant(tenantData, superadminId) {
-  const client = await superadminPool.connect();
+  const client = await superAdminPool.connect();
   
   try {
     await client.query('BEGIN');
@@ -124,7 +124,7 @@ async function superadminOnboardTenant(tenantData, superadminId) {
  * Admin self-onboarding (creates tenant account)
  */
 async function adminSelfOnboard(onboardingData) {
-  const client = await superadminPool.connect();
+  const client = await superAdminPool.connect();
   
   try {
     await client.query('BEGIN');
@@ -253,7 +253,7 @@ async function adminSelfOnboard(onboardingData) {
  * Complete onboarding (called after admin logs in and sets up)
  */
 async function completeOnboarding(tenantId) {
-  const result = await superadminPool.query(
+  const result = await superAdminPool.query(
     `UPDATE public.tenants
      SET onboarding_status = 'completed', updated_at = NOW()
      WHERE id = $1

@@ -20,6 +20,53 @@ async function normalizeRole(role) {
   return String(role || '').toLowerCase().replace(/[_\s]/g, '');
 }
 
+/**
+ * Build a SQL predicate that limits a notification row to the ones the given
+ * user is actually allowed to act on (mirrors the visibility rules in
+ * listForUser). Used to scope markAsRead / remove so a user cannot read-flag or
+ * delete other users' notifications by guessing ids (IDOR).
+ *
+ * @returns {{ clause: string, params: any[] }} clause references $startIdx..,
+ *          params are positional starting at $startIdx.
+ */
+async function buildUserScope(pool, user, startIdx) {
+  const role = await normalizeRole(user.role || user.panel || '');
+  const isSuperadmin = role === 'superadmin';
+  const isAdminRole = ['admin', 'hradmin', 'supportadmin', 'billingadmin'].includes(role);
+
+  if (isSuperadmin) {
+    return { clause: `recipient_role = 'superadmin'`, params: [] };
+  }
+
+  const messagingEmpId = await ensureMessagingEmployeeId(pool, user);
+  const i = startIdx;       // user.id
+  const e = startIdx + 1;   // user.email
+  const m = startIdx + 2;   // messaging employee id
+  const x = startIdx + 3;   // verified employeeId from token
+  const params = [user.id, user.email || '', messagingEmpId || null, Number(user.employeeId) || null];
+
+  if (isAdminRole) {
+    const clause = `(
+        (for_admin = true AND recipient_role IS NULL)
+        OR recipient_role = 'admin'
+        OR recipient_id = $${i}
+        OR employee_id = $${i}
+        OR ($${m}::bigint IS NOT NULL AND employee_id = $${m})
+        OR ($${x}::bigint IS NOT NULL AND recipient_id = $${x})
+        OR employee_id IN (SELECT id FROM employees WHERE LOWER(work_email) = LOWER($${e}))
+      )`;
+    return { clause, params };
+  }
+
+  const clause = `(
+      employee_id = $${i}
+      OR ($${m}::bigint IS NOT NULL AND employee_id = $${m})
+      OR ($${x}::bigint IS NOT NULL AND recipient_id = $${x})
+      OR employee_id IN (SELECT id FROM employees WHERE LOWER(work_email) = LOWER($${e}))
+    )`;
+  return { clause, params };
+}
+
 async function listForUser(pool, user) {
   const role = await normalizeRole(user.role || user.panel || '');
   const isSuperadmin = role === 'superadmin';
@@ -126,13 +173,16 @@ async function listForUser(pool, user) {
 }
 
 async function markAsRead(pool, id, user) {
+  // Scope to the caller's own notifications so one user cannot flip another
+  // user's read-state by guessing ids.
+  const { clause, params } = await buildUserScope(pool, user, 2);
   const { rows } = await pool.query(`
     UPDATE notifications
     SET is_read = true
-    WHERE id = $1
+    WHERE id = $1 AND ${clause}
     RETURNING *
-  `, [id]);
-  return rows[0];
+  `, [id, ...params]);
+  return rows[0] || null;
 }
 
 async function markAllAsRead(pool, user) {
@@ -181,9 +231,15 @@ async function markAllAsRead(pool, user) {
   return true;
 }
 
-async function remove(pool, id) {
-  await pool.query('DELETE FROM notifications WHERE id = $1', [id]);
-  return true;
+async function remove(pool, id, user) {
+  // Scope the delete to the caller's own notifications so one user cannot
+  // delete another user's notifications by guessing ids.
+  const { clause, params } = await buildUserScope(pool, user, 2);
+  const { rowCount } = await pool.query(
+    `DELETE FROM notifications WHERE id = $1 AND ${clause}`,
+    [id, ...params],
+  );
+  return rowCount > 0;
 }
 
 module.exports = {

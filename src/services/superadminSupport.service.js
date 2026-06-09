@@ -178,6 +178,35 @@ async function getTicketStats() {
   }
 }
 
+/*
+ * ============================================================================
+ * TODO (data-integrity follow-up): cross-tenant ticket-id collision
+ * ============================================================================
+ * BUG: This function (and updateTicketStatus / updateTicket / deleteTicket
+ *      below) resolves a ticket from a BARE numeric `ticketId` by scanning
+ *      every tenant DB and acting on the FIRST tenant (getAllTenants order)
+ *      that has a row with that id. Because `support_tickets.id` is a
+ *      PER-TENANT serial, the same id exists in many tenants — so a superadmin
+ *      action intended for tenant B's ticket #5 can silently hit tenant A's
+ *      ticket #5 (wrong-tenant read / status change / edit / delete).
+ *
+ * CORRECT FIX (not yet applied — needs coordinated FE+BE change):
+ *      Thread a tenant identifier (tenant_id or db_name) alongside the ticket
+ *      id. The list/detail responses already carry `tenant_id`/`tenant_name`/
+ *      `dbName`, so:
+ *        1) accept `tenantId`/`tenantDb` on each by-id route + service fn,
+ *        2) query ONLY that tenant's pool (drop the all-tenant scan),
+ *        3) pass it from every Support.jsx call site
+ *           (getTicketById / updateStatus / updateTicket / deleteTicket / reply).
+ *
+ * SECURITY NOTE: This is a DATA-INTEGRITY issue only. The cross-tenant
+ *      *exposure* (any authenticated tenant user reaching these endpoints) is
+ *      already closed by the `requireRole('superadmin')` guard on the whole
+ *      router (see routes/superadminSupport.routes.js). These endpoints are now
+ *      reachable by superadmins only.
+ * ============================================================================
+ */
+
 /**
  * Get single ticket details by ID (across all tenants)
  * @param {number} ticketId - The ticket ID
@@ -252,6 +281,9 @@ async function getTicketById(ticketId) {
  * @param {number} ticketId - The ticket ID
  * @param {string} newStatus - New status (Open, In Progress, Resolved, Closed)
  * @returns {Promise<Object>} Updated ticket
+ *
+ * TODO: affected by the cross-tenant ticket-id collision documented above
+ *       getTicketById — acts on the first tenant whose serial id matches.
  */
 async function updateTicketStatus(ticketId, newStatus) {
   try {
@@ -481,6 +513,8 @@ HRMS Support Team
   }
 }
 
+// TODO: affected by the cross-tenant ticket-id collision documented above
+//       getTicketById — acts on the first tenant whose serial id matches.
 async function updateTicket(ticketId, updates = {}) {
   try {
     const { status, assignedTo, superAdminDescription } = updates;
@@ -705,6 +739,9 @@ HRMS Support Team
  * Delete a ticket and its replies across tenants
  * @param {number} ticketId
  * @returns {Promise<Object|null>} deleted ticket row or null
+ *
+ * TODO: affected by the cross-tenant ticket-id collision documented above
+ *       getTicketById — deletes from the first tenant whose serial id matches.
  */
 async function deleteTicket(ticketId) {
   try {

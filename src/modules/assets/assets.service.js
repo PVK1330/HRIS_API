@@ -233,9 +233,17 @@ async function getAsset(tenant, id) {
 async function createAsset(tenant, data, actor = {}) {
   const pool = await getTenantPool(tenant.dbName);
   if (!data.assetId) {
-    const assets = await repo.findAll(pool);
-    const lastId = assets.length > 0 ? assets[0].asset_id : 'AST-000';
-    const nextNum = parseInt(lastId.split('-')[1]) + 1;
+    // Derive the next AST-NNN tag from the highest existing numeric suffix.
+    // findAll is ordered by created_at (not tag number) and a non-AST id would
+    // produce "AST-NaN", so compute MAX in SQL over canonical tags only.
+    // asset_id is UNIQUE, so a rare concurrent collision surfaces as a
+    // unique-violation rather than a silently duplicated tag.
+    const { rows } = await pool.query(
+      `SELECT COALESCE(MAX(substring(asset_id from 5)::int), 0) AS maxnum
+         FROM assets
+        WHERE asset_id ~ '^AST-[0-9]+$'`
+    );
+    const nextNum = (Number(rows[0]?.maxnum) || 0) + 1;
     data.assetId = `AST-${String(nextNum).padStart(3, '0')}`;
   }
   const created = await repo.create(pool, data);

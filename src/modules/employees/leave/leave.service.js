@@ -13,6 +13,7 @@ const { assertEmployeeRecordAccess } = require('../../../utils/applyDataScope');
 const leaveSettingsService = require('../../leaveSettings/leaveSettings.service');
 const tenantSettingsService = require('../../tenantSettings/tenantSettings.service');
 const exportEngine = require('../attendance/attendanceExport.service');
+const attendanceCalc = require('../attendance/attendanceCalculation.service');
 const logger = require('../../../utils/logger');
 
 function getPool(user) {
@@ -32,6 +33,48 @@ function calcDays(fromDate, toDate) {
   if (isNaN(from) || isNaN(to)) return 0;
   const diff = Math.ceil((to - from) / (1000 * 60 * 60 * 24)) + 1;
   return Math.max(1, diff);
+}
+
+/**
+ * Count working days in [fromDate, toDate] inclusive, excluding non-working days
+ * (weekends per the tenant's Work Week setting) and public holidays (per the
+ * holiday calendars, including tenant-wide 'Global' ones added via the UI).
+ * Falls back to a plain calendar-day count if attendance settings can't be read.
+ */
+async function calcWorkingDays(pool, fromDate, toDate) {
+  const fallback = calcDays(fromDate, toDate);
+  try {
+    const start = new Date(`${fromDate}T12:00:00Z`);
+    const end   = new Date(`${toDate}T12:00:00Z`);
+    if (isNaN(start) || isNaN(end) || end < start) return fallback;
+
+    const settings = await attendanceCalc.loadSettings(pool);
+    const region = settings?.uk_holiday_region || 'England';
+
+    // Single query for every holiday in the range (configured region or 'Global').
+    const { rows } = await pool.query(
+      `SELECT TO_CHAR(hd.holiday_date, 'YYYY-MM-DD') AS d
+         FROM holiday_dates hd
+         JOIN holiday_calendars hc ON hc.id = hd.calendar_id
+        WHERE hd.holiday_date BETWEEN $1::date AND $2::date
+          AND (hc.region = $3 OR hc.region = 'Global')
+          AND hc.is_active = true`,
+      [fromDate, toDate, region],
+    );
+    const holidays = new Set(rows.map((r) => r.d));
+
+    let count = 0;
+    for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+      const ds = d.toISOString().slice(0, 10);
+      if (attendanceCalc.isWeekend(ds, settings)) continue;
+      if (holidays.has(ds)) continue;
+      count += 1;
+    }
+    return count;
+  } catch (err) {
+    logger.warn(`[leave] calcWorkingDays fallback (${fromDate}..${toDate}): ${err.message}`);
+    return fallback;
+  }
 }
 
 /**
@@ -206,10 +249,16 @@ async function applyLeave(user, auth, data) {
     throw ApiError.badRequest('To date must be on or after from date');
   }
 
-  // 4. Calculate total days
-  const totalDays = data.totalDays && parseInt(data.totalDays, 10) > 0
-    ? parseInt(data.totalDays, 10)
-    : calcDays(fromDate, toDate);
+  // 4. Calculate total leave days authoritatively on the server, excluding
+  //    weekends and public holidays. The client-supplied totalDays is only an
+  //    on-screen estimate — it is NOT trusted here, so it cannot be tampered
+  //    with to under-deduct the balance.
+  const totalDays = await calcWorkingDays(pool, fromDate, toDate);
+  if (totalDays <= 0) {
+    throw ApiError.badRequest(
+      'The selected date range contains no working days (only weekends/holidays).'
+    );
+  }
 
   // 5. Overlap check — no two active requests for same employee on same dates
   const overlap = await repo.findOverlappingRequest(pool, data.employeeId, fromDate, toDate);

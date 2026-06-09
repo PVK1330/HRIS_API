@@ -187,7 +187,8 @@ async function findActiveLeaveType(pool, name) {
     `SELECT id, name, paid_or_unpaid, annual_entitlement_days,
             max_carry_forward_days, accrual, loss_of_pay_rule,
             document_required, auto_approval, approver, is_active,
-            notice_period_required, gender_restriction
+            notice_period_required, gender_restriction,
+            probation_restriction, minimum_service_months
      FROM leave_types
      WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) AND is_active = true
      LIMIT 1`,
@@ -201,7 +202,8 @@ async function findActiveLeaveTypeById(pool, id) {
     `SELECT id, name, paid_or_unpaid, annual_entitlement_days,
             max_carry_forward_days, accrual, loss_of_pay_rule,
             document_required, auto_approval, approver, is_active,
-            notice_period_required, gender_restriction
+            notice_period_required, gender_restriction,
+            probation_restriction, minimum_service_months
      FROM leave_types
      WHERE id = $1 AND is_active = true
      LIMIT 1`,

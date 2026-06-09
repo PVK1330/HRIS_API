@@ -26,6 +26,14 @@ const SNAKE_KEYS = [
   'approver',
   'is_active',
   'sort_order',
+  'description',
+  'encashment_allowed',
+  'document_mandatory_after_days',
+  'applicable_departments',
+  'applicable_designations',
+  'applicable_employment_types',
+  'probation_restriction',
+  'minimum_service_months',
 ];
 
 function mapRow(row) {
@@ -49,6 +57,14 @@ function mapRow(row) {
     isActive: row.is_active,
     isCustom: row.is_custom,
     sortOrder: row.sort_order,
+    description: row.description,
+    encashmentAllowed: row.encashment_allowed,
+    documentMandatoryAfterDays: row.document_mandatory_after_days,
+    applicableDepartments: row.applicable_departments ?? [],
+    applicableDesignations: row.applicable_designations ?? [],
+    applicableEmploymentTypes: row.applicable_employment_types ?? [],
+    probationRestriction: row.probation_restriction,
+    minimumServiceMonths: row.minimum_service_months,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -77,6 +93,27 @@ function mergeLeaveBody(body) {
   if (body.autoApproval !== undefined) merged.auto_approval = body.autoApproval;
   if (body.isActive !== undefined) merged.is_active = body.isActive;
   if (body.sortOrder !== undefined) merged.sort_order = body.sortOrder;
+
+  // Phase-2 fields (migration 042). Previously dropped here, so the UI silently
+  // lost them and the probation/min-service rules never fired.
+  if (body.description !== undefined) merged.description = body.description;
+  if (body.encashmentAllowed !== undefined) merged.encashment_allowed = body.encashmentAllowed;
+  if (body.documentMandatoryAfterDays !== undefined) {
+    merged.document_mandatory_after_days = body.documentMandatoryAfterDays;
+  }
+  // JSONB columns — stringify so node-postgres doesn't coerce a JS array into a
+  // Postgres array literal (which would not cast to jsonb).
+  if (body.applicableDepartments !== undefined) {
+    merged.applicable_departments = JSON.stringify(body.applicableDepartments ?? []);
+  }
+  if (body.applicableDesignations !== undefined) {
+    merged.applicable_designations = JSON.stringify(body.applicableDesignations ?? []);
+  }
+  if (body.applicableEmploymentTypes !== undefined) {
+    merged.applicable_employment_types = JSON.stringify(body.applicableEmploymentTypes ?? []);
+  }
+  if (body.probationRestriction !== undefined) merged.probation_restriction = body.probationRestriction;
+  if (body.minimumServiceMonths !== undefined) merged.minimum_service_months = body.minimumServiceMonths;
 
   delete merged.isCustom;
   delete merged.is_custom;
@@ -204,10 +241,14 @@ async function createLeaveType(dbName, body) {
 
   validateNonNegInt(merged.annual_entitlement_days, 'annual_entitlement_days');
   validateNonNegInt(merged.max_carry_forward_days, 'max_carry_forward_days');
+  validateNonNegInt(merged.minimum_service_months, 'minimum_service_months');
+  validateNonNegInt(merged.document_mandatory_after_days, 'document_mandatory_after_days');
 
   validateBooleanOptional(merged, 'document_required');
   validateBooleanOptional(merged, 'auto_approval');
   validateBooleanOptional(merged, 'is_active');
+  validateBooleanOptional(merged, 'encashment_allowed');
+  validateBooleanOptional(merged, 'probation_restriction');
 
   validateOptionalEntitlementLabel(merged);
   validateApproverOptional(merged.approver, approverOptions);
@@ -242,6 +283,20 @@ async function createLeaveType(dbName, body) {
     auto_approval: merged.auto_approval ?? false,
     approver: merged.approver != null && merged.approver !== '' ? String(merged.approver).trim() : 'Manager',
     is_active: merged.is_active !== undefined && merged.is_active !== null ? merged.is_active : true,
+    description: merged.description != null ? String(merged.description) : null,
+    encashment_allowed: merged.encashment_allowed ?? false,
+    document_mandatory_after_days:
+      merged.document_mandatory_after_days !== undefined && merged.document_mandatory_after_days !== null
+        ? parseInt(merged.document_mandatory_after_days, 10)
+        : 0,
+    applicable_departments: merged.applicable_departments ?? '[]',
+    applicable_designations: merged.applicable_designations ?? '[]',
+    applicable_employment_types: merged.applicable_employment_types ?? '[]',
+    probation_restriction: merged.probation_restriction ?? false,
+    minimum_service_months:
+      merged.minimum_service_months !== undefined && merged.minimum_service_months !== null
+        ? parseInt(merged.minimum_service_months, 10)
+        : 0,
     is_custom: true,
     sort_order: sortOrder,
   };
@@ -278,10 +333,14 @@ async function updateLeaveType(dbName, id, body) {
 
   validateNonNegInt(patch.annual_entitlement_days, 'annual_entitlement_days');
   validateNonNegInt(patch.max_carry_forward_days, 'max_carry_forward_days');
+  validateNonNegInt(patch.minimum_service_months, 'minimum_service_months');
+  validateNonNegInt(patch.document_mandatory_after_days, 'document_mandatory_after_days');
 
   validateBooleanOptional(patch, 'document_required');
   validateBooleanOptional(patch, 'auto_approval');
   validateBooleanOptional(patch, 'is_active');
+  validateBooleanOptional(patch, 'encashment_allowed');
+  validateBooleanOptional(patch, 'probation_restriction');
 
   validateOptionalEntitlementLabel(patch);
   validateApproverOptional(patch.approver, approverOptions);
@@ -294,6 +353,12 @@ async function updateLeaveType(dbName, id, body) {
   }
   if (patch.notice_period_required !== undefined && patch.notice_period_required !== null) {
     patch.notice_period_required = parseInt(patch.notice_period_required, 10);
+  }
+  if (patch.minimum_service_months !== undefined && patch.minimum_service_months !== null) {
+    patch.minimum_service_months = parseInt(patch.minimum_service_months, 10);
+  }
+  if (patch.document_mandatory_after_days !== undefined && patch.document_mandatory_after_days !== null) {
+    patch.document_mandatory_after_days = parseInt(patch.document_mandatory_after_days, 10);
   }
 
   const updated = await repository.updateLeaveType(pool, id, patch);

@@ -284,7 +284,29 @@ async function markAttendance(auth, user, data, req) {
   if (!emp) throw ApiError.notFound('Employee not found');
 
   const dateStr = data.date || todayStr();
+
+  // Manual-entry guards.
+  if (dateStr > todayStr()) {
+    throw ApiError.badRequest('Cannot record attendance for a future date');
+  }
   const existing = await repo.findByEmployeeAndDate(pool, data.employeeId, dateStr);
+  if (existing?.is_closed) {
+    throw ApiError.badRequest(
+      'This date is part of a closed pay period and can no longer be modified',
+    );
+  }
+  if (data.checkInTime && data.checkOutTime) {
+    const inMin = calc.parseTimeToMinutes(data.checkInTime);
+    const outMin = calc.parseTimeToMinutes(data.checkOutTime);
+    if (inMin != null && outMin != null && outMin <= inMin) {
+      // A check-out at/before check-in is only valid for an overnight (night) shift.
+      const shift = await calc.getEmployeeShift(pool, data.employeeId, dateStr);
+      if (!shift?.is_night_shift) {
+        throw ApiError.badRequest('Check-out time must be after check-in time');
+      }
+    }
+  }
+
   req._punchCtx = await punchContext(pool, user.db_name, req);
 
   const record = await persistAttendance(pool, user, {
@@ -406,6 +428,17 @@ async function checkIn(auth, user, body, req) {
   const dateStr = canManageOverride(auth) && body.date ? body.date : todayStr();
   const time = canManageOverride(auth) && body.checkInTime ? body.checkInTime : nowTimeStr();
 
+  if (dateStr > todayStr()) {
+    throw ApiError.badRequest('Cannot check in for a future date');
+  }
+  const existing = await repo.findByEmployeeAndDate(pool, employeeId, dateStr);
+  if (existing?.is_closed) {
+    throw ApiError.badRequest('This date is part of a closed pay period and can no longer be modified');
+  }
+  if (existing?.check_in_time) {
+    throw ApiError.badRequest('You have already checked in for this date');
+  }
+
   const record = await persistAttendance(pool, user, {
     employeeId,
     date: dateStr,
@@ -417,7 +450,10 @@ async function checkIn(auth, user, body, req) {
     checkInLatitude: loc.latitude,
     checkInLongitude: loc.longitude,
     checkInAddress: loc.address,
-    forceCheckIn: true,
+    // Non-destructive: if a row already exists with a check-in time the upsert
+    // COALESCEs and keeps the original punch (guards against a concurrent
+    // double check-in that slips past the check above).
+    forceCheckIn: false,
   }, req);
 
   await notify.notifyCheckIn(pool, user.db_name, {
@@ -484,17 +520,32 @@ async function checkOut(auth, user, body, req) {
     entityId: record.id,
   });
 
-  // Overtime recorded → raise a manager approval request (non-blocking).
+  // Overtime recorded → either auto-approve (if the tenant configured
+  // overtime_approval_workflow = 'Auto-approve') or raise a manager approval
+  // request. Non-blocking either way.
   if (Number(record.overtime_hours) > 0) {
     try {
-      const flagged = await repo.markOvertimePending(pool, record.id);
-      if (flagged) {
-        await notify.notifyOtRequested(pool, user.db_name, {
-          employeeId,
-          date: dateStr,
-          entityId: record.id,
-          hours: record.overtime_hours,
-        });
+      const otSettings = await calc.loadSettings(pool);
+      if (otSettings?.overtime_approval_workflow === 'Auto-approve') {
+        const approved = await repo.markOvertimeAutoApproved(pool, record.id);
+        if (approved) {
+          await notify.notifyOtApproved(pool, user.db_name, {
+            employeeId,
+            date: dateStr,
+            entityId: record.id,
+            hours: record.overtime_hours,
+          });
+        }
+      } else {
+        const flagged = await repo.markOvertimePending(pool, record.id);
+        if (flagged) {
+          await notify.notifyOtRequested(pool, user.db_name, {
+            employeeId,
+            date: dateStr,
+            entityId: record.id,
+            hours: record.overtime_hours,
+          });
+        }
       }
     } catch (e) {
       logger.warn(`[attendance] overtime approval request failed for record ${record.id}`, e.message);
@@ -502,6 +553,17 @@ async function checkOut(auth, user, body, req) {
   }
 
   return record;
+}
+
+/** True if the given employee is the reporting manager of at least one active employee. */
+async function hasDirectReports(pool, employeeId) {
+  if (!employeeId) return false;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM employees
+      WHERE reporting_manager_id = $1 AND deleted_at IS NULL LIMIT 1`,
+    [employeeId],
+  );
+  return rows.length > 0;
 }
 
 async function submitRegularization(auth, user, body, req) {
@@ -513,11 +575,20 @@ async function submitRegularization(auth, user, body, req) {
   await authz.assertCanModifyEmployee(auth, pool, Number(employeeId));
 
   const settings = await calc.loadSettings(pool);
+  // Who-can-submit gating. Enum (attendanceSettings.options.js):
+  //   'All employees' | 'Manager only' | 'HR only'.
+  // (Previously this compared against the non-existent 'Managers only', so the
+  //  setting was a dead no-op and anyone could submit.)
   const who = settings?.who_can_submit_request || 'All employees';
-  if (who === 'Managers only' && Number(employeeId) !== Number(actorEmployeeId(user))) {
-    const emp = await authz.loadEmployee(pool, actorEmployeeId(user));
-    if (!emp || !emp.reporting_manager_id) {
-      throw ApiError.forbidden('Only managers can submit on behalf of others');
+  if (who !== 'All employees' && !authz.canOverrideApproval(auth)) {
+    if (who === 'HR only' && !authz.hasHrApprovalScope(auth)) {
+      throw ApiError.forbidden('Only HR can submit attendance regularization requests.');
+    }
+    if (who === 'Manager only') {
+      const isManager = await hasDirectReports(pool, actorEmployeeId(user));
+      if (!isManager && !authz.hasHrApprovalScope(auth)) {
+        throw ApiError.forbidden('Only managers or HR can submit attendance regularization requests.');
+      }
     }
   }
 

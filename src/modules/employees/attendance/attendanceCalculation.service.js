@@ -69,9 +69,13 @@ async function findHolidayForDate(pool, dateStr, region) {
      FROM holiday_dates hd
      JOIN holiday_calendars hc ON hc.id = hd.calendar_id
      WHERE hd.holiday_date = $1::date
-       AND hc.region = $2
+       -- Match the tenant's configured UK region OR any tenant-wide ('Global')
+       -- calendar. Holidays added through the Settings → Holidays UI are stored
+       -- under the 'Global' region, so without this they would never apply.
+       AND (hc.region = $2 OR hc.region = 'Global')
        AND hc.year = $3
        AND hc.is_active = true
+     ORDER BY (hc.region = $2) DESC
      LIMIT 1`,
     [dateStr, reg, year],
   );

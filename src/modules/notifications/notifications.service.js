@@ -211,6 +211,12 @@ async function listNotifications(user, tenant = null) {
   return repo.listForUser(pool, user);
 }
 
+async function countUnread(user, tenant = null) {
+  const list = await listNotifications(user, tenant);
+  if (!Array.isArray(list)) return 0;
+  return list.filter((n) => !(n.read || n.isRead)).length;
+}
+
 async function readNotification(user, id, tenant = null) {
   const dbName = user?.db_name || tenant?.dbName || tenant?.db_name;
   if (!dbName) return null;
@@ -239,6 +245,7 @@ module.exports = {
   pushNotification,
   sendSystemNotification,
   listNotifications,
+  countUnread,
   readNotification,
   readAllNotifications,
   deleteNotification,

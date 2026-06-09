@@ -21,18 +21,33 @@ const create = asyncHandler(async (req, res) => {
 });
 
 const update = asyncHandler(async (req, res) => {
-  const policy = await service.updatePolicy(req.tenant, req.params.id, req.body);
+  const policy = await service.updatePolicy(req.tenant, req.params.id, req.body, req.user);
   return ApiResponse.ok(res, policy, 'Policy updated successfully');
 });
 
 const remove = asyncHandler(async (req, res) => {
-  await service.deletePolicy(req.tenant, req.params.id);
+  await service.deletePolicy(req.tenant, req.params.id, req.user);
   return ApiResponse.ok(res, null, 'Policy deleted successfully');
 });
 
 const getTracking = asyncHandler(async (req, res) => {
   const tracking = await service.getCompliance(req.tenant, req.params.id);
   return ApiResponse.ok(res, tracking, 'Compliance tracking retrieved successfully');
+});
+
+const listArchived = asyncHandler(async (req, res) => {
+  const policies = await service.listArchivedPolicies(req.tenant);
+  return ApiResponse.ok(res, policies, 'Archived policies retrieved successfully');
+});
+
+const getArchived = asyncHandler(async (req, res) => {
+  const policy = await service.getArchivedPolicy(req.tenant, req.params.id);
+  return ApiResponse.ok(res, policy, 'Archived policy retrieved successfully');
+});
+
+const getArchivedTracking = asyncHandler(async (req, res) => {
+  const tracking = await service.getArchivedCompliance(req.tenant, req.params.id);
+  return ApiResponse.ok(res, tracking, 'Archived policy compliance retrieved successfully');
 });
 
 const listMine = asyncHandler(async (req, res) => {
@@ -78,8 +93,8 @@ const uploadFile = asyncHandler(async (req, res) => {
     throw new ApiError(400, 'No file uploaded');
   }
 
-  // Construct URL based on env.API_URL and /uploads path
-  const url = req.file.location || `${process.env.API_URL || 'http://localhost:5000'}/uploads/logos/${req.file.filename}`;
+  // S3 returns an absolute location; for local disk the file lives under /uploads/policies/.
+  const url = req.file.location || `${process.env.API_URL || 'http://localhost:5000'}/uploads/policies/${req.file.filename}`;
   
   return ApiResponse.ok(res, { 
     filename: req.file.key || req.file.filename,
@@ -97,6 +112,9 @@ module.exports = {
   update,
   remove,
   getTracking,
+  listArchived,
+  getArchived,
+  getArchivedTracking,
   acknowledge,
   listCategories,
   createCategory,

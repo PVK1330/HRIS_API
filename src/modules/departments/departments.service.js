@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
 const notify = require('../notifications/notifications.service');
@@ -33,15 +34,31 @@ function normalizePayloadStatus(data, required = false) {
   throw new ApiError(400, 'Status must be active or inactive');
 }
 
-function buildDepartmentCode(name) {
+function buildDepartmentCode(name, suffix) {
   const prefix = String(name || '')
     .trim()
     .split(/\s+/)
     .slice(0, 3)
     .map((part) => part[0]?.toUpperCase() || '')
     .join('');
-  const suffix = Date.now().toString().slice(-4);
   return `${prefix || 'DEP'}${suffix}`.slice(0, 20);
+}
+
+/**
+ * Collision-resistant auto code: PREFIX + 6 random hex chars (~16.7M space),
+ * re-rolled and DB-checked until unique. Replaces the old last-4-timestamp-digits
+ * scheme (only 10k values, collided within the same ~10s window).
+ */
+async function generateUniqueDepartmentCode(pool, name) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const suffix = crypto.randomBytes(3).toString('hex').toUpperCase(); // 6 hex chars
+    const code = buildDepartmentCode(name, suffix);
+    const { rows } = await pool.query('SELECT 1 FROM departments WHERE code = $1', [code]);
+    if (!rows.length) return code;
+  }
+  // Practically unreachable (8 random collisions): timestamp + random tail.
+  const suffix = `${Date.now().toString(36)}${crypto.randomBytes(2).toString('hex')}`.toUpperCase();
+  return buildDepartmentCode(name, suffix);
 }
 
 function mapRow(r) {
@@ -92,6 +109,19 @@ async function assertUniqueDepartmentName(pool, name, excludeId = null) {
   }
   const { rows } = await pool.query(sql, params);
   if (rows.length) throw new ApiError(409, 'Department name already exists');
+}
+
+async function assertUniqueDepartmentCode(pool, code, excludeId = null) {
+  const c = String(code || '').trim();
+  if (!c) return;
+  const params = [c];
+  let sql = `SELECT id FROM departments WHERE code = $1`;
+  if (excludeId) {
+    sql += ` AND id <> $2`;
+    params.push(excludeId);
+  }
+  const { rows } = await pool.query(sql, params);
+  if (rows.length) throw new ApiError(409, `Department code "${c}" already exists`);
 }
 
 async function assertParentExists(pool, parentId, selfId = null) {
@@ -277,7 +307,14 @@ async function createDepartment(tenant, data) {
   await assertUniqueDepartmentName(pool, data.name);
   await assertParentExists(pool, parentId, null);
 
-  const code = (data.code && String(data.code).trim()) || buildDepartmentCode(data.name);
+  // User-supplied code → validate uniqueness (409 on dup); else auto-generate a
+  // collision-resistant unique one.
+  let code = data.code && String(data.code).trim() ? String(data.code).trim() : null;
+  if (code) {
+    await assertUniqueDepartmentCode(pool, code);
+  } else {
+    code = await generateUniqueDepartmentCode(pool, data.name);
+  }
   const managerEmpId =
     data.manager_emp_id != null && String(data.manager_emp_id).trim() !== ''
       ? String(data.manager_emp_id).trim().slice(0, 50)
@@ -329,6 +366,9 @@ async function createDepartment(tenant, data) {
 async function updateDepartment(tenant, id, data) {
   const pool = await getTenantPool(tenant.dbName);
   if (data.name) await assertUniqueDepartmentName(pool, data.name, id);
+  if (data.code !== undefined && String(data.code).trim() !== '') {
+    await assertUniqueDepartmentCode(pool, data.code, id);
+  }
 
   const parentId =
     data.parent_id !== undefined

@@ -15,25 +15,41 @@ const {
 } = require('../modules/messages/messagingIdentity');
 const { emitMessageRealtime, formatMessagePayload } = require('../modules/messages/messages.service');
 
+// Presence is tracked PER TENANT (db_name) so employee-id collisions across
+// tenants can't flip the wrong contact's online dot, and snapshots/broadcasts
+// never leak one tenant's presence into another.
+//   onlineUsers: Map<dbName, Map<employeeId, Set<socketId>>>
 const onlineUsers = new Map();
 
-function addOnline(employeeId, socketId) {
+function addOnline(dbName, employeeId, socketId) {
   const key = Number(employeeId);
-  if (!onlineUsers.has(key)) onlineUsers.set(key, new Set());
-  onlineUsers.get(key).add(socketId);
+  if (!onlineUsers.has(dbName)) onlineUsers.set(dbName, new Map());
+  const tenantMap = onlineUsers.get(dbName);
+  if (!tenantMap.has(key)) tenantMap.set(key, new Set());
+  tenantMap.get(key).add(socketId);
 }
 
-function removeOnline(employeeId, socketId) {
+function removeOnline(dbName, employeeId, socketId) {
   const key = Number(employeeId);
-  const sockets = onlineUsers.get(key);
+  const tenantMap = onlineUsers.get(dbName);
+  if (!tenantMap) return;
+  const sockets = tenantMap.get(key);
   if (!sockets) return;
   sockets.delete(socketId);
-  if (sockets.size === 0) onlineUsers.delete(key);
+  if (sockets.size === 0) tenantMap.delete(key);
+  if (tenantMap.size === 0) onlineUsers.delete(dbName);
 }
 
-function isOnline(employeeId) {
+function isOnline(dbName, employeeId) {
   const key = Number(employeeId);
-  return onlineUsers.has(key) && onlineUsers.get(key).size > 0;
+  const tenantMap = onlineUsers.get(dbName);
+  return !!tenantMap && tenantMap.has(key) && tenantMap.get(key).size > 0;
+}
+
+// Online employee ids for ONE tenant — used for the initial presence snapshot.
+function onlineIdsForTenant(dbName) {
+  const tenantMap = onlineUsers.get(dbName);
+  return tenantMap ? Array.from(tenantMap.keys()) : [];
 }
 
 function resolveExitId(payload) {
@@ -107,14 +123,15 @@ function initSocket(httpServer) {
       return;
     }
 
-    addOnline(userId, socket.id);
+    addOnline(user.db_name, userId, socket.id);
     logger.debug('[socket] user joined', { userId, socketId: socket.id });
     socket.join(`user:${userId}`);
     logger.debug('[socket] tenant joined', { dbName: user.db_name, socketId: socket.id });
     socket.join(`tenant:${user.db_name}`);
 
-    io.emit('user:online', { userId });
-    socket.emit('online_users_list', { onlineIds: Array.from(onlineUsers.keys()) });
+    // Presence is scoped to this tenant's room only — never broadcast globally.
+    io.to(`tenant:${user.db_name}`).emit('user:online', { userId });
+    socket.emit('online_users_list', { onlineIds: onlineIdsForTenant(user.db_name) });
 
     logger.debug(`Socket connected: ${socket.id} (employee ${userId})`);
 
@@ -200,9 +217,10 @@ function initSocket(httpServer) {
     });
 
     socket.on('disconnect', () => {
-      removeOnline(userId, socket.id);
-      if (!isOnline(userId)) {
-        io.emit('user:offline', { userId });
+      removeOnline(user.db_name, userId, socket.id);
+      // Only announce offline to this tenant's room — never globally.
+      if (!isOnline(user.db_name, userId)) {
+        io.to(`tenant:${user.db_name}`).emit('user:offline', { userId });
       }
       logger.debug(`Socket disconnected: ${socket.id}`);
     });
@@ -224,25 +242,35 @@ function getSocket() {
   return ioInstance;
 }
 
-function emitTicketUpdate(ticket) {
-  if (ioInstance) {
-    logger.debug(`Emitting ticket:updated for ticket ${ticket.id}`);
-    ioInstance.emit('ticket:updated', ticket);
-  }
+// Ticket events are scoped to the OWNING tenant's room so one tenant's support
+// activity never broadcasts to every other tenant. The caller passes the tenant
+// db_name (falling back to a db_name carried on the ticket payload). If no tenant
+// can be resolved we SKIP rather than broadcast globally.
+function ticketRoom(dbName, ticket) {
+  return dbName || ticket?.dbName || ticket?.db_name || null;
 }
 
-function emitTicketCreated(ticket) {
-  if (ioInstance) {
-    logger.debug(`Emitting ticket:created for ticket ${ticket.id}`);
-    ioInstance.emit('ticket:created', ticket);
-  }
+function emitTicketUpdate(ticket, dbName) {
+  if (!ioInstance) return;
+  const room = ticketRoom(dbName, ticket);
+  if (!room) { logger.warn(`[socket] ticket:updated for ${ticket?.id} has no tenant — skipped`); return; }
+  logger.debug(`Emitting ticket:updated for ticket ${ticket.id} -> tenant:${room}`);
+  ioInstance.to(`tenant:${room}`).emit('ticket:updated', ticket);
 }
 
-function emitTicketDeleted(ticketId) {
-  if (ioInstance) {
-    logger.debug(`Emitting ticket:deleted for ticket ${ticketId}`);
-    ioInstance.emit('ticket:deleted', { id: ticketId });
-  }
+function emitTicketCreated(ticket, dbName) {
+  if (!ioInstance) return;
+  const room = ticketRoom(dbName, ticket);
+  if (!room) { logger.warn(`[socket] ticket:created for ${ticket?.id} has no tenant — skipped`); return; }
+  logger.debug(`Emitting ticket:created for ticket ${ticket.id} -> tenant:${room}`);
+  ioInstance.to(`tenant:${room}`).emit('ticket:created', ticket);
+}
+
+function emitTicketDeleted(ticketId, dbName) {
+  if (!ioInstance) return;
+  if (!dbName) { logger.warn(`[socket] ticket:deleted for ${ticketId} has no tenant — skipped`); return; }
+  logger.debug(`Emitting ticket:deleted for ticket ${ticketId} -> tenant:${dbName}`);
+  ioInstance.to(`tenant:${dbName}`).emit('ticket:deleted', { id: ticketId });
 }
 
 module.exports = {

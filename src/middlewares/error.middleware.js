@@ -12,6 +12,24 @@ function errorHandler(err, req, res, _next) {
   const isProd = process.env.NODE_ENV === "production";
   const isApiError = err instanceof ApiError;
 
+  // Postgres unique-violation (23505): return a clear 409 "duplicate value" instead
+  // of leaking a raw 500. Try to surface the offending column/value from err.detail
+  // ("Key (code)=(IT0001) already exists."); fall back to a generic message for
+  // composite/expression constraints.
+  if (!isApiError && err && err.code === "23505") {
+    const m = /Key \(([^)]+)\)=\(([^)]*)\)/.exec(err.detail || "");
+    let field = m ? m[1] : null;
+    const value = m && m[2] ? m[2] : null;
+    if (field && /[(),]/.test(field)) field = null; // composite/expression → keep generic
+    const message = field
+      ? `A record with this ${field}${value ? ` "${value}"` : ""} already exists.`
+      : "A record with a duplicate value already exists.";
+    logger.warn(
+      `${req.method} ${req.originalUrl} -> 409 duplicate (${err.constraint || "unique_violation"})`,
+    );
+    return res.status(409).json({ success: false, message });
+  }
+
   const statusCode = isApiError ? err.statusCode : 500;
   const message = isApiError
     ? err.message

@@ -12,7 +12,7 @@ const {
 const { P } = require('../../constants/permissions');
 const ApiError = require('../../utils/ApiError');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
-const { uploadFile } = require('../../middlewares/upload.middleware');
+const { uploadPolicyFile } = require('../../middlewares/upload.middleware');
 const ctrl = require('./policies.controller');
 
 const router = Router();
@@ -48,6 +48,18 @@ router.get(
   ctrl.getMine,
 );
 
+// Archived (soft-deleted) policies — admin read-only. Declared BEFORE '/:id' so
+// the literal '/archived' segment isn't captured by the :id param.
+router.get('/archived', requirePermission(P.POLICIES_MANAGE), ctrl.listArchived);
+router.get('/archived/:id', [
+  requirePermission(P.POLICIES_MANAGE),
+  param('id').isInt().withMessage('ID must be an integer'),
+], validate, ctrl.getArchived);
+router.get('/archived/:id/tracking', [
+  requirePermission(P.POLICIES_MANAGE),
+  param('id').isInt().withMessage('ID must be an integer'),
+], validate, ctrl.getArchivedTracking);
+
 router.get('/', requirePermission(P.POLICIES_MANAGE), ctrl.list);
 router.post('/', [
   requirePermission(P.POLICIES_MANAGE),
@@ -55,7 +67,7 @@ router.post('/', [
   body('category').notEmpty().withMessage('Category is required').trim(),
 ], validate, ctrl.create);
 
-router.post('/upload', requirePermission(P.POLICIES_MANAGE), uploadFile('file', 'policy'), ctrl.uploadFile);
+router.post('/upload', requirePermission(P.POLICIES_MANAGE), uploadPolicyFile('file'), ctrl.uploadFile);
 
 router.get('/:id', requirePermission(P.POLICIES_MANAGE), [
   param('id').isInt().withMessage('ID must be an integer'),

@@ -356,8 +356,8 @@ async function updateTicket(req, res) {
 
     const transformedTicket = transformTicket(refreshedTicket);
 
-    // Emit real-time update to all connected clients
-    emitTicketUpdate(transformedTicket);
+    // Emit real-time update to the owning tenant's room (not every tenant).
+    emitTicketUpdate(transformedTicket, refreshedTicket.dbName);
 
     // Notify the Admin who created the ticket about updates from Super Admin
     try {
@@ -419,13 +419,16 @@ async function deleteTicket(req, res) {
   try {
     const { id } = req.params;
 
+    // Capture the owning tenant BEFORE deletion so the realtime event is scoped
+    // to that tenant's room rather than broadcast to every tenant.
+    const existing = await superadminSupportService.getTicketById(id);
     const deleted = await superadminSupportService.deleteTicket(id);
     if (!deleted) {
       return res.status(404).json({ success: false, message: 'Ticket not found' });
     }
 
-    // notify clients
-    emitTicketDeleted(id);
+    // notify the owning tenant's clients
+    emitTicketDeleted(id, existing?.dbName);
 
     res.json({ success: true, message: 'Ticket deleted successfully', data: { id } });
   } catch (error) {

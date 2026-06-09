@@ -307,6 +307,62 @@ function uploadLogo(type) {
   };
 }
 
+// Dedicated policy-document storage under uploads/policies/ (kept separate from
+// logos/). Existing policy files already stored under logos/ stay readable — only
+// NEW uploads land here.
+const POLICY_DIR = path.join(UPLOADS_DIR, 'policies');
+function ensurePolicyDir() {
+  if (!fs.existsSync(POLICY_DIR)) {
+    fs.mkdirSync(POLICY_DIR, { recursive: true });
+  }
+}
+const policyStorage = aws.isS3Configured
+  ? multerS3({
+      s3: aws.s3Client,
+      bucket: aws.bucketName,
+      key: function (req, file, cb) {
+        const ext = path.extname(file.originalname).toLowerCase();
+        cb(null, `policies/policy-${Date.now()}${ext}`);
+      },
+    })
+  : multer.diskStorage({
+      destination(_req, _file, cb) {
+        try {
+          ensurePolicyDir();
+          cb(null, POLICY_DIR);
+        } catch (err) {
+          cb(err);
+        }
+      },
+      filename(_req, file, cb) {
+        const ext = path.extname(file.originalname).toLowerCase();
+        cb(null, `policy-${Date.now()}${ext}`);
+      },
+    });
+const policyUploader = multer({
+  storage: policyStorage,
+  limits: { fileSize: MAX_SIZE_BYTES, files: 1 },
+  fileFilter,
+});
+
+/** Single policy-document upload (field `file`) into uploads/policies/. */
+function uploadPolicyFile(fieldName) {
+  const single = policyUploader.single(fieldName);
+  return function uploadPolicyFileMiddleware(req, res, next) {
+    single(req, res, function handleMulter(err) {
+      if (!err) return next();
+      if (err instanceof ApiError) return next(err);
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return next(new ApiError(400, `File is too large. Max size is ${MAX_SIZE_MB}MB`));
+        }
+        return next(new ApiError(400, `Upload error: ${err.message}`));
+      }
+      return next(new ApiError(400, err.message || 'File upload failed'));
+    });
+  };
+}
+
 function uploadFile(fieldName, type = 'document') {
   const single = uploader.single(fieldName);
   return function uploadFileMiddleware(req, res, next) {
@@ -333,7 +389,9 @@ module.exports = {
   uploadTenantLogo,
   uploadSupportFile,
   uploadFile,
+  uploadPolicyFile,
   LOGO_DIR,
+  POLICY_DIR,
   TENANT_LOGO_DIR,
   SUPERADMIN_LOGO_DIR,
   MAX_SIZE_MB,

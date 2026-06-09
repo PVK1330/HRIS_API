@@ -63,6 +63,9 @@ function mapPolicyRow(row) {
     reviewDate: row.review_date,
     ackRequired: row.ack_required,
     fileUrl: row.file_url,
+    contentVersion: Number(row.content_version || 1),
+    publishedAt: row.published_at || null,
+    archivedAt: row.archived_at || null,
   };
 }
 

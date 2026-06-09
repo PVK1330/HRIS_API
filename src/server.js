@@ -111,6 +111,13 @@ async function bootstrap() {
       logger.error('Failed to start exchange rates refresh cron', e);
     }
 
+    try {
+      const { startPolicyAckReminderCron } = require('./jobs/policyAckReminder.job');
+      startPolicyAckReminderCron();
+    } catch (e) {
+      logger.error('Failed to start policy acknowledgement reminder cron', e);
+    }
+
     logger.info(`Socket.io attached on /socket.io`);
   });
 

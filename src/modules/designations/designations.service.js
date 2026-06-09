@@ -279,12 +279,29 @@ async function getDesignation(tenant, id) {
   return mapRow(r);
 }
 
+// Mirrors the DB UNIQUE(LOWER(name), department_id) index so a duplicate returns a
+// clear 409 instead of a raw 500 from the constraint.
+async function assertUniqueDesignation(pool, name, departmentId, excludeId = null) {
+  const params = [String(name || '').trim(), departmentId];
+  let sql = `SELECT id FROM designations WHERE LOWER(name) = LOWER($1) AND department_id = $2`;
+  if (excludeId) {
+    sql += ` AND id <> $3`;
+    params.push(excludeId);
+  }
+  const { rows } = await pool.query(sql, params);
+  if (rows.length) {
+    throw new ApiError(409, `A designation "${String(name).trim()}" already exists in this department`);
+  }
+}
+
 async function createDesignation(tenant, data) {
   const pool = await getTenantPool(tenant.dbName);
   const st = normalizePayloadStatus(data, true);
   const departmentId = data.department_id ?? data.departmentId;
   const { rows: drows } = await pool.query(`SELECT id FROM departments WHERE id = $1`, [departmentId]);
   if (!drows.length) throw new ApiError(400, 'department_id does not exist');
+
+  await assertUniqueDesignation(pool, data.name, departmentId);
 
   const grade = data.grade != null && String(data.grade).trim() !== '' ? String(data.grade).trim() : null;
 
@@ -319,6 +336,25 @@ async function createDesignation(tenant, data) {
 
 async function updateDesignation(tenant, id, data) {
   const pool = await getTenantPool(tenant.dbName);
+
+  const depRaw = data.department_id ?? data.departmentId;
+  let departmentId;
+  if (depRaw !== undefined) {
+    departmentId = parseInt(String(depRaw), 10);
+    const { rows: drows } = await pool.query(`SELECT id FROM departments WHERE id = $1`, [departmentId]);
+    if (!drows.length) throw new ApiError(400, 'department_id does not exist');
+  }
+
+  // Pre-check (name, department) uniqueness whenever either changes. Resolves the
+  // effective pair from the current row for partial updates, then asserts (excluding self).
+  if (data.name !== undefined || depRaw !== undefined) {
+    const { rows: cur } = await pool.query(`SELECT name, department_id FROM designations WHERE id = $1`, [id]);
+    if (!cur.length) throw new ApiError(404, 'Designation not found');
+    const effName = data.name !== undefined ? data.name : cur[0].name;
+    const effDept = depRaw !== undefined ? departmentId : cur[0].department_id;
+    await assertUniqueDesignation(pool, effName, effDept, id);
+  }
+
   const fields = [];
   const params = [];
   let n = 1;
@@ -327,11 +363,7 @@ async function updateDesignation(tenant, id, data) {
     params.push(data.name.trim());
     fields.push(`name = $${n++}`);
   }
-  const depRaw = data.department_id ?? data.departmentId;
   if (depRaw !== undefined) {
-    const departmentId = parseInt(String(depRaw), 10);
-    const { rows: drows } = await pool.query(`SELECT id FROM departments WHERE id = $1`, [departmentId]);
-    if (!drows.length) throw new ApiError(400, 'department_id does not exist');
     params.push(departmentId);
     fields.push(`department_id = $${n++}`);
     params.push(null);

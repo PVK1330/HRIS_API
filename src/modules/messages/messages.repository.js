@@ -68,11 +68,15 @@ async function getMessages(pool, conversationId, { limit = 50, before } = {}) {
      FROM messages m
      LEFT JOIN employees e ON e.id = m.sender_id AND e.deleted_at IS NULL
      WHERE m.conversation_id = $1 ${whereBefore}
-     ORDER BY m.created_at ASC
+     ORDER BY m.created_at DESC, m.id DESC
      LIMIT $2`,
     params
   );
-  return rows;
+  // Fetched newest-first so the initial load returns the most RECENT N messages,
+  // and `before` (m.id < cursor) returns the N immediately BEFORE the cursor —
+  // not the oldest page. Reverse to ascending/chronological order (oldest → newest)
+  // for display; the frontend appends new messages to the end and scrolls to bottom.
+  return rows.reverse();
 }
 
 async function insertMessage(pool, {

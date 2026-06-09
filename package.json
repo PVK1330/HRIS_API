@@ -31,7 +31,10 @@
     "repair:attendance-records": "node src/scripts/repairAttendanceRecords.js",
     "repair:attendance-records:dry": "node src/scripts/repairAttendanceRecords.js --dry-run",
     "repair:punch-employment-status": "node src/scripts/repairEmploymentStatusForPunch.js",
-    "repair:punch-employment-status:dry": "node src/scripts/repairEmploymentStatusForPunch.js"
+    "repair:punch-employment-status:dry": "node src/scripts/repairEmploymentStatusForPunch.js",
+    "backfill:policy-hash": "node src/scripts/backfillPolicyContentHash.js",
+    "backfill:policy-hash:dry": "node src/scripts/backfillPolicyContentHash.js --dry-run",
+    "test:policies": "node --test src/tests/policies.lifecycle.test.js"
   },
   "keywords": [
     "pern",

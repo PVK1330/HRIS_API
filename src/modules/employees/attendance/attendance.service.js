@@ -18,17 +18,27 @@ const integrity = require('./attendanceIntegrity.service');
 const { hasPermission } = require('../../../services/authz.service');
 const { P } = require('../../../constants/permissions');
 const logger = require('../../../utils/logger');
+const tzUtil = require('../../../utils/timezone');
 
 function getPool(user) {
   if (!user?.db_name) throw ApiError.unauthorized('Tenant not found');
   return getTenantPool(user.db_name);
 }
 
-function todayStr() {
-  return new Date().toISOString().split('T')[0];
+// Calendar date "today" — in the tenant's configured timezone when provided
+// (org-admin General-settings timezone), so a punch near midnight lands on the
+// correct local date instead of the server's UTC date. Falls back to UTC for
+// callers without a tenant context.
+function todayStr(timezone) {
+  return timezone ? tzUtil.todayInTenantTime(timezone) : new Date().toISOString().split('T')[0];
 }
 
-function nowTimeStr() {
+// Current wall-clock "HH:mm" — in the tenant's timezone when provided, so the
+// stored punch time (and the late / early-leaving / half-day calculations derived
+// from it against the shift times) reflect the employee's local clock, not the
+// server's. Falls back to server-local time when no timezone is given.
+function nowTimeStr(timezone) {
+  if (timezone) return tzUtil.nowInTenantTime(timezone, 'HH:mm');
   const n = new Date();
   return `${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`;
 }
@@ -283,9 +293,9 @@ async function markAttendance(auth, user, data, req) {
   const emp = await empRepo.findById(pool, data.employeeId);
   if (!emp) throw ApiError.notFound('Employee not found');
 
-  const dateStr = data.date || todayStr();
-  const existing = await repo.findByEmployeeAndDate(pool, data.employeeId, dateStr);
   req._punchCtx = await punchContext(pool, user.db_name, req);
+  const dateStr = data.date || todayStr(req._punchCtx.timezone);
+  const existing = await repo.findByEmployeeAndDate(pool, data.employeeId, dateStr);
 
   const record = await persistAttendance(pool, user, {
     employeeId: data.employeeId,
@@ -403,8 +413,8 @@ async function checkIn(auth, user, body, req) {
 
   req._punchCtx = await punchContext(pool, user.db_name, req);
   const loc = locationFromBody(body, { attendance_location_tracking: req._punchCtx.locationTracking });
-  const dateStr = canManageOverride(auth) && body.date ? body.date : todayStr();
-  const time = canManageOverride(auth) && body.checkInTime ? body.checkInTime : nowTimeStr();
+  const dateStr = canManageOverride(auth) && body.date ? body.date : todayStr(req._punchCtx.timezone);
+  const time = canManageOverride(auth) && body.checkInTime ? body.checkInTime : nowTimeStr(req._punchCtx.timezone);
 
   const record = await persistAttendance(pool, user, {
     employeeId,
@@ -454,9 +464,9 @@ async function checkOut(auth, user, body, req) {
 
   req._punchCtx = await punchContext(pool, user.db_name, req);
   const loc = locationFromBody(body, { attendance_location_tracking: req._punchCtx.locationTracking });
-  const dateStr = canManageOverride(auth) && body.date ? body.date : todayStr();
+  const dateStr = canManageOverride(auth) && body.date ? body.date : todayStr(req._punchCtx.timezone);
   const existing = await repo.findByEmployeeAndDate(pool, employeeId, dateStr);
-  const time = canManageOverride(auth) && body.checkOutTime ? body.checkOutTime : nowTimeStr();
+  const time = canManageOverride(auth) && body.checkOutTime ? body.checkOutTime : nowTimeStr(req._punchCtx.timezone);
 
   if (!existing?.check_in_time && !body.checkInTime) {
     throw ApiError.badRequest('Check-in is required before check-out');

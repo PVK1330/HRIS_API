@@ -6,6 +6,7 @@ const graceEngine = require('./attendanceGrace.service');
 const calendar = require('./attendanceCalendar.service');
 const audit = require('./attendanceAudit.service');
 const autoReject = require('./attendanceAutoReject.service');
+const notify = require('./attendanceNotifications.service');
 const logger = require('../../../utils/logger');
 
 const CRON_DEVICE = 'attendance-cron';
@@ -199,8 +200,6 @@ async function processOvertimeRecalc(pool, dateStr, tenantDb = null) {
     // and notifyOtRequested de-dupes). It is NOT auto-approved.
     if (computed.overtime_hours > 0 && computed.overtime_hours !== oldOt) {
       try {
-        const notify = require('./attendanceNotifications.service');
-        const repo = require('./attendance.repository');
         const flagged = await repo.markOvertimePending(pool, row.id);
         if (flagged && tenantDb) {
           await notify.notifyOtRequested(pool, tenantDb, {

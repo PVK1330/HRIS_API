@@ -122,7 +122,7 @@ async function createTicket(req, res, next) {
 
     // Emit socket event for real-time UI updates
     try {
-      socket.emitTicketCreated(ticket);
+      socket.emitTicketCreated(ticket, req.tenant?.dbName || req.user?.db_name);
     } catch (err) {
       logger.error('[support] failed to emit ticket created event', { err: err.message });
     }
@@ -201,7 +201,7 @@ async function updateTicket(req, res, next) {
 
     // Emit socket event for real-time UI updates
     try {
-      socket.emitTicketUpdate(ticket);
+      socket.emitTicketUpdate(ticket, req.tenant?.dbName || req.user?.db_name);
     } catch (err) {
       logger.error('[support] failed to emit ticket updated event', { err: err.message });
     }

@@ -2,8 +2,21 @@
 
 const repo = require('./policies.repository');
 const employeePolicies = require('./policies.employee');
+const workflowAudit = require('../workflow/workflowAudit.service');
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
+
+/**
+ * Actor fields for the shared workflow_audit_logs writer. actor_employee_id has
+ * an FK to employees(id), so we prefer the resolved employee id (or null) — never
+ * a raw admin id that might not be an employee — exactly like the assets module.
+ */
+function auditActor(user) {
+  return {
+    actorEmployeeId: user?.employeeId || user?.id || null,
+    actorName: user?.name || user?.full_name || user?.fullName || user?.email || null,
+  };
+}
 
 async function listPolicies(tenant, filters) {
   const pool = await getTenantPool(tenant.dbName);
@@ -23,25 +36,112 @@ async function createPolicy(tenant, user, data) {
     ...data,
     createdBy: user.id
   };
-  return repo.create(pool, payload);
+  const policy = await repo.create(pool, payload);
+
+  // P1: creating a policy already in 'Published' state notifies its audience.
+  if (String(policy.status) === 'Published') {
+    await employeePolicies.notifyAudienceToAcknowledge(tenant, pool, policy).catch(() => {});
+  }
+
+  // P5: audit (best-effort).
+  await workflowAudit.log(tenant, {
+    module: 'policies',
+    action: 'create',
+    entityType: 'policy',
+    entityId: policy.id,
+    ...auditActor(user),
+    detail: { status: policy.status, contentVersion: policy.contentVersion },
+  });
+  return policy;
 }
 
-async function updatePolicy(tenant, id, data) {
+async function updatePolicy(tenant, id, data, user) {
   const pool = await getTenantPool(tenant.dbName);
-  const updated = await repo.update(pool, id, data);
-  if (!updated) throw new ApiError(404, 'Policy not found');
-  return updated;
+  const { policy, transitionedToPublished, versionBumped } = await repo.update(pool, id, data);
+  if (!policy) throw new ApiError(404, 'Policy not found');
+
+  // P1/P2: (re)notify the audience only on a real transition into Published or a
+  // version bump (material change / explicit re-ack). Best-effort, post-commit.
+  if (transitionedToPublished || versionBumped) {
+    await employeePolicies.notifyAudienceToAcknowledge(tenant, pool, policy).catch(() => {});
+  }
+
+  // P5: audit the edit, and the version bump (= re-acknowledgement supersede) as
+  // its own event so compliance can see when acks were invalidated and why.
+  await workflowAudit.log(tenant, {
+    module: 'policies',
+    action: 'update',
+    entityType: 'policy',
+    entityId: policy.id,
+    ...auditActor(user),
+    detail: {
+      status: policy.status,
+      contentVersion: policy.contentVersion,
+      transitionedToPublished,
+      versionBumped,
+    },
+  });
+  if (versionBumped) {
+    await workflowAudit.log(tenant, {
+      module: 'policies',
+      action: 'version_bump',
+      entityType: 'policy',
+      entityId: policy.id,
+      ...auditActor(user),
+      detail: {
+        contentVersion: policy.contentVersion,
+        reason: data?.requireReacknowledgement === true ? 'requested' : 'material_change',
+      },
+    });
+  }
+  return policy;
 }
 
-async function deletePolicy(tenant, id) {
+async function deletePolicy(tenant, id, user) {
   const pool = await getTenantPool(tenant.dbName);
-  const deleted = await repo.remove(pool, id);
-  if (!deleted) throw new ApiError(404, 'Policy not found');
+  // P6: soft delete (archive) — retains acknowledgement history.
+  const archived = await repo.remove(pool, id);
+  if (!archived) throw new ApiError(404, 'Policy not found');
+
+  // P5: audit the archive (records the version that was retired).
+  await workflowAudit.log(tenant, {
+    module: 'policies',
+    action: 'archive',
+    entityType: 'policy',
+    entityId: Number(id),
+    ...auditActor(user),
+    detail: { contentVersion: Number(archived.content_version) || null },
+  });
   return true;
 }
 
 async function getCompliance(tenant, id) {
   const pool = await getTenantPool(tenant.dbName);
+  return repo.getAcknowledgements(pool, id);
+}
+
+/** Admin (POLICIES_MANAGE) read-only: list archived (soft-deleted) policies. */
+async function listArchivedPolicies(tenant) {
+  const pool = await getTenantPool(tenant.dbName);
+  return repo.findAllArchived(pool);
+}
+
+/** Admin read-only: an archived policy's detail (404 unless it is actually archived). */
+async function getArchivedPolicy(tenant, id) {
+  const pool = await getTenantPool(tenant.dbName);
+  const policy = await repo.findById(pool, id, { includeArchived: true });
+  if (!policy || !policy.archivedAt) throw new ApiError(404, 'Archived policy not found');
+  return policy;
+}
+
+/**
+ * Admin read-only: an archived policy's acknowledgement/tracking history. Closes
+ * the soft-delete loop — retained compliance history is reachable in-product.
+ */
+async function getArchivedCompliance(tenant, id) {
+  const pool = await getTenantPool(tenant.dbName);
+  const policy = await repo.findById(pool, id, { includeArchived: true });
+  if (!policy || !policy.archivedAt) throw new ApiError(404, 'Archived policy not found');
   return repo.getAcknowledgements(pool, id);
 }
 
@@ -57,7 +157,22 @@ async function getMyPolicy(tenant, user, policyId) {
 
 async function acknowledgePolicy(tenant, user, policyId) {
   const pool = await getTenantPool(tenant.dbName);
-  return employeePolicies.acknowledgeMyPolicy(pool, user, policyId);
+  const result = await employeePolicies.acknowledgeMyPolicy(pool, user, policyId);
+
+  // P5: audit only a genuinely new acknowledgement (covers first ack AND re-ack of
+  // a bumped version). Actor is the acknowledging employee (valid FK).
+  if (!result.alreadyAcknowledged) {
+    await workflowAudit.log(tenant, {
+      module: 'policies',
+      action: 'acknowledge',
+      entityType: 'policy',
+      entityId: Number(policyId),
+      actorEmployeeId: employeePolicies.resolveEmployeeId(user),
+      actorName: user?.name || user?.full_name || user?.fullName || user?.email || null,
+      detail: { contentVersion: result.acknowledgedVersion },
+    });
+  }
+  return result;
 }
 
 async function autoAssignForEmployee(tenant, employeeId) {
@@ -91,6 +206,9 @@ module.exports = {
   updatePolicy,
   deletePolicy,
   getCompliance,
+  listArchivedPolicies,
+  getArchivedPolicy,
+  getArchivedCompliance,
   listMyPolicies,
   getMyPolicy,
   acknowledgePolicy,

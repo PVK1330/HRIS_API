@@ -175,28 +175,60 @@ function withQuery(path, query) {
   return `${path}${path.includes('?') ? '&' : '?'}${query}`;
 }
 
-/** Creates a Stripe Checkout session for the chosen (or assigned) plan and returns the URL. */
-async function createCheckoutForTenant(tenantId, { planId, billingCycle = 'monthly', customerEmail, returnPath } = {}) {
-  const tenant = await loadTenant(tenantId);
-  if (!tenant) throw ApiError.notFound('Tenant not found');
-
-  // Use the plan the admin selected on the payment page; fall back to the assigned plan.
-  let chosenPlanId = planId != null && String(planId) !== '' ? String(planId) : tenant.plan_id;
-  if (chosenPlanId) {
-    const plan = await plansRepo.findById(chosenPlanId).catch(() => null);
-    if (!plan || plan.is_active === false) {
-      throw ApiError.badRequest('Selected plan is not available. Please choose another plan.');
-    }
-  }
-  if (!chosenPlanId) {
-    throw ApiError.badRequest('Please select a plan to continue.');
-  }
-
-  const base = (
+/** Platform-root fallback base for org return links. */
+function platformBase() {
+  return (
     process.env.FRONTEND_URL ||
     process.env.ADMIN_URL?.replace(/\/superadmin.*$/, '') ||
     'http://localhost:5173'
   ).replace(/\/$/, '');
+}
+
+/**
+ * Base URL the org admin must return to after Stripe. Under subdomain-per-tenant
+ * hosting the admin sits on e.g. https://demo-corp.app.com while FRONTEND_URL is the
+ * platform root — returning to the root drops the tenant session and bounces the user
+ * to the superadmin panel. So prefer the tenant's own origin (the browser's Origin
+ * header), validated to an http(s) origin, and fall back to the platform root.
+ */
+function resolveOrgBase(returnOrigin) {
+  if (typeof returnOrigin === 'string' && returnOrigin.trim()) {
+    try {
+      const u = new URL(returnOrigin.trim());
+      if (u.protocol === 'http:' || u.protocol === 'https:') return u.origin;
+    } catch {
+      /* malformed — fall back to the platform root below */
+    }
+  }
+  return platformBase();
+}
+
+/** Creates a Stripe Checkout session for the chosen (or assigned) plan and returns the URL. */
+async function createCheckoutForTenant(tenantId, { planId, billingCycle = 'monthly', customerEmail, returnPath, returnOrigin } = {}) {
+  const tenant = await loadTenant(tenantId);
+  if (!tenant) throw ApiError.notFound('Tenant not found');
+
+  // Use the plan the admin selected on the payment page; fall back to the assigned plan.
+  const chosenPlanId = planId != null && String(planId) !== '' ? String(planId) : tenant.plan_id;
+  if (!chosenPlanId) {
+    throw ApiError.badRequest('Please select a plan to continue.');
+  }
+  const plan = await plansRepo.findById(chosenPlanId).catch(() => null);
+  if (!plan || plan.is_active === false) {
+    throw ApiError.badRequest('Selected plan is not available. Please choose another plan.');
+  }
+
+  // Free plans (price 0) don't need Stripe — activate the subscription immediately
+  // and report back that no checkout was required.
+  const cycleKey = String(billingCycle || 'monthly').toLowerCase() === 'annual' ? 'annual' : 'monthly';
+  const price = cycleKey === 'annual' ? Number(plan.annual_price) : Number(plan.monthly_price);
+  if (!Number.isFinite(price) || price <= 0) {
+    const billing = await activateSubscription(tenantId, { via: 'free', planId: chosenPlanId });
+    return { free: true, billing };
+  }
+
+  // Return links must land on the tenant's own subdomain, not the platform root.
+  const base = resolveOrgBase(returnOrigin);
 
   // Find an existing pending payment to attach the session to (optional).
   let paymentId = null;

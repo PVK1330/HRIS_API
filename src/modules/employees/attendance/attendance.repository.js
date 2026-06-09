@@ -469,6 +469,29 @@ async function markOvertimePending(pool, id, client = pool) {
 }
 
 /**
+ * Auto-approve freshly-recorded overtime (used when the tenant's
+ * overtime_approval_workflow is 'Auto-approve'). Goes straight from 'None' to
+ * 'Approved', mirroring the legacy/hr approval timestamps so payroll/summary
+ * queries (which FILTER on overtime_status = 'Approved') pick it up.
+ */
+async function markOvertimeAutoApproved(pool, id, client = pool) {
+  const { rows } = await client.query(
+    `UPDATE attendance
+       SET overtime_status = 'Approved',
+           overtime_approved_at = NOW(),
+           overtime_forwarded_at = NOW(),
+           overtime_hr_approved_at = NOW(),
+           updated_at = NOW()
+     WHERE id = $1
+       AND COALESCE(overtime_hours, 0) > 0
+       AND COALESCE(overtime_status, 'None') = 'None'
+     RETURNING id`,
+    [id],
+  );
+  return rows[0] || null;
+}
+
+/**
  * Manually record overtime for an employee/date (Add Overtime). Creates the attendance
  * row if absent (with a neutral Present status) or updates the overtime fields on an
  * existing row. Does not touch punches. Returns the row with the joined employee name.
@@ -715,6 +738,7 @@ module.exports = {
   getPayrollSummary,
   markAbsentForDate,
   markOvertimePending,
+  markOvertimeAutoApproved,
   upsertOvertime,
   updateOvertimeFields,
   deleteOvertimeRecord,

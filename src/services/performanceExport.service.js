@@ -2,6 +2,7 @@
 
 const PdfKit = require('pdfkit');
 const ApiError = require('../utils/ApiError');
+const { assertEmployeeRecordAccess } = require('../utils/applyDataScope');
 
 const validExportTypes = ['csv', 'pdf'];
 
@@ -20,7 +21,7 @@ async function fetchCycles(pool) {
   }));
 }
 
-async function exportData(pool, options) {
+async function exportData(pool, options, auth) {
   const {
     employeeId,
     cycleId,
@@ -69,8 +70,9 @@ async function exportData(pool, options) {
 
   // 2. Fetch Employee Profile Details with Department and Manager
   const empResult = await pool.query(
-    `SELECT e.id, e.full_name as employee_name, e.emp_id as employee_code, 
-            d.name as department_name, 
+    `SELECT e.id, e.full_name as employee_name, e.emp_id as employee_code,
+            d.name as department_name, d.name as department,
+            e.reporting_manager_id, e.department_id,
             mgr.full_name as manager_name
      FROM employees e
      LEFT JOIN departments d ON e.department_id = d.id
@@ -82,6 +84,10 @@ async function exportData(pool, options) {
     throw ApiError.notFound('Employee not found.');
   }
   const employeeDetails = empResult.rows[0];
+
+  // Data-scope enforcement: a SELF/TEAM/DEPARTMENT user must not export another
+  // employee's performance record by supplying an arbitrary employeeId.
+  assertEmployeeRecordAccess(auth, employeeDetails);
 
   // 3. Fetch Performance Assessment matching employee and selected cycle/date range
   const assessmentQuery = `

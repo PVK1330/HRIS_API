@@ -23,7 +23,7 @@ const exportPerformanceData = asyncHandler(async (req, res) => {
     departmentId,
     employeeId,
     exportType,
-  });
+  }, req.auth);
 
   res.setHeader('Content-Type', result.contentType);
   res.setHeader('Content-Disposition', result.contentDisposition);

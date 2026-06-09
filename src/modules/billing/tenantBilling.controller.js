@@ -28,6 +28,10 @@ const checkout = asyncHandler(async (req, res) => {
     billingCycle: req.body.billingCycle,
     customerEmail: req.user.email,
     returnPath: req.body.returnPath,
+    // The tenant's own origin (e.g. https://demo-corp.app.com) so Stripe returns the
+    // admin to their subdomain. Header is set by the browser and CORS-allowlisted;
+    // the body value is a fallback for non-browser callers.
+    returnOrigin: req.get('origin') || req.body.returnOrigin,
   });
   return ApiResponse.ok(res, result, 'Checkout session created.');
 });

@@ -20,6 +20,52 @@ function getStripeClient(secretKey) {
   return new Stripe(String(secretKey).trim(), { apiVersion: '2024-06-20' });
 }
 
+// Stripe's minimum chargeable amount per currency, in that currency's major unit.
+// Stripe ALSO enforces this against the account's settlement currency after
+// converting the presentment amount — so this map only catches the obvious
+// "too small in its own currency" case. The cross-currency case (e.g. an INR
+// price charged on an AED-settling account) is caught by translateStripeError().
+const STRIPE_MIN_CHARGE = {
+  usd: 0.5, eur: 0.5, gbp: 0.3, aed: 2, sar: 2, qar: 2,
+  inr: 0.5, aud: 0.5, cad: 0.5, sgd: 0.5, nzd: 0.5, chf: 0.5, brl: 0.5,
+  dkk: 2.5, nok: 3, sek: 3, pln: 2, ron: 2, bgn: 1, czk: 15,
+  hkd: 4, huf: 175, jpy: 50, mxn: 10, myr: 2, thb: 10,
+};
+
+/** Fast pre-flight: reject before calling Stripe when the total is below the
+ *  presentment currency's own minimum. (Skips currencies we don't have a min for.) */
+function assertAboveStripeMinimum(total, currency) {
+  const code = String(currency).toLowerCase();
+  const min = STRIPE_MIN_CHARGE[code];
+  const upper = code.toUpperCase();
+  if (min != null && Number(total) < min) {
+    throw ApiError.badRequest(
+      `The amount (${Number(total).toFixed(2)} ${upper}) is below the minimum the payment `
+        + `provider can charge (${min} ${upper}). Please choose a plan priced at or above this amount.`,
+    );
+  }
+}
+
+function isStripeMinimumError(err) {
+  if (!err) return false;
+  if (err.code === 'amount_too_small') return true;
+  return /must convert to at least|amount must be at least|amount_too_small/i.test(String(err.message || ''));
+}
+
+/** Translates Stripe's minimum-amount rejection (incl. the cross-currency
+ *  "must convert to at least N fils" case) into a clean, actionable error. */
+function translateStripeError(err) {
+  if (isStripeMinimumError(err)) {
+    return ApiError.badRequest(
+      'This payment could not be started because the amount is below the minimum the connected '
+        + 'Stripe account accepts for its settlement currency. This usually means the plan price '
+        + 'or its currency does not match the Stripe account. '
+        + `(Provider detail: ${err.message})`,
+    );
+  }
+  return err;
+}
+
 function resolveFrontendBase() {
   return (
     process.env.FRONTEND_URL ||
@@ -84,6 +130,11 @@ async function createCheckoutSession({
   const taxLabel = currencySettings?.taxLabel || 'Tax';
   const taxRate = Number(currencySettings?.taxRate) || 0;
 
+  // Fail fast with a clean message if the grand total is below the provider minimum
+  // for the presentment currency (Stripe also re-checks this after converting to the
+  // account's settlement currency — that case is handled at the create() call below).
+  assertAboveStripeMinimum(amount + taxAmount, currency);
+
   const lineItems = [
     {
       price_data: {
@@ -112,27 +163,32 @@ async function createCheckoutSession({
     });
   }
 
-  const session = await stripe.checkout.sessions.create({
-    mode: 'payment',
-    locale: stripeLocaleForTimezone(platformTz),
-    customer_email: customerEmail || undefined,
-    line_items: lineItems,
-    success_url: successUrl || `${base}/superadmin/tenants?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: cancelUrl || `${base}/superadmin/tenants?stripe=cancelled`,
-    metadata: {
-      tenant_id: String(tenantId),
-      payment_id: paymentId ? String(paymentId) : '',
-      plan_id: String(planId),
-      billing_cycle: cycle,
-      platform_timezone: platformTz,
-      platform_currency: platformCurrency,
-      subtotal: amount.toFixed(2),
-      tax_label: taxLabel,
-      tax_rate: String(taxRate),
-      tax_amount: taxAmount.toFixed(2),
-      total: (amount + taxAmount).toFixed(2),
-    },
-  });
+  let session;
+  try {
+    session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      locale: stripeLocaleForTimezone(platformTz),
+      customer_email: customerEmail || undefined,
+      line_items: lineItems,
+      success_url: successUrl || `${base}/superadmin/tenants?stripe=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: cancelUrl || `${base}/superadmin/tenants?stripe=cancelled`,
+      metadata: {
+        tenant_id: String(tenantId),
+        payment_id: paymentId ? String(paymentId) : '',
+        plan_id: String(planId),
+        billing_cycle: cycle,
+        platform_timezone: platformTz,
+        platform_currency: platformCurrency,
+        subtotal: amount.toFixed(2),
+        tax_label: taxLabel,
+        tax_rate: String(taxRate),
+        tax_amount: taxAmount.toFixed(2),
+        total: (amount + taxAmount).toFixed(2),
+      },
+    });
+  } catch (err) {
+    throw translateStripeError(err);
+  }
 
   if (paymentId && session.id) {
     const sessionRef = String(session.id);

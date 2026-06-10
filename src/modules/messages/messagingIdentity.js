@@ -65,6 +65,10 @@ async function provisionEmployeeRow(pool, user) {
     const username = email.includes('@') ? email.split('@')[0] : email;
     const empId = await empRepo.getNextEmpId(pool);
 
+    // Race-safe: a concurrent socket/REST connect for the same login may insert
+    // first. ON CONFLICT on the unique work_email column means the loser of the
+    // race inserts nothing (no duplicate, no placeholder churn) and we fall back
+    // to re-resolving the existing row below.
     const { rows: newEmp } = await pool.query(
       `INSERT INTO employees (
          emp_id, full_name, work_email, username, portal_enabled, rbac_role_id,
@@ -88,6 +92,10 @@ async function provisionEmployeeRow(pool, user) {
       logger.info(`[messages] provisioned messaging employee ${id} for ${email}`);
       return id;
     }
+    // Lost the insert race (ON CONFLICT DO NOTHING returned no row) — resolve the
+    // row the winning connect created.
+    const raced = await findEmployeeByLogin(pool, email);
+    if (raced) return raced;
   } catch (err) {
     // emp_id race or any other write error — fall through to the re-select below.
     logger.error(`[messages] provision failed for ${email}:`, err.message);

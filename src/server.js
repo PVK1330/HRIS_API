@@ -37,6 +37,19 @@ async function bootstrap() {
     logger.debug('  GET  /uploads/logos/*         (static logo files)');
     logger.debug('  GET  /health');
 
+    // Single-runner guard: under PM2 cluster / multi-instance, only the leader schedules crons
+    // (otherwise the daily sweep double-fires and auto-approve/reject/month-close race). Sockets
+    // are already attached above, so non-leaders just skip the schedulers.
+    const { isCronLeader } = require('./utils/cronLeader');
+    if (!isCronLeader()) {
+      logger.info(
+        `[cron] not the cron leader — skipping all scheduled jobs ` +
+        `(NODE_APP_INSTANCE=${process.env.NODE_APP_INSTANCE ?? 'n/a'}, CRON_LEADER=${process.env.CRON_LEADER ?? 'unset'})`,
+      );
+      logger.info('Socket.io attached on /socket.io');
+      return;
+    }
+
     if (process.env.DISABLE_VISA_EXPIRY_CRON !== 'true') {
       try {
         const { startVisaExpiryAlertCron } = require('./jobs/visaExpiryAlert.job');

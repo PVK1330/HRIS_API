@@ -161,6 +161,20 @@ async function acceptOffer(tenant, token) {
   if (emp.onboarding_workflow_status === WORKFLOW_STATUS.ONBOARDING_COMPLETE) {
     throw ApiError.badRequest('Onboarding is already complete');
   }
+  // Idempotency: a second click on the accept link must NOT re-run the acceptance side
+  // effects (HR task assignment + audit). Current decision state lives on the employee row
+  // (loaded via findByToken). If already accepted, just hand back the sign URL again.
+  if (emp.onboarding_approval_status === 'Accepted') {
+    const { base, tenantSlug } = await resolveCandidatePortalContext(tenant.id);
+    const urls = buildCandidateUrls(base, token, tenantSlug);
+    return {
+      ...publicCandidateView(emp),
+      workflowStatus: emp.onboarding_workflow_status,
+      signUrl: urls.signUrl,
+      alreadyProcessed: true,
+      message: 'Offer already accepted.',
+    };
+  }
 
   await workflowRepo.setWorkflowFields(pool, emp.id, {
     onboarding_approval_status: 'Accepted',
@@ -191,6 +205,20 @@ async function rejectOffer(tenant, token, { reason } = {}) {
   await ensureMigrated(tenant.dbName);
   const emp = await workflowRepo.findByToken(pool, token);
   if (!emp) throw ApiError.notFound('Invalid or expired onboarding link');
+
+  // Idempotency: a second click on the reject link must NOT re-terminate the employee or
+  // re-notify HR. Current decision state lives on the employee row (loaded via findByToken).
+  if (emp.onboarding_workflow_status === WORKFLOW_STATUS.REJECTED
+      || emp.onboarding_approval_status === 'Rejected') {
+    return {
+      workflowStatus: WORKFLOW_STATUS.REJECTED,
+      alreadyProcessed: true,
+      message: 'Offer already rejected.',
+    };
+  }
+  if (emp.onboarding_workflow_status === WORKFLOW_STATUS.ONBOARDING_COMPLETE) {
+    throw ApiError.badRequest('Onboarding is already complete');
+  }
 
   await workflowRepo.setWorkflowFields(pool, emp.id, {
     onboarding_approval_status: 'Rejected',

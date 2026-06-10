@@ -34,7 +34,8 @@
     "repair:punch-employment-status:dry": "node src/scripts/repairEmploymentStatusForPunch.js",
     "backfill:policy-hash": "node src/scripts/backfillPolicyContentHash.js",
     "backfill:policy-hash:dry": "node src/scripts/backfillPolicyContentHash.js --dry-run",
-    "test:policies": "node --test src/tests/policies.lifecycle.test.js"
+    "test:policies": "node --test src/tests/policies.lifecycle.test.js",
+    "test:departments": "node --test src/tests/departments.lifecycle.test.js"
   },
   "keywords": [
     "pern",
@@ -48,6 +49,7 @@
   "license": "ISC",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1053.0",
+    "@socket.io/redis-adapter": "^8.3.0",
     "axios": "^1.16.0",
     "bcrypt": "^5.1.1",
     "bcryptjs": "^3.0.3",
@@ -59,6 +61,7 @@
     "express-rate-limit": "^8.5.0",
     "express-validator": "^7.2.0",
     "helmet": "^7.1.0",
+    "ioredis": "^5.4.1",
     "joi": "^18.2.1",
     "jsonwebtoken": "^9.0.2",
     "moment-timezone": "^0.6.2",
@@ -71,6 +74,7 @@
     "pg": "^8.13.1",
     "puppeteer": "^25.1.0",
     "qrcode": "^1.5.4",
+    "rate-limit-redis": "^4.2.0",
     "socket.io": "^4.8.3",
     "speakeasy": "^2.0.0",
     "stripe": "^22.1.0",

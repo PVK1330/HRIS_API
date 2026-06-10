@@ -15,10 +15,28 @@ const tenantSettingsService = require('../../tenantSettings/tenantSettings.servi
 const exportEngine = require('../attendance/attendanceExport.service');
 const attendanceCalc = require('../attendance/attendanceCalculation.service');
 const logger = require('../../../utils/logger');
+const workflowAudit = require('../../workflow/workflowAudit.service');
 
 function getPool(user) {
   if (!user?.db_name) throw ApiError.unauthorized('Tenant not found');
   return getTenantPool(user.db_name);
+}
+
+/**
+ * Actor fields for the shared workflow_audit_logs writer. actor_employee_id has an FK to
+ * employees(id), so prefer a resolved employee id (or null) — never a raw admin id that
+ * might not be an employee. Mirrors the policies / assets audit pattern.
+ */
+function auditActor(user, auth) {
+  return {
+    actorEmployeeId: user?.employeeId || auth?.employeeId || user?.id || null,
+    actorName: user?.name || user?.full_name || user?.fullName || user?.email || null,
+  };
+}
+
+/** Tenant handle for the audit writer (it reads dbName / db_name). */
+function auditTenant(user) {
+  return { dbName: user?.db_name };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -269,15 +287,21 @@ async function applyLeave(user, auth, data) {
     );
   }
 
-  // Notice Period Check
+  // Notice Period Check — measured in BUSINESS days (weekends + public holidays excluded),
+  // using the same working-day calendar (calcWorkingDays) as the leave-day calculation. The
+  // notice given = working days from today up to the day BEFORE the leave starts.
   if (leaveTypeCfg.notice_period_required > 0) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const from = new Date(fromDate);
-    const diffDays = Math.ceil((from - today) / (1000 * 60 * 60 * 24));
-    if (diffDays < leaveTypeCfg.notice_period_required) {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    let noticeDays = 0;
+    if (fromDate > todayStr) {
+      const db = new Date(`${fromDate}T12:00:00Z`);
+      db.setUTCDate(db.getUTCDate() - 1);
+      const dayBeforeStr = db.toISOString().slice(0, 10);
+      noticeDays = await calcWorkingDays(pool, todayStr, dayBeforeStr);
+    }
+    if (noticeDays < leaveTypeCfg.notice_period_required) {
       throw ApiError.badRequest(
-        `"${leaveTypeCfg.name}" requires at least ${leaveTypeCfg.notice_period_required} days of notice. Please select a later date.`
+        `"${leaveTypeCfg.name}" requires at least ${leaveTypeCfg.notice_period_required} working day(s) of notice. Please select a later date.`
       );
     }
   }
@@ -326,11 +350,18 @@ async function applyLeave(user, auth, data) {
     const balance = await ensureBalance(
       pool, data.employeeId, leaveTypeCfg.name, year, leaveTypeCfg.annual_entitlement_days
     );
-    const remaining = (balance.total_allocated + balance.carry_forward) - balance.used;
+    // Days already reserved by the employee's OTHER not-yet-rejected Pending requests of the
+    // same type/year. Only Approved days land in balance.used, so without subtracting these an
+    // employee could stack several pending requests that together blow past their entitlement.
+    const pendingDays = await repo.sumPendingDaysForType(
+      pool, data.employeeId, leaveTypeCfg.name, year
+    );
+    const remaining = (balance.total_allocated + balance.carry_forward) - balance.used - pendingDays;
     if (remaining < totalDays) {
       throw ApiError.badRequest(
         `Insufficient ${leaveTypeCfg.name} balance. ` +
-        `Requested: ${totalDays} day(s), Available: ${remaining} day(s).`
+        `Requested: ${totalDays} day(s), Available: ${remaining} day(s)` +
+        (pendingDays > 0 ? ` (${pendingDays} day(s) already reserved by pending requests).` : '.')
       );
     }
   }
@@ -369,11 +400,18 @@ async function applyLeave(user, auth, data) {
       const balance = await repo.lockBalanceForUpdate(
         client, data.employeeId, leaveTypeCfg.name, year, leaveTypeCfg.annual_entitlement_days
       );
-      const remaining = (balance.total_allocated + balance.carry_forward) - balance.used;
+      // Same pending-aware math as the step-7 pre-check, but authoritative under the row lock.
+      // Exclude the request we just inserted (it was created Approved, so it's already excluded
+      // by status, but pass its id to be explicit/future-proof).
+      const pendingDays = await repo.sumPendingDaysForType(
+        client, data.employeeId, leaveTypeCfg.name, year, request.id
+      );
+      const remaining = (balance.total_allocated + balance.carry_forward) - balance.used - pendingDays;
       if (remaining < totalDays) {
         throw ApiError.badRequest(
           `Insufficient ${leaveTypeCfg.name} balance. ` +
-          `Requested: ${totalDays} day(s), Available: ${remaining} day(s).`
+          `Requested: ${totalDays} day(s), Available: ${remaining} day(s)` +
+          (pendingDays > 0 ? ` (${pendingDays} day(s) already reserved by pending requests).` : '.')
         );
       }
       await repo.incrementUsed(client, data.employeeId, leaveTypeCfg.name, year, totalDays);
@@ -386,6 +424,23 @@ async function applyLeave(user, auth, data) {
   } finally {
     client.release();
   }
+
+  // Audit: record the leave request creation (best-effort, post-commit).
+  await workflowAudit.log(auditTenant(user), {
+    module: 'leave',
+    action: 'create',
+    entityType: 'leave_request',
+    entityId: request.id,
+    ...auditActor(user, auth),
+    detail: {
+      leaveType: leaveTypeCfg.name,
+      totalDays,
+      status: initialStatus,
+      fromDate,
+      toDate,
+      autoApproved: autoApprove,
+    },
+  });
 
   // 11. Notifications
   if (initialStatus === 'Pending Manager Approval') {
@@ -436,6 +491,17 @@ function isHrActor(user, auth) {
   return HR_ROLES.has(String(user?.role || '').toLowerCase());
 }
 
+// A "broad" approver acts by DATA SCOPE (department-wide or org-wide) and so is NOT restricted to
+// direct reports at the manager stage. Narrow approvers (TEAM/SELF scope) must be the actual
+// reporting manager. Keyed on SCOPE/capability — not a hardcoded role string — so a custom
+// approver role is handled by its scope. The old `user.role === 'manager'` check let ANY role
+// that wasn't literally 'manager' bypass the direct-report guard entirely.
+function hasBroadApprovalScope(user, auth) {
+  return isHrActor(user, auth)              // admin / HR / tenant-admin / ALL scope
+    || auth?.scope === 'DEPARTMENT'
+    || auth?.scope === 'DEPT_MANAGER';
+}
+
 /**
  * Two-stage approval workflow:
  *   Pending          --approve(manager)-->  Manager_Approved
@@ -484,9 +550,10 @@ async function processLeave(user, auth, id, { action, reason }) {
 
   } else if (action === 'approve') {
     if (request.status === 'Pending Manager Approval') {
-      // Stage 1 — Reporting Manager
+      // Stage 1 — Reporting Manager. Narrow-scope approvers may only approve their OWN direct
+      // reports; department/org-scoped approvers act by scope (already gated by data-scope access).
       if (
-        user.role === 'manager'
+        !hasBroadApprovalScope(user, auth)
         && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)
       ) {
         throw ApiError.forbidden('You can only approve requests for your direct reports.');
@@ -516,7 +583,7 @@ async function processLeave(user, auth, id, { action, reason }) {
   } else if (action === 'reject') {
     if (request.status === 'Pending Manager Approval') {
       if (
-        user.role === 'manager'
+        !hasBroadApprovalScope(user, auth)
         && Number(request.reporting_manager_id) !== Number(user.employeeId || user.id)
       ) {
         throw ApiError.forbidden('You can only reject requests for your direct reports.');
@@ -578,10 +645,21 @@ async function processLeave(user, auth, id, { action, reason }) {
         }
         await repo.incrementUsed(client, request.employee_id, request.leave_type, year, request.total_days);
       } else if (newStatus === 'Cancelled' && request.status === 'Approved') {
+        // Reverse the deduction in the SAME year it was made (ledger-correct).
         await repo.lockBalanceForUpdate(
           client, request.employee_id, request.leave_type, year, annualDays
         );
         await repo.incrementUsed(client, request.employee_id, request.leave_type, year, -request.total_days);
+        // Rollover boundary: if that year is already closed (carry-forward has rolled it into a
+        // later year), the freed days are stranded in a stale year — incrementUsed can't push a
+        // current-year balance below 0. Recompute the carry chain for this employee+type so the
+        // restored remaining propagates into the active year, capped by max_carry_forward.
+        const currentYear = new Date().getFullYear();
+        if (year < currentYear) {
+          await carryForward.reconcileEmployeeCarryForward(
+            client, request.employee_id, request.leave_type, year, currentYear
+          );
+        }
       }
     }
 
@@ -592,6 +670,24 @@ async function processLeave(user, auth, id, { action, reason }) {
   } finally {
     client.release();
   }
+
+  // Audit: record the state transition (approve / reject / cancel / submit). The action name
+  // is logged verbatim so approvals and rejections are distinguishable. Best-effort, post-commit.
+  await workflowAudit.log(auditTenant(user), {
+    module: 'leave',
+    action,
+    entityType: 'leave_request',
+    entityId: Number(id),
+    ...auditActor(user, auth),
+    detail: {
+      fromStatus: request.status,
+      toStatus: newStatus,
+      stage: stage || null,
+      reason: reason || null,
+      leaveType: request.leave_type,
+      totalDays: request.total_days,
+    },
+  });
 
   // Notifications (outside transaction).
   if (action === 'submit') {

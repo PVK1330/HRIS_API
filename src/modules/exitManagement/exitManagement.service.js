@@ -10,6 +10,7 @@ const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
 const resolver = require('./exitAccessResolver.service');
 const engine = require('./exitStageEngine.service');
+const separation = require('./exitSeparation.util');
 const logger = require('../../utils/logger');
 
 let notifications = null;
@@ -400,6 +401,24 @@ async function approveStage(tenant, id, exitUser, comments) {
       }
     }
 
+    // SEQUENTIAL mode: approvals must follow approver_order. Only the actor who fills
+    // the lowest still-pending slot may act; out-of-order approvals are rejected.
+    // (ALL / ANY / QUORUM are unaffected; the org-exit-admin override bypasses order.)
+    if (stage.approval_mode === 'SEQUENTIAL' && !exitUser?.isOrgExitAdmin) {
+      const slot = await engine.sequentialActiveSlot(client, request, stage);
+      if (slot) {
+        const isTurn =
+          (slot.kind === 'user' && Number(exitUser?.employeeId) === Number(slot.ref)) ||
+          (slot.kind === 'role' && Number(exitUser?.rbacRoleId) === Number(slot.ref)) ||
+          (slot.kind === 'dept' && Number(exitUser?.departmentId) === Number(slot.ref));
+        if (!isTurn) {
+          throw ApiError.badRequest(
+            'This stage requires sequential approval — it is not your turn yet. The next approver in order must approve first.',
+          );
+        }
+      }
+    }
+
     await recordAction(client, request, 'APPROVE', exitUser, comments);
     const result = await engine.advanceStage(client, request, stage);
     
@@ -567,10 +586,34 @@ async function escalateStage(tenant, id, exitUser, comments) {
     if (request.status !== 'IN_PROGRESS') throw ApiError.badRequest('This exit request is not active');
     const stage = await engine.getStage(client, request.current_stage_id);
 
+    // Resolve the escalation target: explicit user first, else the first member of the
+    // configured role.
+    let escalationTargetUserId = stage.escalation_to_user_id || null;
+    if (!escalationTargetUserId && stage.escalation_to_role_id) {
+      const { rows: ru } = await client.query(
+        `SELECT id FROM employees
+          WHERE rbac_role_id = $1 AND deleted_at IS NULL
+          ORDER BY id ASC LIMIT 1`,
+        [stage.escalation_to_role_id],
+      );
+      escalationTargetUserId = ru[0]?.id || null;
+    }
+
+    // A NOTIFY escalation with NO configured target (neither user nor role) would silently
+    // notify nobody specific — surface it loudly instead of a no-op. When a role IS configured
+    // but currently has no members, onEscalated still notifies org admins as the HR fallback.
+    if (stage.escalation_action === 'NOTIFY'
+        && !stage.escalation_to_user_id && !stage.escalation_to_role_id) {
+      throw ApiError.badRequest(
+        'This stage is configured to escalate by NOTIFY but has no escalation target ' +
+        '(no user or role). Set an escalation target in the stage configuration before escalating.',
+      );
+    }
+
     if (stage.escalation_action === 'REASSIGN' && (stage.escalation_to_user_id || stage.escalation_to_role_id)) {
-      // best-effort: move ownership toward the escalation target's department if a user is set
-      if (stage.escalation_to_user_id) {
-        const { rows: ed } = await client.query(`SELECT department_id FROM employees WHERE id = $1`, [stage.escalation_to_user_id]);
+      // best-effort: move ownership toward the escalation target's department if a user resolved
+      if (escalationTargetUserId) {
+        const { rows: ed } = await client.query(`SELECT department_id FROM employees WHERE id = $1`, [escalationTargetUserId]);
         if (ed[0]?.department_id) {
           await client.query(`UPDATE exit_requests SET current_owner_department_id = $1, updated_at = NOW() WHERE id = $2`, [ed[0].department_id, id]);
         }
@@ -584,7 +627,7 @@ async function escalateStage(tenant, id, exitUser, comments) {
     );
     await client.query('COMMIT');
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'escalate' });
-    events().onEscalated(tenant, Number(id), stage.escalation_to_user_id || null).catch((e) => logger.error('[exit] workflow event error', { err: e.message }));
+    events().onEscalated(tenant, Number(id), escalationTargetUserId).catch((e) => logger.error('[exit] workflow event error', { err: e.message }));
     return getExitRequest(tenant, id, exitUser);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -634,7 +677,7 @@ async function withdrawExitRequest(tenant, id, exitUser, reason) {
     if (Number(exitUser?.employeeId) !== Number(request.employee_id) && !exitUser?.isOrgExitAdmin) {
       throw ApiError.forbidden('You are not allowed to withdraw this exit request');
     }
-    await recordAction(client, request, 'COMMENT', exitUser, `Withdrawal: ${reason || 'requested by employee'}`);
+    await recordAction(client, request, 'WITHDRAW', exitUser, `Withdrawal: ${reason || 'requested by employee'}`);
     await client.query(
       `UPDATE exit_requests
          SET status = 'WITHDRAWN', withdrawal_status = 'approved', withdrawal_reason = $1,
@@ -642,11 +685,10 @@ async function withdrawExitRequest(tenant, id, exitUser, reason) {
              current_owner_department_id = NULL, updated_at = NOW()
        WHERE id = $2`, [reason || null, id],
     );
-    await client.query(
-      `UPDATE employees SET employment_status = 'Active', updated_at = NOW()
-       WHERE id = $1 AND employment_status IN ('Notice Period','Resigned')`,
-      [request.employee_id],
-    );
+    // Fully revert the employee to active using the SAME canonical field set that completion
+    // sets (employment_status + status + deleted_at) — see exitSeparation.util — so a withdrawn
+    // exit leaves no separation residue regardless of how far the workflow had progressed.
+    await separation.restoreEmployeeActive(client, request.employee_id);
     await client.query('COMMIT');
     emit(tenant, `tenant:${tenant.dbName}`, 'exit:workflow_updated', { exitRequestId: Number(id), action: 'withdraw' });
     events().onWithdrawn(tenant, Number(id), reason).catch((e) => logger.error('[exit] workflow event error', { err: e.message }));

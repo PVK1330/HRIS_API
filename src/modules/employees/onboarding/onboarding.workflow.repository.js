@@ -206,7 +206,7 @@ async function allMandatoryChecklistApproved(pool, employeeId) {
   const { rows } = await pool.query(
     `SELECT COUNT(*)::int AS total,
             COUNT(*) FILTER (
-              WHERE hr_review_status = 'Approved'
+              WHERE hr_review_status = 'Approved' AND upload_status = 'Uploaded'
             )::int AS approved
      FROM onboarding_checklist
      WHERE employee_id = $1 AND is_mandatory = true`,

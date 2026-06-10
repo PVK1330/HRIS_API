@@ -165,6 +165,21 @@ const env = Object.freeze({
     maxSize: (parseInt(process.env.UPLOAD_MAX_SIZE_MB, 10) || 2) * 1024 * 1024,
   },
 
+  // Optional Redis, used only for HORIZONTAL SCALING (multiple API instances):
+  //   - the Socket.IO Redis adapter (cross-instance message/presence fan-out), and
+  //   - a shared express-rate-limit store (one counter across all instances).
+  // Leave unset for single-instance / local dev — both consumers fall back to
+  // in-memory automatically. Provide EITHER REDIS_URL or REDIS_HOST(+PORT).
+  REDIS: {
+    url: process.env.REDIS_URL || '',
+    host: process.env.REDIS_HOST || '',
+    port: parseInt(process.env.REDIS_PORT, 10) || 6379,
+    password: process.env.REDIS_PASSWORD || '',
+    db: parseInt(process.env.REDIS_DB, 10) || 0,
+    tls: process.env.REDIS_TLS === 'true',
+    keyPrefix: process.env.REDIS_KEY_PREFIX || 'hris:',
+  },
+
   RATE_LIMIT: {
     // General API limiter — applies to every (non-static, non-preflight) request,
     // per client IP. A data-rich SPA fires many calls per page load plus polling,

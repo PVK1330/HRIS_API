@@ -38,9 +38,20 @@ const DEFAULT_CHECKLIST = [
 
 const TOKEN_TTL_DAYS = 30;
 
+// Onboarding progresses through exactly three numbered steps:
+//   1 = offer sent / accepted / rejected
+//   2 = signed offer uploaded (documents milestone)
+//   3 = onboarding complete
+// onboarding_step is persisted with GREATEST(...) (monotonic), so an out-of-range value
+// would stick permanently — callers must validate against this range before writing.
+const MIN_ONBOARDING_STEP = 1;
+const MAX_ONBOARDING_STEP = 3;
+
 module.exports = {
   WORKFLOW_STATUS,
   WORKFLOW_STATUS_LABELS,
   DEFAULT_CHECKLIST,
   TOKEN_TTL_DAYS,
+  MIN_ONBOARDING_STEP,
+  MAX_ONBOARDING_STEP,
 };

@@ -36,17 +36,19 @@ async function processCarryForward(pool, targetYear) {
     const carry = carryAllowed ? Math.max(0, Math.min(remaining, cap)) : 0;
     const annual = Math.max(0, r.annual_entitlement_days || 0);
 
-    // Insert a fresh target-year balance, or just refresh its carry-forward if the row
-    // already exists (e.g. employee already applied for leave in the new year). We never
-    // clobber `used` on an existing row, and only seed total_allocated when it is still 0.
+    // Insert a fresh target-year balance, or reconcile an existing row (e.g. the employee already
+    // applied for leave in the new year). We never clobber `used`, and total_allocated is
+    // RECONCILED to the leave type's CURRENT annual entitlement on every run — `total_allocated`
+    // is just the annual figure (carry lives separately in `carry_forward`), so assigning the
+    // fresh value is a refresh, not an addition: no double-counting. The old "only seed when 0"
+    // rule froze total_allocated at its first value, so a mid-year entitlement change never
+    // propagated and total_allocated drifted out of sync with the entitlement on re-run.
     await pool.query(
       `INSERT INTO leave_balances (employee_id, leave_type, year, total_allocated, used, carry_forward)
        VALUES ($1, $2, $3, $4, 0, $5)
        ON CONFLICT (employee_id, leave_type, year) DO UPDATE SET
          carry_forward   = EXCLUDED.carry_forward,
-         total_allocated = CASE WHEN leave_balances.total_allocated = 0
-                                THEN EXCLUDED.total_allocated
-                                ELSE leave_balances.total_allocated END,
+         total_allocated = EXCLUDED.total_allocated,
          updated_at      = NOW()`,
       [r.employee_id, r.leave_type, year, annual, carry],
     );
@@ -58,4 +60,43 @@ async function processCarryForward(pool, targetYear) {
   return { targetYear: year, prevYear, processed, carried };
 }
 
-module.exports = { processCarryForward };
+/**
+ * Targeted carry-forward reconcile for ONE employee + leave type across the year chain
+ * (startYear → endYear). Recomputes each subsequent year's `carry_forward` from the prior year's
+ * (now-corrected) remaining, capped at the leave type's max_carry_forward — so when a cross-year
+ * leave cancellation restores `used` in a closed prior year, those freed days propagate forward
+ * into the employee's active balance without re-sweeping the whole tenant. Carry is a fresh
+ * min(remaining, cap) each step, never additive → no double-counting. `db` may be a pool or a
+ * transaction client.
+ */
+async function reconcileEmployeeCarryForward(db, employeeId, leaveType, startYear, endYear) {
+  for (let y = startYear; y < endYear; y += 1) {
+    const { rows } = await db.query(
+      `SELECT lb.total_allocated, lb.used, lb.carry_forward,
+              lt.annual_entitlement_days, lt.carry_forward_allowed, lt.max_carry_forward_days
+         FROM leave_balances lb
+         JOIN leave_types lt
+           ON LOWER(TRIM(lt.name)) = LOWER(TRIM(lb.leave_type)) AND lt.is_active = true
+        WHERE lb.employee_id = $1 AND LOWER(TRIM(lb.leave_type)) = LOWER(TRIM($2)) AND lb.year = $3`,
+      [employeeId, leaveType, y],
+    );
+    if (!rows.length) continue; // no source-year balance → nothing to carry forward
+    const r = rows[0];
+    const carryAllowed = r.carry_forward_allowed !== false;
+    const remaining = Math.max(0, (r.total_allocated + r.carry_forward) - r.used);
+    const cap = Math.max(0, r.max_carry_forward_days || 0);
+    const carry = carryAllowed ? Math.max(0, Math.min(remaining, cap)) : 0;
+    const annual = Math.max(0, r.annual_entitlement_days || 0);
+    // Seed the next year's balance if absent, else just refresh its carry_forward (preserve used).
+    await db.query(
+      `INSERT INTO leave_balances (employee_id, leave_type, year, total_allocated, used, carry_forward)
+       VALUES ($1, $2, $3, $4, 0, $5)
+       ON CONFLICT (employee_id, leave_type, year) DO UPDATE SET
+         carry_forward = EXCLUDED.carry_forward,
+         updated_at    = NOW()`,
+      [employeeId, leaveType, y + 1, annual, carry],
+    );
+  }
+}
+
+module.exports = { processCarryForward, reconcileEmployeeCarryForward };

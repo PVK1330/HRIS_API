@@ -45,7 +45,7 @@ const exportList = asyncHandler(async (req, res) => {
 });
 
 const listManagers = asyncHandler(async (req, res) => {
-  const managers = await service.listDepartmentManagers(req.tenant);
+  const managers = await service.listDepartmentManagers(req.tenant, req.query);
   return ApiResponse.ok(res, managers, 'Managers retrieved successfully');
 });
 
@@ -68,8 +68,10 @@ const update = asyncHandler(async (req, res) => {
 });
 
 const remove = asyncHandler(async (req, res) => {
-  await service.deleteDepartment(req.tenant, req.params.id);
-  return ApiResponse.ok(res, null, 'Department archived successfully');
+  const result = await service.deleteDepartment(req.tenant, req.params.id, {
+    force: req.query.force ?? req.body?.force,
+  });
+  return ApiResponse.ok(res, result, 'Department archived successfully');
 });
 
 module.exports = {

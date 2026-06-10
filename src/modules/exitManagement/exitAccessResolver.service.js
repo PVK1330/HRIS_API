@@ -243,6 +243,14 @@ function permittedActionsFor(accessCtx) {
   if (mutable && ownsNow) {
     for (const v of STAGE_ACTION_VERBS) actions.add(v);
   }
+  // Withdrawal is the data subject's own action (or an org exit admin's), allowed only while
+  // the request is still active. Granting a DISTINCT 'withdraw' action (instead of relying on
+  // the broadly-held 'view') stops any viewer from cancelling someone else's exit. The service
+  // re-checks subject/admin ownership as defense-in-depth.
+  const withdrawable = wfCtx.status === 'SUBMITTED' || wfCtx.status === 'IN_PROGRESS';
+  if (withdrawable && (accessCtx.isSubject || accessCtx.isOrgExitAdmin)) {
+    actions.add('withdraw');
+  }
   // previous-stage edit ONLY if the current stage config allows it AND user owned a prior stage
   if (mutable && accessCtx.completedPrevStage && wfCtx.allowPreviousEdit) {
     actions.add('comment'); // limited write-back; never approve/reject of current stage

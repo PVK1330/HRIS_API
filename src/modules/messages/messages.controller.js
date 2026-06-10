@@ -26,7 +26,7 @@ const getMessages = asyncHandler(async (req, res) => {
 });
 
 const sendMessage = asyncHandler(async (req, res) => {
-  const data = await service.sendMessage(req.user, req.params.id, req.body.body);
+  const data = await service.sendMessage(req.user, req.params.id, req.body.body, req.body.clientId);
   return ApiResponse.created(res, { message: data }, 'Message sent');
 });
 

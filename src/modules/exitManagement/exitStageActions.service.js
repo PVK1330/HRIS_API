@@ -85,63 +85,123 @@ async function getRequestEmployeeId(pool, requestId) {
   return rows[0].employee_id;
 }
 
-/** Every asset currently/previously assigned to the exiting employee. Outstanding
- *  ('Issued') first so the clearance owner sees what is still to be collected. */
+/** Every asset currently/previously assigned to the exiting employee, read from the
+ *  `assets` source-of-truth table (the Asset Management module's live assignment table;
+ *  `employee_assets` is legacy and no longer written, so seeding/list/return must all use
+ *  `assets` to stay in sync). Columns are aliased to the response contract the UI already
+ *  consumes (asset_tag/asset_name/category) and the assets-vocabulary status 'Assigned' is
+ *  surfaced as 'Issued' so the existing UI (which keys on 'Issued'/'Returned') is unchanged.
+ *  Outstanding ('Issued') first so the clearance owner sees what is still to be collected. */
 async function listEmployeeAssets(tenant, requestId) {
   const pool = await getTenantPool(tenant.dbName);
   const employeeId = await getRequestEmployeeId(pool, requestId);
   const { rows } = await pool.query(
-    `SELECT id, asset_tag, asset_name, category, serial_number, condition, status,
-            assigned_date, returned_date, notes
-     FROM employee_assets
-     WHERE employee_id = $1
-     ORDER BY (status = 'Issued') DESC, category, asset_name`,
+    `SELECT a.id,
+            a.asset_id                                               AS asset_tag,
+            COALESCE(ac.name, a.type)                                AS asset_name,
+            ac.name                                                  AS category,
+            a.serial_number,
+            a.condition,
+            CASE WHEN a.status = 'Assigned' THEN 'Issued' ELSE a.status END AS status,
+            a.issue_date                                             AS assigned_date,
+            NULL::date                                               AS returned_date,
+            a.notes
+     FROM assets a
+     LEFT JOIN asset_categories ac ON ac.id = a.category_id
+     WHERE a.employee_id = $1
+     ORDER BY (a.status = 'Assigned') DESC, ac.name, a.type`,
     [employeeId],
   );
   const outstanding = rows.filter((r) => r.status === 'Issued').length;
   return { assets: rows, outstanding, total: rows.length };
 }
 
-/** Mark one of the employee's assets returned (clearance action). Guarded by the route's
- *  authorizeExitAccess({action:'complete_checklist'}) — the caller owns the current stage. */
+/** Mark one of the employee's assets returned (clearance action) on the `assets`
+ *  source-of-truth table, and keep the seeded ASSET_RETURN checklist item in lock-step so a
+ *  block_until_checklist_complete stage can actually advance. Asset write + checklist update run
+ *  in one transaction (so the two never drift). The UI speaks the legacy vocabulary
+ *  ('Issued'/'Returned'); we map it to the assets vocabulary ('Assigned'/'Returned') on write.
+ *  Guarded by the route's authorizeExitAccess({action:'complete_checklist'}). */
 async function markAssetReturned(tenant, requestId, assetId, data, actor) {
   const pool = await getTenantPool(tenant.dbName);
   const employeeId = await getRequestEmployeeId(pool, requestId);
 
-  const { rows: existing } = await pool.query(
-    `SELECT * FROM employee_assets WHERE id = $1 AND employee_id = $2`,
-    [assetId, employeeId],
-  );
-  if (!existing.length) throw ApiError.notFound('Asset not found for this employee');
+  // Map the UI status onto the assets-table vocabulary. 'Issued' (the UI's "undo" value)
+  // means "still assigned" → 'Assigned'. Anything unexpected defaults to 'Returned'.
+  const UI_TO_ASSET = { Issued: 'Assigned', Returned: 'Returned', Lost: 'Lost', Damaged: 'Damaged' };
+  const assetStatus = UI_TO_ASSET[data.status] || 'Returned';
+  const stillOutstanding = assetStatus === 'Assigned';
 
-  // status: 'Returned' (default) — but allow recording 'Lost'/'Damaged', or reverting to 'Issued'.
-  const status = ['Issued', 'Returned', 'Lost', 'Damaged'].includes(data.status)
-    ? data.status : 'Returned';
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  const { rows } = await pool.query(
-    `UPDATE employee_assets
-       SET status = $1,
-           returned_date = ${status === 'Issued' ? 'NULL' : 'CURRENT_DATE'},
-           condition = COALESCE($2, condition),
-           notes = COALESCE($3, notes),
-           updated_at = NOW()
-     WHERE id = $4 AND employee_id = $5
-     RETURNING id, asset_tag, asset_name, category, serial_number, condition, status,
-               assigned_date, returned_date, notes`,
-    [status, data.condition || null, data.notes || null, assetId, employeeId],
-  );
-  const updated = rows[0];
-  if (updated && status === 'Returned') {
-    const assetsService = require('../assets/assets.service');
-    assetsService.logAssetReturned(
-      tenant,
-      assetId,
-      employeeId,
-      { employeeId: actor?.employeeId, actorName: actor?.actorName },
-      { status, notes: data.notes },
-    ).catch((e) => { logger.error('[exit] workflow event error', { err: e.message }); return null; });
+    const { rows: existing } = await client.query(
+      `SELECT id FROM assets WHERE id = $1 AND employee_id = $2`,
+      [assetId, employeeId],
+    );
+    if (!existing.length) throw ApiError.notFound('Asset not found for this employee');
+
+    // `assets` has no returned_date column, and we keep employee_id so the asset still shows
+    // in the employee's clearance list (rendered line-through once returned). updated_at marks it.
+    const { rows } = await client.query(
+      `UPDATE assets
+         SET status = $1,
+             condition = COALESCE($2, condition),
+             notes = COALESCE($3, notes),
+             updated_at = NOW()
+       WHERE id = $4 AND employee_id = $5
+       RETURNING id,
+                 asset_id AS asset_tag,
+                 type     AS asset_name,
+                 serial_number,
+                 condition,
+                 CASE WHEN status = 'Assigned' THEN 'Issued' ELSE status END AS status,
+                 notes`,
+      [assetStatus, data.condition || null, data.notes || null, assetId, employeeId],
+    );
+
+    // Keep the seeded ASSET_RETURN checklist item in lock-step with the asset, matched by the
+    // asset PK stored in data.asset_id at seed time (exitStageEngine.seedStageEntry):
+    //   returned/lost/damaged -> COMPLETED (clears the block_until_checklist_complete gate)
+    //   reverted to Assigned  -> PENDING   (re-blocks the gate)
+    if (stillOutstanding) {
+      await client.query(
+        `UPDATE exit_request_checklist_items
+            SET status = 'PENDING', completed_at = NULL, completed_by = NULL, updated_at = NOW()
+          WHERE exit_request_id = $1 AND item_type = 'ASSET_RETURN' AND data->>'asset_id' = $2`,
+        [requestId, String(assetId)],
+      );
+    } else {
+      await client.query(
+        `UPDATE exit_request_checklist_items
+            SET status = 'COMPLETED', completed_at = NOW(), completed_by = $1, updated_at = NOW()
+          WHERE exit_request_id = $2 AND item_type = 'ASSET_RETURN' AND data->>'asset_id' = $3
+            AND status NOT IN ('COMPLETED','SKIPPED','NA')`,
+        [actor?.employeeId || null, requestId, String(assetId)],
+      );
+    }
+
+    await client.query('COMMIT');
+
+    const updated = rows[0];
+    if (updated && assetStatus === 'Returned') {
+      const assetsService = require('../assets/assets.service');
+      assetsService.logAssetReturned(
+        tenant,
+        assetId,
+        employeeId,
+        { employeeId: actor?.employeeId, actorName: actor?.actorName },
+        { status: assetStatus, notes: data.notes },
+      ).catch((e) => { logger.error('[exit] workflow event error', { err: e.message }); return null; });
+    }
+    return updated;
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch { /* tx already aborted */ }
+    throw e;
+  } finally {
+    client.release();
   }
-  return updated;
 }
 
 async function addAttachment(tenant, requestId, stageId, file, meta, actor) {

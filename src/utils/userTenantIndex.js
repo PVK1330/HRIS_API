@@ -147,10 +147,26 @@ async function backfillTenant(tenantId, dbName) {
     ),
   ]);
 
-  const entries = [
+  const rawEntries = [
     ...admins.map((r) => [normalizeLoginId(r.email), tenantId, 'admin']),
     ...employees.map((r) => [normalizeLoginId(r.work_email), tenantId, 'employee']),
-  ].filter(([e]) => Boolean(e));
+  ];
+
+  // De-duplicate by the ON CONFLICT key (normalized_email, tenant_id). tenant_id is
+  // constant for this call, so we key on normalized_email. When the same email is
+  // BOTH an active admin and a portal employee in this tenant, keep 'admin' (the
+  // privileged identity). Without this, a key appearing twice in one statement makes
+  // Postgres reject the whole batch with "ON CONFLICT DO UPDATE command cannot affect
+  // row a second time", and the tenant silently falls back to the slow login scan.
+  const byKey = new Map();
+  for (const [email, tid, userType] of rawEntries) {
+    if (!email) continue;
+    const existing = byKey.get(email);
+    if (!existing || (existing[2] !== 'admin' && userType === 'admin')) {
+      byKey.set(email, [email, tid, userType]);
+    }
+  }
+  const entries = Array.from(byKey.values());
 
   if (!entries.length) return;
 

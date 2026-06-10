@@ -14,7 +14,7 @@ const docRepo = require('../documents/documents.repository');
 const { assertEmployeeRecordAccess } = require('../../../utils/applyDataScope');
 const mailer = require('./onboarding.mailer');
 const workflowRepo = require('./onboarding.workflow.repository');
-const { WORKFLOW_STATUS, WORKFLOW_STATUS_LABELS } = require('./onboarding.workflow');
+const { WORKFLOW_STATUS, WORKFLOW_STATUS_LABELS, MIN_ONBOARDING_STEP, MAX_ONBOARDING_STEP } = require('./onboarding.workflow');
 const { generateOfferLetterPdf } = require('./offerPdf.generator');
 const { resolveCandidatePortalContext, buildCandidateUrls } = require('./candidatePortalUrl');
 const notifService = require('../../notifications/notifications.service');
@@ -41,11 +41,35 @@ async function resolveHrInboxEmails(user) {
         [user.tenant_id],
       );
       if (rows[0]?.admin_email) return [rows[0].admin_email];
-      if (rows[0]?.name) return [];
+      // Only a tenant NAME is configured (no admin_email). A name is not an address, so
+      // fall back to the tenant's own active admin users' emails rather than returning
+      // nobody (the old behaviour silently skipped the acceptance email + attachments).
     } catch (err) {
       logger.warn(`Tenant HR email lookup failed: ${err.message}`);
     }
   }
+
+  // Fallback: resolve a usable inbox from the tenant DB's active admin users.
+  if (user?.db_name) {
+    try {
+      const pool = getTenantPool(user.db_name);
+      const { rows } = await pool.query(
+        `SELECT email FROM admin_users
+          WHERE status = 'active' AND email IS NOT NULL AND TRIM(email) <> ''
+          ORDER BY id ASC`,
+      );
+      const adminEmails = rows.map((r) => r.email.trim()).filter(Boolean);
+      if (adminEmails.length) return adminEmails;
+    } catch (err) {
+      logger.warn(`Tenant admin-user HR email fallback failed: ${err.message}`);
+    }
+  }
+
+  logger.warn(
+    '[onboarding] No HR inbox could be resolved (no ONBOARDING_HR_EMAIL/HR_SHARED_EMAIL env, ' +
+    `no tenant admin_email, no active admin users for tenant_id=${user?.tenant_id ?? 'unknown'}). ` +
+    'Acceptance email with ID-proof/resume attachments will be skipped.',
+  );
   return [];
 }
 
@@ -189,7 +213,13 @@ async function notifyStepCompleted(user, employeeId, { step = 1 } = {}, auth = n
   if (!emp) throw ApiError.notFound('Employee not found');
   if (auth) assertEmployeeRecordAccess(auth, emp);
 
-  const stepNum = Math.max(1, parseInt(String(step), 10) || 1);
+  // Clamp to the workflow's real step range (1–3). onboarding_step is written with a
+  // monotonic GREATEST(...), so an out-of-range value would stick permanently. The route
+  // already rejects out-of-range; this is defense-in-depth for any other caller.
+  const stepNum = Math.min(
+    MAX_ONBOARDING_STEP,
+    Math.max(MIN_ONBOARDING_STEP, parseInt(String(step), 10) || MIN_ONBOARDING_STEP),
+  );
   await workflowRepo.patchOnboardingFields(pool, employeeId, { onboarding_step: stepNum });
 
   const companyName = await resolveCompanyName(user);
@@ -718,7 +748,10 @@ async function uploadSignedOfferByHr(user, employeeId, file, auth = null) {
   if (!file?.buffer) throw ApiError.badRequest('File is required');
 
   const docService = require('../documents/documents.service');
-  const created = await docService.createDocument(
+  // createDocument returns { document }, NOT the row itself — destructure it, otherwise
+  // `created.id` is undefined and signed_offer_document_id is persisted as null, which
+  // blocks the completion path forever.
+  const { document } = await docService.createDocument(
     user,
     employeeId,
     {
@@ -729,9 +762,12 @@ async function uploadSignedOfferByHr(user, employeeId, file, auth = null) {
     file,
     auth,
   );
+  if (!document?.id) {
+    throw ApiError.internal('Failed to store the signed offer document');
+  }
 
   await workflowRepo.setWorkflowFields(pool, employeeId, {
-    signed_offer_document_id: created.id,
+    signed_offer_document_id: document.id,
     onboarding_workflow_status: WORKFLOW_STATUS.DOCUMENTS_PENDING,
     onboarding_step: 2,
     onboarding_approval_status: 'Accepted',
@@ -756,7 +792,7 @@ async function uploadSignedOfferByHr(user, employeeId, file, auth = null) {
   }
 
   return {
-    documentId: created.id,
+    documentId: document.id,
     workflowStatus: WORKFLOW_STATUS.DOCUMENTS_PENDING,
     message: 'Signed offer letter stored. Document checklist is now active.',
   };

@@ -187,6 +187,116 @@ async function autoApproveManagerStage(pool, tenantDb, record, settings) {
   }
 }
 
+// ─── Generalized rescue: auto-approve a stale stage at ANY level ──────────────
+// Extends the manager-absent rescue to the department and HR stages, so a request stuck because
+// the dept head or HR is absent ESCALATES (its stuck stage is approved and it advances to the
+// next pending stage) instead of being auto-rejected.
+
+const REG_STAGE_ORDER = ['manager', 'department', 'hr'];
+const REG_STAGE_COLS = {
+  manager:    { statusCol: 'manager_approval_status',    atCol: 'manager_approved_at' },
+  department: { statusCol: 'department_approval_status', atCol: 'department_approved_at' },
+  hr:         { statusCol: 'hr_approval_status',         atCol: 'hr_approved_at' },
+};
+
+/** Stale Pending regularizations at ANY active stage (manager / department / hr). */
+async function findStuckRegularizations(pool, maxDays) {
+  const days = Math.max(1, Number(maxDays) || 3);
+  const { rows } = await pool.query(
+    `SELECT a.id, a.employee_id, TO_CHAR(a.date, 'YYYY-MM-DD') AS date,
+            a.reg_current_stage,
+            a.manager_approval_status, a.department_approval_status, a.hr_approval_status,
+            a.updated_at, e.full_name AS employee_name
+     FROM attendance a
+     JOIN employees e ON e.id = a.employee_id AND e.deleted_at IS NULL
+     WHERE a.regularization_status = 'Pending'
+       AND a.reg_current_stage IN ('manager','department','hr')
+       AND a.updated_at < NOW() - ($1::int * INTERVAL '1 day')
+     ORDER BY a.updated_at ASC`,
+    [days],
+  );
+  return rows;
+}
+
+/**
+ * Approve whichever stage the stale request is stuck at and advance to the next still-Pending
+ * stage; finalize as Approved when no later stage remains. Mirrors autoApproveManagerStage but
+ * for any stage. Stage identifiers are whitelisted (REG_STAGE_COLS), so building the column
+ * names into the SQL is safe — only $1/$2/$3 carry external data.
+ */
+async function autoApproveStuckStage(pool, tenantDb, record, settings) {
+  const days = settings?.regularization_auto_approve_after_days ?? 3;
+  const stage = record.reg_current_stage;
+  const cur = REG_STAGE_COLS[stage];
+  if (!cur) return null; // unknown / 'done' — nothing to rescue
+
+  const later = REG_STAGE_ORDER.slice(REG_STAGE_ORDER.indexOf(stage) + 1);
+  const nextStageExpr = later.length
+    ? `CASE ${later.map((s) => `WHEN ${REG_STAGE_COLS[s].statusCol} = 'Pending' THEN '${s}'`).join(' ')} ELSE 'done' END`
+    : `'done'`;
+  const anyLaterPending = later.length
+    ? later.map((s) => `${REG_STAGE_COLS[s].statusCol} = 'Pending'`).join(' OR ')
+    : 'FALSE';
+
+  const sql =
+    `UPDATE attendance
+       SET ${cur.statusCol} = 'Approved',
+           ${cur.atCol} = NOW(),
+           reg_current_stage = ${nextStageExpr},
+           regularization_status = CASE WHEN ${anyLaterPending} THEN 'Pending' ELSE 'Approved' END,
+           status = CASE WHEN ${anyLaterPending} THEN status ELSE 'Regularization Approved' END,
+           regularization_remarks = $2,
+           regularized_at = NOW(),
+           updated_at = NOW()
+     WHERE id = $1 AND regularization_status = 'Pending' AND reg_current_stage = $3
+     RETURNING *`;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(sql, [
+      record.id,
+      `Auto-approved ${stage} stage after ${days} day(s) (${stage} approver absent)`,
+      stage,
+    ]);
+    await client.query('COMMIT');
+
+    const updated = rows[0];
+    if (!updated) return null;
+
+    await audit.log(pool, {
+      attendanceId: record.id,
+      employeeId: record.employee_id,
+      action: `attendance.cron.auto_approve_${stage}_absent`,
+      oldValue: record,
+      newValue: updated,
+      performedBy: null,
+      ipAddress: null,
+      deviceInfo: 'attendance-cron',
+    });
+
+    try {
+      if (updated.regularization_status === 'Approved') {
+        await notify.notifyRegApproved(pool, tenantDb, {
+          employeeId: record.employee_id, date: record.date, entityId: record.id,
+        });
+      } else {
+        await notify.notifyRegForwarded(pool, tenantDb, {
+          employeeId: record.employee_id, date: record.date, entityId: record.id,
+          nextStage: updated.reg_current_stage,
+        });
+      }
+    } catch (_) { /* non-blocking */ }
+
+    return updated;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 async function processAutoApprovals(pool, tenantDb) {
   const settings = await calc.loadSettings(pool);
   if (settings?.regularization_auto_approve_enabled !== true) {
@@ -197,11 +307,13 @@ async function processAutoApprovals(pool, tenantDb) {
     return { approved: 0, skipped: true };
   }
 
-  const stuck = await findStuckManagerStageRegularizations(pool, maxDays);
+  // Rescue stale requests at ANY stage (manager / dept / HR) so an absent approver at a later
+  // stage escalates the request instead of letting auto-reject reject it.
+  const stuck = await findStuckRegularizations(pool, maxDays);
   let approved = 0;
   for (const row of stuck) {
     try {
-      const res = await autoApproveManagerStage(pool, tenantDb, row, settings);
+      const res = await autoApproveStuckStage(pool, tenantDb, row, settings);
       if (res) approved += 1;
     } catch (err) {
       const logger = require('../../../utils/logger');
@@ -217,5 +329,7 @@ module.exports = {
   processAutoRejections,
   findStuckManagerStageRegularizations,
   autoApproveManagerStage,
+  findStuckRegularizations,
+  autoApproveStuckStage,
   processAutoApprovals,
 };

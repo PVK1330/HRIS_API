@@ -1,6 +1,7 @@
 'use strict';
 
 const logger = require('../../utils/logger');
+const separation = require('./exitSeparation.util');
 
 /**
  * exitStageEngine — stage-advance algorithm + status transitions for the workflow engine.
@@ -99,6 +100,30 @@ async function isStageSatisfied(client, request, stage) {
   }
 }
 
+/**
+ * SEQUENTIAL ordering helper. Returns the approver slot currently allowed to act —
+ * the lowest-`approver_order` slot not yet satisfied this occurrence — or null when
+ * every slot has already approved (stage fully satisfied). Slots are unioned from
+ * the three approver tables and ordered by approver_order (NULLS LAST) with a stable
+ * tiebreak; the active index is the number of APPROVE rows recorded this occurrence
+ * (one APPROVE fills one slot, in order). The caller matches the acting user against
+ * the returned slot { kind: 'user'|'role'|'dept', ref }.
+ */
+async function sequentialActiveSlot(client, request, stage) {
+  const { rows: slots } = await client.query(
+    `SELECT 'user' AS kind, employee_id  AS ref, approver_order, id FROM exit_stage_users       WHERE stage_id = $1
+     UNION ALL
+     SELECT 'role' AS kind, role_id       AS ref, approver_order, id FROM exit_stage_roles       WHERE stage_id = $1
+     UNION ALL
+     SELECT 'dept' AS kind, department_id AS ref, approver_order, id FROM exit_stage_departments WHERE stage_id = $1
+     ORDER BY approver_order NULLS LAST, kind, id`,
+    [stage.id],
+  );
+  if (!slots.length) return null;
+  const approvals = await approvalsThisOccurrence(client, request.id, stage.id, request.stage_entered_at);
+  return slots[approvals] || null;
+}
+
 /** Every MANDATORY checklist item for (request, stage) resolved? */
 async function isChecklistComplete(client, requestId, stageId) {
   const { rows } = await client.query(
@@ -116,9 +141,9 @@ async function isChecklistComplete(client, requestId, stageId) {
 
 async function seedStageEntry(client, requestId, stage) {
   const deptId = await primaryDeptForStage(client, stage.id);
-  const slaDue = stage.sla_hours
-    ? `NOW() + (${Number(stage.sla_hours)} || ' hours')::interval`
-    : 'NULL';
+  // Pass sla_hours as a bound parameter and build the interval in SQL — no string
+  // interpolation. NULL sla_hours => NULL due date.
+  const slaHours = stage.sla_hours != null ? Number(stage.sla_hours) : null;
 
   await client.query(
     `UPDATE exit_requests
@@ -136,8 +161,10 @@ async function seedStageEntry(client, requestId, stage) {
   await client.query(
     `INSERT INTO exit_approvals
        (exit_request_id, stage_id, department_id, action, actor_name, sla_due_at)
-     VALUES ($1, $2, $3, 'PENDING', 'System', ${slaDue})`,
-    [requestId, stage.id, deptId],
+     VALUES ($1, $2, $3, 'PENDING', 'System',
+             CASE WHEN $4::numeric IS NULL THEN NULL
+                  ELSE NOW() + ($4::numeric * INTERVAL '1 hour') END)`,
+    [requestId, stage.id, deptId, slaHours],
   );
 
   // Instantiate stage checklist templates into per-request items.
@@ -174,11 +201,23 @@ async function seedStageEntry(client, requestId, stage) {
         for (const asset of assets) {
           const name = asset.type || 'Asset';
           const code = asset.asset_id || asset.serial_number || '';
+          // item_type MUST be one of chk_exit_req_item_type
+          // (TASK|ASSET_RETURN|INTERVIEW|SETTLEMENT|DOCUMENT). The previous 'COLLECT_ASSET'
+          // value violated that CHECK, so this INSERT always threw and was swallowed by the
+          // surrounding SAVEPOINT — meaning asset items were NEVER actually seeded.
+          // 'ASSET_RETURN' both satisfies the constraint and is what the frontend keys on to
+          // render the "Assets to return" panel. The asset's PK (assets.id) is stored in
+          // data.asset_id so markAssetReturned can complete THIS item when the asset is returned.
           await client.query(
             `INSERT INTO exit_request_checklist_items
-               (exit_request_id, stage_id, template_item_id, item_type, label, is_mandatory, status)
-             VALUES ($1, $2, NULL, 'COLLECT_ASSET', $3, true, 'PENDING')`,
-            [requestId, stage.id, code ? `Collect Asset: ${name} (${code})` : `Collect Asset: ${name}`],
+               (exit_request_id, stage_id, template_item_id, item_type, label, is_mandatory, status, data)
+             VALUES ($1, $2, NULL, 'ASSET_RETURN', $3, true, 'PENDING', $4)`,
+            [
+              requestId,
+              stage.id,
+              code ? `Collect Asset: ${name} (${code})` : `Collect Asset: ${name}`,
+              JSON.stringify({ asset_id: asset.id }),
+            ],
           );
         }
         await client.query('RELEASE SAVEPOINT seed_assets');
@@ -255,11 +294,9 @@ async function advanceStage(client, request, stage) {
      WHERE id = $1`,
     [request.id],
   );
-  // end-of-exit side effect: mark the employee separated
-  await client.query(
-    `UPDATE employees SET employment_status = 'Terminated', updated_at = NOW() WHERE id = $1`,
-    [request.employee_id],
-  );
+  // end-of-exit side effect: mark the employee separated (full canonical field set, so a
+  // later withdraw can fully revert it — see exitSeparation.util).
+  await separation.markEmployeeSeparated(client, request.employee_id);
   return { advanced: true, completed: true };
 }
 
@@ -276,6 +313,7 @@ module.exports = {
   primaryDeptForStage,
   requiredApproverCount,
   isStageSatisfied,
+  sequentialActiveSlot,
   isChecklistComplete,
   seedStageEntry,
   closePendingSlot,

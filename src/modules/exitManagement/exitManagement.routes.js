@@ -67,7 +67,7 @@ router.put('/:id/send-back', ...reqChain, authorizeExitAccess({ action: 'send_ba
 router.put('/:id/escalate', ...reqChain, authorizeExitAccess({ action: 'escalate' }), validateWithJoi(v.escalateBody, 'body'), ctrl.escalate);
 router.put('/:id/reassign', ...reqChain, authorizeExitAccess({ action: 'reassign' }), validateWithJoi(v.reassignBody, 'body'), ctrl.reassign);
 router.post('/:id/comment', ...reqChain, authorizeExitAccess({ action: 'comment' }), validateWithJoi(v.commentBody, 'body'), ctrl.comment);
-router.post('/:id/withdraw', ...reqChain, authorizeExitAccess({ action: 'view' }), validateWithJoi(v.withdrawBody, 'body'), ctrl.withdraw);
+router.post('/:id/withdraw', ...reqChain, authorizeExitAccess({ action: 'withdraw' }), validateWithJoi(v.withdrawBody, 'body'), ctrl.withdraw);
 
 /* ---- Stage-attached checklist actions ---- */
 router.get('/:id/stages/:stageId/checklist', validateWithJoi(v.stageParams, 'params'), loadWorkflowContext, resolveExitAccess, authorizeExitAccess({ action: 'view' }), ctrl.listChecklist);

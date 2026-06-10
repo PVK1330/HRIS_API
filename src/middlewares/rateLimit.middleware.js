@@ -3,6 +3,55 @@
 const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = require('express-rate-limit');
 const env = require('../config/env');
+const logger = require('../utils/logger');
+const { createRedisClient, isEnabled: redisEnabled } = require('../config/redis');
+
+// Horizontal scaling: the default express-rate-limit store is per-process MEMORY,
+// so behind N instances each user effectively gets N× the limit and the counter
+// resets on every deploy. When Redis is configured, back all limiters with a
+// SHARED store so the limit is enforced cluster-wide. Falls back to memory when
+// Redis is unset (dev/single-instance) or the optional packages aren't installed.
+//
+// Guarded require: rate-limit-redis is optional — never crash boot without it.
+let RedisStore = null;
+try {
+  ({ RedisStore } = require('rate-limit-redis'));
+} catch {
+  RedisStore = null;
+}
+
+let _rlRedisClient; // one shared client for every limiter
+function rateLimitRedisClient() {
+  if (_rlRedisClient === undefined) _rlRedisClient = createRedisClient('ratelimit');
+  return _rlRedisClient;
+}
+
+/**
+ * Build a shared RedisStore for a limiter, or undefined to use the default
+ * in-memory store. `prefix` keeps each limiter's buckets separate.
+ */
+function makeStore(prefix) {
+  if (!redisEnabled() || !RedisStore) {
+    if (redisEnabled() && !RedisStore) {
+      logger.warn(
+        "[ratelimit] REDIS_* set but 'rate-limit-redis' not installed — using in-memory store " +
+        '(NOT shared across instances). Install for multi-instance: npm i rate-limit-redis',
+      );
+    }
+    return undefined;
+  }
+  const client = rateLimitRedisClient();
+  if (!client) return undefined;
+  try {
+    return new RedisStore({
+      sendCommand: (...args) => client.call(...args),
+      prefix: `rl:${prefix}:`,
+    });
+  } catch (err) {
+    logger.error(`[ratelimit] failed to build Redis store (${prefix}); using memory: ${err.message}`);
+    return undefined;
+  }
+}
 
 // All limiter sizing comes from env.RATE_LIMIT (config/env.js parses the env
 // vars and applies sane defaults). Nothing here should read a flat env name or
@@ -28,6 +77,7 @@ const generalLimiter = rateLimit({
   max: generalMax,
   standardHeaders: true,
   legacyHeaders: false,
+  store: makeStore('general'),
   message: { success: false, message: 'Too many requests, please try again later.' },
   // Don't burn the budget on requests that aren't real API calls: CORS
   // preflight (OPTIONS) doubles every cross-origin request, the health probe is
@@ -48,6 +98,7 @@ const authLimiter = rateLimit({
   max: authMax,
   standardHeaders: true,
   legacyHeaders: false,
+  store: makeStore('auth'),
   message: { success: false, message: 'Too many authentication attempts. Try again later.' },
   skipSuccessfulRequests: true,
 });
@@ -64,6 +115,7 @@ const otpLimiter = rateLimit({
   max: otpMax,
   standardHeaders: true,
   legacyHeaders: false,
+  store: makeStore('otp'),
   message: { success: false, message: 'Too many attempts. Please try again later.' },
   keyGenerator: (req) => {
     const email = String(req.body?.email || '').trim().toLowerCase().slice(0, 200);
@@ -79,6 +131,7 @@ const registrationLimiter = rateLimit({
   max: registrationMax,
   standardHeaders: true,
   legacyHeaders: false,
+  store: makeStore('registration'),
   message: { success: false, message: 'Too many registration attempts. Try again in 1 hour.' },
 });
 
@@ -88,6 +141,7 @@ const refreshLimiter = rateLimit({
   max: refreshMax,
   standardHeaders: true,
   legacyHeaders: false,
+  store: makeStore('refresh'),
   message: { success: false, message: 'Too many refresh attempts. Try again later.' },
 });
 
@@ -97,6 +151,7 @@ const candidateOnboardingLimiter = rateLimit({
   max: candidateMax,
   standardHeaders: true,
   legacyHeaders: false,
+  store: makeStore('candidate'),
   message: {
     success: false,
     message: 'Too many requests. Please wait a moment and try again.',

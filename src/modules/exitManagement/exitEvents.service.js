@@ -325,8 +325,11 @@ async function onSubmitted(tenant, requestId) {
 
   const hrAdmins = await getHROrAdminRecipients(pool);
 
+  // loadReq aliases reporting_manager_id AS reporting_to (line ~77), so the manager id lives
+  // on req.reporting_to — reading req.reporting_manager_id here was always undefined, so the
+  // manager notification silently never sent.
   const notifyList = [
-    { id: req.reporting_manager_id, role: 'Manager' },
+    { id: req.reporting_to, role: 'Manager' },
     { id: req.dept_head_id, role: 'Department Head' }
   ].filter(x => x.id && x.id !== req.employee_id);
 
@@ -528,16 +531,12 @@ async function onCompleted(tenant, requestId) {
       entityId: requestId,
     });
 
-    // Epic P3: Employee Deactivation Workflow
-    // Deactivate the employee account immediately on exit completion
+    // Epic P3: Employee Deactivation Workflow — mark the employee separated using the SAME
+    // canonical field set as advanceStage / restored by withdraw (see exitSeparation.util),
+    // so completion and withdraw stay in lock-step.
     try {
-      await pool.query(
-        `UPDATE employees 
-         SET status = 'EXITED', 
-             deleted_at = COALESCE(deleted_at, NOW()) 
-         WHERE id = $1`,
-        [req.employee_id]
-      );
+      const separation = require('./exitSeparation.util');
+      await separation.markEmployeeSeparated(pool, req.employee_id);
       logger.info('[exit] employee deactivated', { employeeId: req.employee_id });
     } catch (e) {
       logger.error('[exit] failed to deactivate employee account', { err: e.message });

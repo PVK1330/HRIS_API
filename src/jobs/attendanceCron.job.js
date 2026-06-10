@@ -113,6 +113,14 @@ function startAttendanceCron() {
     logger.debug('Attendance cron disabled');
     return;
   }
+  // Defense-in-depth single-runner guard (server.js already gates all crons on the leader, but
+  // this cron's auto-approve/reject/month-close are the racy ones, so guard here too in case the
+  // start fn is ever called directly).
+  const { isCronLeader } = require('../utils/cronLeader');
+  if (!isCronLeader()) {
+    logger.info('[attendanceCron] not the cron leader — not scheduling');
+    return;
+  }
   cron.schedule('15 1 * * *', () => {
     runAllTenants().catch((e) => logger.error('[attendanceCron] run failed', e));
   });

@@ -328,10 +328,14 @@ async function markAttendance(auth, user, data, req) {
     overtimeHours: data.overtimeHours,
     notes: data.notes,
     regularizationStatus: existing?.regularization_status || 'N/A',
-    checkInIp: req._punchCtx.ip,
-    checkOutIp: req._punchCtx.ip,
-    checkInDevice: req._punchCtx.device,
-    checkOutDevice: req._punchCtx.device,
+    // Preserve the ORIGINAL punch provenance: keep each side's recorded IP/device when it was
+    // already punched; only fall back to the correction (admin) context for a side that was
+    // never punched (manual entry). Overwriting both with req._punchCtx erased the real in/out
+    // IP/device. The override itself is captured by the audit log + notifyOverride.
+    checkInIp: existing?.check_in_ip ?? req._punchCtx.ip,
+    checkOutIp: existing?.check_out_ip ?? req._punchCtx.ip,
+    checkInDevice: existing?.check_in_device ?? req._punchCtx.device,
+    checkOutDevice: existing?.check_out_device ?? req._punchCtx.device,
     forceCheckIn: true,
     forceCheckOut: true,
   }, req, { isOverride: true });
@@ -895,11 +899,10 @@ async function processOvertime(auth, user, id, { action, reason }, req) {
 
   try {
     if (newStatus === 'Approved') {
+      // Final HR approval — notify the employee only. Do NOT also fire the "forwarded to dept"
+      // notice: that belongs to the Manager_Approved transition (moving INTO the dept stage),
+      // and firing it here produced a redundant "forwarded" message alongside the approval.
       await notify.notifyOtApproved(pool, user.db_name, {
-        employeeId: record.employee_id, date: record.date,
-        entityId: record.id, hours: record.overtime_hours,
-      });
-      await notify.notifyOtForwardedToDept(pool, user.db_name, {
         employeeId: record.employee_id, date: record.date,
         entityId: record.id, hours: record.overtime_hours,
       });
@@ -990,10 +993,18 @@ async function createOvertime(auth, user, body, req) {
   // Segregation of duties: cannot self-approve.
   if (status === 'Approved' && Number(auth?.employeeId) === Number(employeeId)) status = 'Pending';
 
-  // Escalation: if employee has no reporting manager, skip manager stage → Dept Head approves first.
+  // Escalation/pruning: mirror regularization's buildStageChain — prune any leading stage that
+  // has no possible approver (manager requires reporting_manager_id; department requires
+  // department_id). Without the dept-prune, a no-manager + no-department OT lands at
+  // Manager_Approved (dept stage) with no dept approver and can only be moved by HR.
   if (status === 'Pending') {
     const empRow = await authz.loadEmployee(pool, Number(employeeId));
-    if (!empRow?.reporting_manager_id) status = 'Manager_Approved';
+    const hasManager = Boolean(empRow?.reporting_manager_id);
+    const hasDept = empRow?.department_id != null;
+    if (!hasManager) {
+      // skip manager stage; also skip the dept stage when there's no department → HR first.
+      status = hasDept ? 'Manager_Approved' : 'Dept_Approved';
+    }
   }
 
   const approverId = actorEmployeeId(user);

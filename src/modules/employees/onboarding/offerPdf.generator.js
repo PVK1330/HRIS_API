@@ -72,9 +72,21 @@ async function generateOfferLetterPdf({
   let htmlBody = '';
   
   if (pool) {
+    // Match an offer-letter template: it must be offer-related by name, and qualify either
+    // by an explicit "Offer Letter" name or by living in the Recruitment category. The OR is
+    // parenthesised so it isn't swallowed by the trailing AND (operator-precedence bug), and
+    // a deterministic ORDER BY replaces the previous arbitrary LIMIT 1 pick:
+    //   1) explicit "Offer Letter" name (most specific)  2) Recruitment category
+    //   3) Active templates  4) newest (created_at, then id)
     const { rows: templates } = await pool.query(`
-      SELECT body FROM letter_templates 
-      WHERE name ILIKE '%Offer Letter%' OR category = 'Recruitment' AND name ILIKE '%Offer%'
+      SELECT body FROM letter_templates
+      WHERE (name ILIKE '%Offer Letter%' OR category = 'Recruitment')
+        AND name ILIKE '%Offer%'
+      ORDER BY (name ILIKE '%Offer Letter%') DESC,
+               (category = 'Recruitment') DESC,
+               (status = 'Active') DESC,
+               created_at DESC,
+               id DESC
       LIMIT 1
     `);
     if (templates.length > 0) {

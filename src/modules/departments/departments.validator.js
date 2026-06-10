@@ -29,6 +29,23 @@ const exportQuery = listingQuery.keys({
 
 const filterOptionsQuery = Joi.object({}).unknown(true);
 
+// Head-of-Department picker: searchable + paginated, with an optional role filter.
+const managersQuery = Joi.object({
+  page: Joi.number().integer().min(1).default(1),
+  limit: Joi.number().integer().min(1).max(1000).default(50),
+  search: Joi.string().allow('').max(200).optional(),
+  q: Joi.string().allow('').max(200).optional(),
+  role: Joi.string().allow('').max(150).optional(),
+  roleId: Joi.alternatives().try(Joi.number().integer().positive(), Joi.string().allow('')).optional(),
+  role_id: Joi.alternatives().try(Joi.number().integer().positive(), Joi.string().allow('')).optional(),
+});
+
+// Soft delete: optional explicit confirmation to archive a department that still
+// has employees assigned.
+const deleteQuery = Joi.object({
+  force: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('true', 'false')).optional(),
+});
+
 const createBody = Joi.object({
   name: Joi.string().trim().min(2).max(150).required(),
   code: alphanumericCode.optional().allow('', null),
@@ -49,6 +66,8 @@ module.exports = {
   listingQuery,
   exportQuery,
   filterOptionsQuery,
+  managersQuery,
+  deleteQuery,
   createBody,
   updateBody,
 };

@@ -22,11 +22,12 @@ function buildConversation(row) {
 
   const replies = row.replies || row.messages || []
   replies.forEach((reply) => {
+    const role = reply.sender_role === 'admin' ? 'admin' : 'superadmin'
     conversation.push({
       id: reply.id,
       ticketId: reply.ticket_id || row.id,
-      senderRole: 'superadmin',
-      senderName: 'Super Admin',
+      senderRole: role,
+      senderName: role === 'admin' ? (row.admin_name || 'Admin') : 'Super Admin',
       message: reply.message || reply.text || '',
       status,
       createdAt: reply.created_at || reply.createdAt,
@@ -168,6 +169,7 @@ async function updateTicket(req, res, next) {
       priority,
       description,
       status,
+      message,
     } = req.body;
 
     const payload = {};
@@ -178,25 +180,37 @@ async function updateTicket(req, res, next) {
     if (status != null) payload.status = status.trim();
     if (req.file) payload.attachmentUrl = `/uploads/${req.file.filename}`;
 
-    const ticket = await supportService.updateTicket(req.user, req.params.id, payload);
+    const replyMessage = typeof message === 'string' ? message.trim() : '';
+    const hasFieldUpdates = Object.keys(payload).length > 0;
+    if (!replyMessage && !hasFieldUpdates) {
+      throw ApiError.badRequest('No updates were provided');
+    }
 
-    // Send notification to the Admin who created this ticket
-    // Send to the specific admin only
-    try {
-      const title = 'Support Ticket Updated';
-      const message = `Your support ticket "${ticket.subject}" status changed to ${ticket.status}`;
-      await pushNotification(req.tenant, { 
-        recipientId: ticket.admin_id, 
-        recipientRole: 'admin',
-        title, 
-        message, 
-        type: 'support_ticket', 
-        ticketId: ticket.id,
-        forAdmin: false
-      });
-    } catch (err) {
-      logger.error('[support] failed to send ticket update notification', { err: err.message });
-      // Don't fail the response, notification is optional
+    // Persist the admin's chat message as an admin-authored reply.
+    if (replyMessage) {
+      await supportService.addAdminReply(req.user, req.params.id, replyMessage);
+    }
+    // Apply any ticket field changes (status, etc.).
+    if (hasFieldUpdates) {
+      await supportService.updateTicket(req.user, req.params.id, payload);
+    }
+    // Re-fetch the full ticket (with the complete reply thread) for the response.
+    const ticket = await supportService.getTicketById(req.user, req.params.id);
+
+    // An admin reply goes to the Super Admin support side (mirrors ticket creation).
+    if (replyMessage) {
+      try {
+        await pushNotification(req.tenant, {
+          recipientRole: 'superadmin',
+          title: 'New Support Ticket Reply',
+          message: `${ticket.admin_name || 'Admin'} replied on: ${ticket.subject}`,
+          type: 'support_ticket',
+          ticketId: ticket.id,
+          forAdmin: false,
+        });
+      } catch (err) {
+        logger.error('[support] failed to send reply notification', { err: err.message });
+      }
     }
 
     // Emit socket event for real-time UI updates

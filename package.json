@@ -35,7 +35,8 @@
     "backfill:policy-hash": "node src/scripts/backfillPolicyContentHash.js",
     "backfill:policy-hash:dry": "node src/scripts/backfillPolicyContentHash.js --dry-run",
     "test:policies": "node --test src/tests/policies.lifecycle.test.js",
-    "test:departments": "node --test src/tests/departments.lifecycle.test.js"
+    "test:departments": "node --test src/tests/departments.lifecycle.test.js",
+    "test:messaging": "node --test src/tests/messaging.identity.test.js"
   },
   "keywords": [
     "pern",

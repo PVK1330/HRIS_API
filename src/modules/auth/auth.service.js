@@ -1752,11 +1752,84 @@ async function changePassword(user, { currentPassword, newPassword } = {}) {
   return { message: 'Password updated successfully.' };
 }
 
+/**
+ * Resolve the table/columns for the authenticated user's own account record.
+ * Mirrors the branching used by changePassword so /auth/me works for every panel.
+ */
+function resolveSelfAccount(user) {
+  const userType = String(user?.userType || user?.role || '').toLowerCase();
+  const id = user?.id;
+  if (!id) throw ApiError.unauthorized('Not authenticated');
+
+  if (userType === 'superadmin' || userType === 'billing_admin' || userType === 'support_admin') {
+    return {
+      userType,
+      id,
+      pool: superAdminPool,
+      table: 'public.superadmins',
+      nameColumn: 'name',
+      selectSql: `SELECT id, name, email, role, status, last_login_at, created_at
+                  FROM public.superadmins WHERE id = $1 LIMIT 1`,
+    };
+  }
+
+  const dbName = user?.db_name;
+  if (!dbName) throw ApiError.badRequest('No organization context');
+  const { getTenantPool } = require('../../config/db');
+  const pool = getTenantPool(dbName);
+
+  if (userType === 'employee') {
+    return {
+      userType,
+      id,
+      pool,
+      table: 'employees',
+      nameColumn: 'full_name',
+      role: user.role,
+      selectSql: `SELECT id, full_name AS name, work_email AS email, department, join_date
+                  FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+    };
+  }
+
+  // Tenant admin (admin / hr_admin / hr_executive / manager).
+  return {
+    userType,
+    id,
+    pool,
+    table: 'admin_users',
+    nameColumn: 'name',
+    role: user.role,
+    selectSql: `SELECT id, name, email FROM admin_users WHERE id = $1 LIMIT 1`,
+  };
+}
+
+async function getMe(user) {
+  const acct = resolveSelfAccount(user);
+  const { rows } = await acct.pool.query(acct.selectSql, [acct.id]);
+  if (!rows[0]) throw ApiError.notFound('Account not found');
+  return { ...rows[0], role: rows[0].role ?? acct.role ?? user.role, userType: acct.userType };
+}
+
+async function updateMe(user, { name } = {}) {
+  const acct = resolveSelfAccount(user);
+  const cleanName = name != null ? String(name).trim() : null;
+  if (cleanName === null) return getMe(user); // nothing to update
+  if (!cleanName) throw ApiError.badRequest('Name cannot be empty');
+
+  await acct.pool.query(
+    `UPDATE ${acct.table} SET ${acct.nameColumn} = $1 WHERE id = $2`,
+    [cleanName, acct.id],
+  );
+  return getMe(user);
+}
+
 module.exports = {
   requestPasswordReset,
   verifyOTP,
   resetPassword,
   changePassword,
+  getMe,
+  updateMe,
   verify2FA,
   verifyMfaLogin,
   login,

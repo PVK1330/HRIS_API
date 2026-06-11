@@ -102,6 +102,30 @@ const updateAdminUser = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, { user }, 'Admin user updated successfully');
 });
 
+/**
+ * GET /api/v1/superadmin/profile
+ * Returns the authenticated superadmin's own profile.
+ */
+const getProfile = asyncHandler(async (req, res) => {
+  const profile = await service.getProfile(req.user.id);
+  return ApiResponse.ok(res, { profile }, 'Profile retrieved successfully');
+});
+
+/**
+ * PUT /api/v1/superadmin/profile
+ * Updates the authenticated superadmin's own profile (name).
+ */
+const updateProfile = asyncHandler(async (req, res) => {
+  const profile = await service.updateProfile(req.user.id, req.body);
+  await service.logAuditEvent({
+    actorName: profile.name || req.user?.email || 'Super Admin',
+    action: 'ProfileUpdated',
+    target: profile.email,
+    ipAddress: req.ip,
+  });
+  return ApiResponse.ok(res, { profile }, 'Profile updated successfully');
+});
+
 const getPermissions = asyncHandler(async (_req, res) => {
   const roles = await service.getRoles();
   return ApiResponse.ok(res, { roles }, 'Permissions retrieved successfully');
@@ -214,6 +238,8 @@ module.exports = {
   getAdminUsers,
   createAdminUser,
   updateAdminUser,
+  getProfile,
+  updateProfile,
   getPermissions,
   createRole,
   updateRole,

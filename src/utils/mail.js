@@ -23,7 +23,7 @@ function logMockEmail({ to, subject, text, error }) {
  * Send email via tenant SMTP (Settings → Email) with .env fallback.
  * @param {Object} options { to, subject, html, text, attachments? }
  */
-async function sendMail({ to, subject, html, text, attachments }) {
+async function sendMail({ to, subject, html, text, attachments, tenant }) {
   require('dotenv').config();
 
   if (!to) {
@@ -54,6 +54,7 @@ async function sendMail({ to, subject, html, text, attachments }) {
       subject,
       html: bodyHtml,
       attachments,
+      tenant,
     });
 
     logger.info(`[mail] sent to=${to} messageId=${result.messageId}`);

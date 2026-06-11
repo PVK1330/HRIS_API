@@ -12,9 +12,9 @@ async function getCompanyName(tenant) {
   try {
     const tenantSettingsService = require('../modules/tenantSettings/tenantSettings.service');
     const settings = await tenantSettingsService.getAdminSettings(tenant.db_name, '');
-    return settings.companyName || tenant.name || 'Organization';
+    return settings.companyName || tenant.name || 'Organisation';
   } catch (_) {
-    return tenant.name || 'Organization';
+    return tenant.name || 'Organisation';
   }
 }
 

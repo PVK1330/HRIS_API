@@ -237,6 +237,7 @@ async function notifyStepCompleted(user, employeeId, { step = 1 } = {}, auth = n
         candidateName,
         step: stepNum,
         companyName,
+        dbName: user.db_name,
       });
       candidateEmailSent = true;
     } catch (err) {
@@ -252,6 +253,7 @@ async function notifyStepCompleted(user, employeeId, { step = 1 } = {}, auth = n
         empId: emp.emp_id || String(employeeId),
         step: stepNum,
         companyName,
+        dbName: user.db_name,
       });
       hrEmailSent = true;
     } catch (err) {
@@ -391,6 +393,7 @@ async function setApprovalStatus(
         personalEmail: emp.personal_email,
         companyName,
         attachments,
+        dbName: user.db_name,
       });
       hrEmailSent = true;
     } catch (err) {
@@ -549,6 +552,7 @@ async function sendOfferLetter(
       rejectUrl: urls.rejectUrl,
       requiredDocuments,
       attachments,
+      dbName: user.db_name,
     });
   } catch (err) {
     logger.warn(`Offer letter email failed: ${err.message}`);
@@ -838,6 +842,7 @@ async function sendPendingDocumentReminder(user, employeeId, auth = null) {
       documentsUrl: urls.documentsUrl,
       pendingDocuments: pendingDocs.map((d) => d.document_label),
       rejectedDocuments: rejectedDocs.map((d) => d.document_label),
+      dbName: user.db_name,
     });
     logger.info(`Missing documents reminder sent to candidate ${employeeId} by user ${user.id}`);
   } catch (err) {

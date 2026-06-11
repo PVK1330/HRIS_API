@@ -281,7 +281,7 @@ async function createAdminUser({ name, email, password, role, status }) {
 
   // Send invitation email
   try {
-    const html = await renderEmail('admin-invite', {
+    const { html, attachments } = await renderEmail('admin-invite', {
       name: cleanName,
       email: cleanEmail,
       password: password,
@@ -292,7 +292,8 @@ async function createAdminUser({ name, email, password, role, status }) {
     await sendMail({
       to: cleanEmail,
       subject: 'HRIS Internal Administration - Invitation',
-      html
+      html,
+      attachments
     });
   } catch (error) {
     // We don't want to fail user creation if email fails, but we should log it
@@ -404,7 +405,7 @@ async function getAnnouncements() {
 async function createAnnouncement({ title, message, audience, type }) {
   const cleanTitle = String(title || '').trim();
   const cleanMessage = String(message || '').trim();
-  const cleanAudience = String(audience || 'All Organizations').trim();
+  const cleanAudience = String(audience || 'All Organisations').trim();
   const cleanType = normalizeAnnouncementType(type);
 
   if (!cleanTitle || !cleanMessage) {

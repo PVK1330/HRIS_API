@@ -28,20 +28,20 @@ async function getCompany(tenant) {
     const tenantSettingsService = require('../tenantSettings/tenantSettings.service');
     const tenantSettings = await tenantSettingsService.getAdminSettings(tenant.dbName, '');
     return {
-      companyName: tenantSettings.companyName || tenant.companyName || 'Organization',
+      companyName: tenantSettings.companyName || tenant.companyName || 'Organisation',
       companyLogo: tenantSettings.logoUrl || '',
     };
   } catch (_) { 
-    return { companyName: tenant ? tenant.companyName : 'Organization', companyLogo: '' }; 
+    return { companyName: tenant ? tenant.companyName : 'Organisation', companyLogo: '' }; 
   }
 }
 
-async function sendTemplate(to, templateSlug, variables, attachments = []) {
+async function sendTemplate(tenant, to, templateSlug, variables, attachments = []) {
   if (!to) return;
   try {
     const { Mailer } = require('../../helpers/mailer/mailer');
     const mailer = await Mailer.getInstance();
-    await mailer.send({ to, templateSlug, variables, attachments });
+    await mailer.send({ to, templateSlug, variables, attachments, tenant });
   } catch (mailErr) {
     logger.warn('[exitEvents] template email failed', { to, templateSlug, err: mailErr.message });
   }
@@ -482,7 +482,7 @@ async function onCompleted(tenant, requestId) {
           }
         }
         if (attachments.length && req.work_email) {
-          await sendTemplate(req.work_email, 'exit_request_completed', {
+          await sendTemplate(tenant, req.work_email, 'exit_request_completed', {
             employee_name: empName,
             company_name: company.companyName,
             app_name: company.companyName,
@@ -503,7 +503,7 @@ async function onCompleted(tenant, requestId) {
       redirectUrl: `/admin/exit-management/${requestId}`
     });
     if (!documentsEmailed) {
-      await sendTemplate(req.work_email, 'exit_request_completed', {
+      await sendTemplate(tenant, req.work_email, 'exit_request_completed', {
         employee_name: empName,
         company_name: company.companyName,
         app_name: company.companyName,
@@ -560,7 +560,7 @@ async function onRejected(tenant, requestId, reason) {
       entityId: requestId,
       redirectUrl: `/admin/exit-management/${requestId}`
     });
-    await sendTemplate(req.work_email, 'exit_request_rejected', {
+    await sendTemplate(tenant, req.work_email, 'exit_request_rejected', {
       employee_name: empName,
       company_name: company.companyName,
       app_name: company.companyName,
@@ -907,7 +907,7 @@ async function onReassigned(tenant, requestId) {
         entityId: requestId,
         redirectUrl: `/admin/exit-management/${requestId}`
       });
-      await sendTemplate(head.work_email, 'exit_stage_pending', {
+      await sendTemplate(tenant, head.work_email, 'exit_stage_pending', {
         recipient_name: head.full_name || 'Colleague', employee_name: empName,
         job_title: req.job_title || '', stage_name: req.stage_name || '', company_name: company.companyName,
       });

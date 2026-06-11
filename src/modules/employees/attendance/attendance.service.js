@@ -583,7 +583,11 @@ async function submitRegularization(auth, user, body, req) {
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
 
-  const employeeId = body.employeeId || actorEmployeeId(user);
+  // Resolve the acting employee with the email fallback (same as check-in/out), so
+  // self-service works even when the JWT was issued before the employee profile was
+  // linked and therefore carries no employeeId. Managers may target another employee.
+  const actorId = await resolveEmployeeId(pool, user, null);
+  const employeeId = body.employeeId || actorId;
   if (!employeeId) throw ApiError.badRequest('employeeId required');
   await authz.assertCanModifyEmployee(auth, pool, Number(employeeId));
 
@@ -598,7 +602,7 @@ async function submitRegularization(auth, user, body, req) {
       throw ApiError.forbidden('Only HR can submit attendance regularization requests.');
     }
     if (who === 'Manager only') {
-      const isManager = await hasDirectReports(pool, actorEmployeeId(user));
+      const isManager = await hasDirectReports(pool, actorId);
       if (!isManager && !authz.hasHrApprovalScope(auth)) {
         throw ApiError.forbidden('Only managers or HR can submit attendance regularization requests.');
       }
@@ -608,7 +612,6 @@ async function submitRegularization(auth, user, body, req) {
   const dateStr = body.date;
   if (!dateStr) throw ApiError.badRequest('date required');
 
-  const actorId = actorEmployeeId(user);
   const isSelfSubmission = Number(employeeId) === Number(actorId);
 
   // Allow self-requests: when off, employees can't raise their own corrections —
@@ -947,8 +950,9 @@ async function createOvertime(auth, user, body, req) {
 
   // Default to the caller's own employee record (employee self-service). Managers may
   // pass another employeeId; assertCanModifyEmployee enforces scope + self-restriction,
-  // so a self-scope employee can only ever add overtime for themselves.
-  const employeeId = body.employeeId || actorEmployeeId(user);
+  // so a self-scope employee can only ever add overtime for themselves. Use the email
+  // fallback so it works even when the JWT carries no employeeId (pre-link tokens).
+  const employeeId = body.employeeId || (await resolveEmployeeId(pool, user, null));
   if (!employeeId) throw ApiError.badRequest('employeeId is required');
   await assertActiveForPunch(pool, Number(employeeId));
   await authz.assertCanModifyEmployee(auth, pool, Number(employeeId)); // enforces data scope

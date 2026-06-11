@@ -72,9 +72,9 @@ async function updateRolePermissions(req) {
 
   if (scope !== undefined && scope !== null) {
     const isOrgAdmin =
-      role.is_system && String(role.name).trim() === 'Organization Admin';
+      role.is_system && String(role.name).trim() === 'Organisation Admin';
     if (isOrgAdmin && String(scope).toUpperCase() !== 'ALL') {
-      throw ApiError.badRequest('Organization Admin must use ALL data scope');
+      throw ApiError.badRequest('Organisation Admin must use ALL data scope');
     }
     try {
       await rbacRepo.setRoleDataScope(pool, roleId, scope);

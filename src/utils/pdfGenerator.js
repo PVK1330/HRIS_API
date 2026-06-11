@@ -74,7 +74,7 @@ async function generatePdfFromHtml(htmlBody, tenant = {}) {
     logoDataUri = `data:image/png;base64,${logoBase64}`;
   }
 
-  const companyName = tenant.company_name || 'Organization Name';
+  const companyName = tenant.company_name || 'Organisation Name';
   const companyEmail = tenant.contact_email || 'hr@organization.com';
   const companyAddress = tenant.company_address || '123 Corporate Blvd, Business City';
 

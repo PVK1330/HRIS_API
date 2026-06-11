@@ -94,7 +94,7 @@ ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------------
 -- 3) Common roles (templates the admin can edit/extend). is_system = FALSE so
---    they remain editable; "Organization Admin" (full access) is seeded in 020.
+--    they remain editable; "Organisation Admin" (full access) is seeded in 020.
 -- ---------------------------------------------------------------------------
 INSERT INTO rbac_roles (name, description, is_system)
 SELECT v.name, v.description, FALSE

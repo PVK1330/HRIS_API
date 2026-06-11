@@ -12,7 +12,7 @@ const ORG_SETTINGS_KEYS = [
 ];
 
 /**
- * Organization settings routes: allow tenant JWT admin or RBAC system-settings / attendance settings manage.
+ * Organisation settings routes: allow tenant JWT admin or RBAC system-settings / attendance settings manage.
  * Replaces hardcoded req.user.role === 'admin' checks.
  */
 function requireOrgSettingsAccess(req, _res, next) {
@@ -25,7 +25,7 @@ function requireOrgSettingsAccess(req, _res, next) {
   if (!auth?.permissions) {
     return next(
       ApiError.forbidden(
-        'Organization settings access required. Assign the system-settings permission to this role.',
+        'Organisation settings access required. Assign the system-settings permission to this role.',
       ),
     );
   }
@@ -35,7 +35,7 @@ function requireOrgSettingsAccess(req, _res, next) {
 
   return next(
     ApiError.forbidden(
-      'Organization settings access required. HR and other roles need the system-settings permission.',
+      'Organisation settings access required. HR and other roles need the system-settings permission.',
     ),
   );
 }

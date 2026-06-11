@@ -89,8 +89,9 @@ async function getStats(req, res) {
 async function getTicketDetails(req, res) {
   try {
     const { id } = req.params;
+    const tenantDb = req.query.tenantDb || null;
 
-    const ticket = await superadminSupportService.getTicketById(id);
+    const ticket = await superadminSupportService.getTicketById(id, tenantDb);
 
     if (!ticket) {
       return res.status(404).json({
@@ -122,6 +123,7 @@ async function updateStatus(req, res) {
   try {
     const { id } = req.params;
     const { status } = req.body;
+    const tenantDb = req.body.tenantDb || req.query.tenantDb || null;
 
     if (!status) {
       return res.status(400).json({
@@ -130,7 +132,7 @@ async function updateStatus(req, res) {
       });
     }
 
-    const validStatuses = ['Open', 'In Progress', 'Waiting for Admin', 'Resolved', 'Closed'];
+    const validStatuses = ['Open', 'Waiting', 'In Progress', 'Waiting for Admin', 'Resolved', 'Closed'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -138,7 +140,7 @@ async function updateStatus(req, res) {
       });
     }
 
-    const updatedTicket = await superadminSupportService.updateTicketStatus(id, status);
+    const updatedTicket = await superadminSupportService.updateTicketStatus(id, status, tenantDb);
 
     if (!updatedTicket) {
       return res.status(404).json({
@@ -208,6 +210,7 @@ async function addReply(req, res) {
   try {
     const { id } = req.params;
     const { message, internalNotes } = req.body;
+    const tenantDb = req.body.tenantDb || null;
     const superadminId = req.user?.id;
 
     if (!superadminId) {
@@ -225,7 +228,7 @@ async function addReply(req, res) {
     }
 
     // Verify ticket exists
-    const ticket = await superadminSupportService.getTicketById(id);
+    const ticket = await superadminSupportService.getTicketById(id, tenantDb);
     if (!ticket) {
       return res.status(404).json({
         success: false,
@@ -233,16 +236,17 @@ async function addReply(req, res) {
       });
     }
 
-    // Add reply
+    // Add reply (scoped to the ticket's owning tenant)
     const reply = await superadminSupportService.addReply(
       id,
       superadminId,
       message,
-      internalNotes || null
+      internalNotes || null,
+      ticket.dbName || tenantDb
     );
 
     // Fetch updated ticket with new reply
-    const updatedTicket = await superadminSupportService.getTicketById(id);
+    const updatedTicket = await superadminSupportService.getTicketById(id, ticket.dbName || tenantDb);
 
     // Notify the Admin who created the ticket about the superadmin reply
     // Superadmin replies → notification only for the ticket creator admin
@@ -308,6 +312,7 @@ async function updateTicket(req, res) {
   try {
     const { id } = req.params;
     const { status, message, assignedTo, internalNotes } = req.body;
+    const tenantDb = req.body.tenantDb || null;
     const superadminId = req.user?.id;
 
     if (!status && !message && !assignedTo) {
@@ -317,7 +322,7 @@ async function updateTicket(req, res) {
       });
     }
 
-    const validStatuses = ['Open', 'In Progress', 'Waiting for Admin', 'Resolved', 'Closed'];
+    const validStatuses = ['Open', 'Waiting', 'In Progress', 'Waiting for Admin', 'Resolved', 'Closed'];
     if (status && !validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -335,18 +340,18 @@ async function updateTicket(req, res) {
 
     const payload = { status, assignedTo };
     if (status || assignedTo) {
-      await superadminSupportService.updateTicket(id, payload);
+      await superadminSupportService.updateTicket(id, payload, tenantDb);
     }
 
     if (shouldSaveMessage) {
       if (!superadminId) {
         return res.status(401).json({ success: false, message: 'Unauthorized: Superadmin ID required' });
       }
-      
-      await superadminSupportService.addReply(id, superadminId, message.trim(), internalNotes || null);
+
+      await superadminSupportService.addReply(id, superadminId, message.trim(), internalNotes || null, tenantDb);
     }
 
-    const refreshedTicket = await superadminSupportService.getTicketById(id);
+    const refreshedTicket = await superadminSupportService.getTicketById(id, tenantDb);
     if (!refreshedTicket) {
       return res.status(404).json({
         success: false,
@@ -418,11 +423,12 @@ async function updateTicket(req, res) {
 async function deleteTicket(req, res) {
   try {
     const { id } = req.params;
+    const tenantDb = req.query.tenantDb || null;
 
     // Capture the owning tenant BEFORE deletion so the realtime event is scoped
     // to that tenant's room rather than broadcast to every tenant.
-    const existing = await superadminSupportService.getTicketById(id);
-    const deleted = await superadminSupportService.deleteTicket(id);
+    const existing = await superadminSupportService.getTicketById(id, tenantDb);
+    const deleted = await superadminSupportService.deleteTicket(id, existing?.dbName || tenantDb);
     if (!deleted) {
       return res.status(404).json({ success: false, message: 'Ticket not found' });
     }
@@ -455,11 +461,12 @@ function buildConversation(ticket) {
 
   const replies = ticket.replies || []
   replies.forEach((reply) => {
+    const role = reply.sender_role === 'admin' ? 'admin' : 'superadmin'
     conversation.push({
       id: reply.id,
       ticketId: reply.ticket_id,
-      senderRole: 'superadmin',
-      senderName: 'Super Admin',
+      senderRole: role,
+      senderName: role === 'admin' ? (ticket.admin_name || 'Admin') : 'Super Admin',
       message: reply.message,
       status: ticket.status,
       createdAt: reply.created_at,
@@ -478,6 +485,9 @@ function transformTicket(ticket) {
     adminName: ticket.admin_name,
     tenantId: ticket.tenant_id,
     tenantName: ticket.tenant_name,
+    // Owning tenant db_name — the FE echoes this back on by-id calls so superadmin
+    // actions hit the right tenant (per-tenant serial ids collide across tenants).
+    dbName: ticket.dbName || ticket.tenant_db || null,
     subject: ticket.subject,
     category: ticket.category,
     priority: ticket.priority,

@@ -116,6 +116,7 @@ async function notifyAndAssignOnboardingTask(tenant, pool, emp, eventType = 'acc
           empId: emp.emp_id || String(emp.id || ''),
           step: stepNum,
           companyName,
+          dbName: tenant.dbName,
         });
         notifiedEmails.add(to);
       }
@@ -324,6 +325,7 @@ async function signOffer(tenant, token, { signatureMode, signatureData, typedNam
         companyName,
         documentsUrl: urls.documentsUrl,
         checklist: checklist.map((c) => c.document_label),
+        dbName: tenant.dbName,
       });
     } catch {
       /* non-fatal */

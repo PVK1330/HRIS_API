@@ -80,13 +80,13 @@ async function getCompany(tenant) {
     const tenantSettingsService = require('../tenantSettings/tenantSettings.service');
     const tenantSettings = await tenantSettingsService.getAdminSettings(tenant.dbName, '');
     return {
-      company_name: tenantSettings.companyName || tenant.companyName || 'Organization',
+      company_name: tenantSettings.companyName || tenant.companyName || 'Organisation',
       contact_email: tenantSettings.contactDetails || '',
       company_address: tenantSettings.address || '',
       company_logo_path: tenantSettings.logoUrl || '',
     };
   } catch (_) {
-    return { company_name: tenant.companyName || 'Organization', contact_email: '', company_address: '', company_logo_path: '' };
+    return { company_name: tenant.companyName || 'Organisation', contact_email: '', company_address: '', company_logo_path: '' };
   }
 }
 

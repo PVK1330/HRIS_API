@@ -216,7 +216,7 @@ async function createTenant({
 
   if (!slugifyOrgNameForDb(cleanName)) {
     throw ApiError.badRequest(
-      "Organization name must include at least one letter or number",
+      "Organisation name must include at least one letter or number",
     );
   }
 
@@ -422,7 +422,7 @@ async function createTenant({
     // 9. Send Credentials Email
     try {
       const loginUrl = resolvePortalLoginUrlFromTenantName(name);
-      const html = await renderEmail("tenant-welcome", {
+      const { html, attachments } = await renderEmail("tenant-welcome", {
         name: name,
         email: adminEmail,
         password: adminPassword,
@@ -434,6 +434,7 @@ async function createTenant({
         subject: "Welcome to HRIS - Your Account Credentials",
         text: `Your organization "${name}" has been created.\nLogin URL: ${loginUrl}\nEmail: ${adminEmail}\nPassword: ${adminPassword}`,
         html,
+        attachments,
       });
     } catch (mailErr) {
       logger.error("Failed to send welcome email:", mailErr.message);
@@ -487,7 +488,7 @@ async function createTenant({
           lastPaymentAmount = amount;
 
           // Send Invoice Email
-          const invoiceHtml = await renderEmail("invoice", {
+          const { html: invoiceHtml, attachments: invoiceAttachments } = await renderEmail("invoice", {
             name: cleanAdminName,
             email: normalizedEmail,
             invoiceId: paymentId,
@@ -514,6 +515,7 @@ async function createTenant({
             subject: `Invoice INV-${paymentId} - ${planDetails.plan_name}`,
             text: `Please find your invoice for ${planDetails.plan_name} attached.`,
             html: invoiceHtml,
+            attachments: invoiceAttachments,
           });
         }
       } catch (invErr) {
@@ -615,7 +617,7 @@ async function resetTenantPassword(id, manualPassword = null) {
   // 3. Send Email
   try {
     const loginUrl = resolvePortalLoginUrlFromTenantName(tenant.name);
-    const html = await renderEmail("tenant-password-reset", {
+    const { html, attachments } = await renderEmail("tenant-password-reset", {
       name: tenant.name,
       email: tenant.admin_email,
       password: passwordToUse,
@@ -627,6 +629,7 @@ async function resetTenantPassword(id, manualPassword = null) {
       subject: "HRIS - Password Reset Notification",
       text: `Your password for organization "${tenant.name}" has been reset.\nLogin URL: ${loginUrl}\nNew Password: ${passwordToUse}`,
       html,
+      attachments,
     });
   } catch (mailErr) {
     logger.error("Failed to send reset password email:", mailErr.message);

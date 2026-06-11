@@ -7,6 +7,7 @@ const nodemailer = require('nodemailer');
 const ApiError = require('../../utils/ApiError');
 const logger = require('../../utils/logger');
 const templateEngine = require('./templateEngine');
+const emailLogo = require('./emailLogo');
 
 const TEMPLATES_DIR = path.join(__dirname, 'templates');
 
@@ -156,37 +157,16 @@ class Mailer {
   _wrapInLayout(renderedBody, variables, attachmentsToMutate = null) {
     const layout = getBaseLayout();
     const app_name = variables.app_name || this.config.appName;
-    const company_logo = variables.company_logo || this.config.companyLogo;
+    // When `company_logo` is explicitly present (even as an empty string — an org
+    // context with no uploaded logo), honour it and do NOT fall back to the platform
+    // logo; only an absent key means "use the platform default".
+    const company_logo = ('company_logo' in variables)
+      ? variables.company_logo
+      : this.config.companyLogo;
 
     let company_header_html = `<h1 style="margin:0;font-size:20px;font-weight:700;color:#111827;letter-spacing:-0.01em;">${app_name}</h1>`;
-    if (company_logo) {
-      if (company_logo.startsWith('http')) {
-        company_header_html = `<img src="${company_logo}" alt="${app_name}" style="max-height: 48px; max-width: 150px; display: block; margin: 0 auto;" />`;
-      } else {
-        let attached = false;
-        if (attachmentsToMutate) {
-          const fs = require('fs');
-          const path = require('path');
-          const env = require('../../config/env');
-          const rel = company_logo.replace(/^\/uploads\//, '');
-          const diskPath = path.resolve(env.UPLOAD.dir, rel);
-          if (fs.existsSync(diskPath)) {
-            const cid = 'companylogo-' + Date.now();
-            attachmentsToMutate.push({
-              filename: path.basename(diskPath),
-              path: diskPath,
-              cid: cid
-            });
-            company_header_html = `<img src="cid:${cid}" alt="${app_name}" style="max-height: 48px; max-width: 150px; display: block; margin: 0 auto;" />`;
-            attached = true;
-          }
-        }
-        if (!attached) {
-          const logoUrl = `http://localhost:${process.env.PORT || 5000}${company_logo}`;
-          company_header_html = `<img src="${logoUrl}" alt="${app_name}" style="max-height: 48px; max-width: 150px; display: block; margin: 0 auto;" />`;
-        }
-      }
-    }
+    const img = emailLogo.buildLogoImg(company_logo, app_name, attachmentsToMutate);
+    if (img) company_header_html = img;
 
     return templateEngine.render(layout, {
       ...variables,
@@ -210,11 +190,33 @@ class Mailer {
   }
 
   /**
+   * Inject the correct branding (logo + display name) for the email's context.
+   * When a `tenant` is given the org's own logo/name win; otherwise the platform
+   * defaults (this.config) are used. Explicit `variables` always take precedence.
+   */
+  async _withBranding(variables, tenant) {
+    if (!tenant) return variables;
+    try {
+      const brand = await emailLogo.resolveBranding(tenant);
+      return {
+        // Set company_logo (even '' for an org with no logo) so _wrapInLayout does
+        // NOT fall back to the platform logo on an organisation's email.
+        company_logo: brand.logo || '',
+        ...(brand.name ? { app_name: brand.name } : {}),
+        ...variables,
+      };
+    } catch (err) {
+      logger.debug('[mailer] tenant branding skipped', { err: err.message });
+      return variables;
+    }
+  }
+
+  /**
    * Send an email using a DB-stored template (by slug).
    *
-   * @param {{ to:string, subject?:string, templateSlug:string, variables?:object, attachments?:Array }} args
+   * @param {{ to:string, subject?:string, templateSlug:string, variables?:object, attachments?:Array, tenant?:object }} args
    */
-  async send({ to, subject, templateSlug, variables = {}, attachments = [] }) {
+  async send({ to, subject, templateSlug, variables = {}, attachments = [], tenant = null }) {
     if (!to) throw new ApiError(400, 'Recipient `to` is required');
     if (!templateSlug) throw new ApiError(400, '`templateSlug` is required');
 
@@ -227,9 +229,10 @@ class Mailer {
       throw new ApiError(400, `Email template "${templateSlug}" is disabled`);
     }
 
+    const brandedVars = await this._withBranding(variables, tenant);
     const mergedVars = {
       app_name: this.config.appName,
-      ...variables,
+      ...brandedVars,
     };
 
     let finalAttachments = Array.isArray(attachments) ? [...attachments] : [];
@@ -244,14 +247,17 @@ class Mailer {
    * Send an email with arbitrary HTML (no template lookup, but still wrapped in
    * the base layout for a consistent look). Used for the "send test email" flow.
    */
-  async sendRaw({ to, subject, html, attachments, variables = {} }) {
+  async sendRaw({ to, subject, html, attachments, variables = {}, tenant = null }) {
     if (!to) throw new ApiError(400, 'Recipient `to` is required');
     if (!subject) throw new ApiError(400, '`subject` is required');
     if (!html) throw new ApiError(400, '`html` is required');
 
     const transporter = this._getTransporter();
     let finalAttachments = Array.isArray(attachments) ? [...attachments] : [];
-    const wrapped = html.includes('<html') ? html : this._wrapInLayout(html, variables, finalAttachments);
+    // Full pre-built documents bring their own header/logo; only fragments are wrapped.
+    const isFullDoc = html.includes('<html');
+    const wrapVars = isFullDoc ? variables : await this._withBranding(variables, tenant);
+    const wrapped = isFullDoc ? html : this._wrapInLayout(html, wrapVars, finalAttachments);
 
     try {
       const info = await transporter.sendMail({

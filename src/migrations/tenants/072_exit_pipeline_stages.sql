@@ -1,4 +1,4 @@
--- Organization exit pipeline stages (progress stepper / tabs)
+-- Organisation exit pipeline stages (progress stepper / tabs)
 
 CREATE TABLE IF NOT EXISTS exit_pipeline_stages (
     id              SERIAL PRIMARY KEY,

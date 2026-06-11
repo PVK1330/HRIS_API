@@ -1,6 +1,7 @@
 'use strict';
 
 const { sendMail } = require('../../utils/mail');
+const emailLogo = require('../../helpers/mailer/emailLogo');
 
 function escapeHtml(s) {
   return String(s ?? '')
@@ -29,8 +30,11 @@ function escapeAttr(s) {
  * @param {string} p.plainPassword
  */
 function buildWelcomeHtml(p) {
-  const company = process.env.COMPANY_NAME || 'Your Company';
+  const company = p.companyName || process.env.COMPANY_NAME || 'Your Company';
   const portalUrl = p.portalUrl || process.env.PORTAL_URL || 'https://portal.company.com';
+  const logoBlock = p.logoImgHtml
+    ? `<div style="display:inline-block;background:#ffffff;padding:6px 12px;border-radius:6px;margin:0 auto 12px;">${p.logoImgHtml}</div>`
+    : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/></head>
@@ -39,7 +43,7 @@ function buildWelcomeHtml(p) {
     <tr><td align="center">
       <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 24px rgba(15,118,110,0.12);">
         <tr><td style="background:#0F766E;padding:20px 28px;text-align:center;">
-          <div style="height:40px;width:120px;margin:0 auto 8px;border:1px dashed #ccfbf1;color:#ccfbf1;font-size:11px;line-height:40px;">Company Logo</div>
+          ${logoBlock}
           <h1 style="margin:0;font-size:20px;font-weight:700;color:#ffffff;">Welcome to ${escapeHtml(company)}</h1>
         </td></tr>
         <tr><td style="padding:28px 28px 8px;">
@@ -79,8 +83,12 @@ async function sendEmployeeWelcomeEmail({
   plainPassword,
   portalUrl: portalUrlIn,
   subject: subjectIn,
+  tenant = null,
+  companyName: companyNameIn,
 }) {
-  const company = process.env.COMPANY_NAME || 'Your Company';
+  // Org context → that organisation's own logo + name on the welcome email.
+  const { imgHtml, attachments, name } = await emailLogo.resolveLogoBlock(tenant);
+  const company = companyNameIn || name || process.env.COMPANY_NAME || 'Your Company';
   const portalUrl =
     portalUrlIn || process.env.PORTAL_URL || 'https://portal.company.com';
   const subject =
@@ -94,6 +102,8 @@ async function sendEmployeeWelcomeEmail({
     portalUrl,
     username: username || '',
     plainPassword: plainPassword || '',
+    companyName: company,
+    logoImgHtml: imgHtml,
   });
   const text = `Welcome ${firstName}. Employee ID: ${empId}. Department: ${department}. Designation: ${jobTitle}. Join: ${joinDate}. Portal: ${portalUrl}. Username: ${username}. Password (change after login): ${plainPassword}`;
   await sendMail({
@@ -101,12 +111,15 @@ async function sendEmployeeWelcomeEmail({
     subject,
     html,
     text,
+    attachments,
+    tenant,
   });
 }
 
 /** Portal login credentials after onboarding activation. */
 async function sendEmployeeActivationEmail(opts) {
-  const company = process.env.COMPANY_NAME || 'Your Company';
+  const fallback = process.env.COMPANY_NAME || 'Your Company';
+  const company = opts.companyName || fallback;
   return sendEmployeeWelcomeEmail({
     ...opts,
     subject: `${company} — Your employee portal login`,

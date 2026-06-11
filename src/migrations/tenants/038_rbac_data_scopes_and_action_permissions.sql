@@ -29,22 +29,22 @@ INSERT INTO rbac_permissions (key, label, sort_order) VALUES
 ('assets.view', 'Assets — View', 71)
 ON CONFLICT (key) DO NOTHING;
 
--- Organization Admin: ALL scope + all action permissions
+-- Organisation Admin: ALL scope + all action permissions
 INSERT INTO role_data_scopes (role_id, scope)
-SELECT id, 'ALL' FROM rbac_roles WHERE name = 'Organization Admin'
+SELECT id, 'ALL' FROM rbac_roles WHERE name = 'Organisation Admin'
 ON CONFLICT (role_id) DO UPDATE SET scope = EXCLUDED.scope;
 
 INSERT INTO rbac_role_permissions (role_id, permission_id)
 SELECT r.id, p.id
 FROM rbac_roles r
 CROSS JOIN rbac_permissions p
-WHERE r.name = 'Organization Admin'
+WHERE r.name = 'Organisation Admin'
   AND p.key LIKE '%.%'
 ON CONFLICT DO NOTHING;
 
 -- Default data scope for non–org-admin roles (customize per role in Settings)
 INSERT INTO role_data_scopes (role_id, scope)
-SELECT id, 'SELF' FROM rbac_roles WHERE name <> 'Organization Admin'
+SELECT id, 'SELF' FROM rbac_roles WHERE name <> 'Organisation Admin'
 ON CONFLICT (role_id) DO NOTHING;
 
 -- Backfill action slugs from legacy module keys already assigned to roles

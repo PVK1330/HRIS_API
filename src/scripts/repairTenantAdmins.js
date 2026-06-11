@@ -70,7 +70,7 @@ async function main() {
       await tenantPool.query(
         `INSERT INTO admin_users (tenant_id, email, password_hash, name, status)
          VALUES ($1, $2, $3, $4, 'active')`,
-        [t.id, email, passwordHash, t.admin_name || t.name || "Organization Admin"],
+        [t.id, email, passwordHash, t.admin_name || t.name || "Organisation Admin"],
       );
       console.log(`[fixed] ${t.db_name} created admin_users for ${email}`);
     } catch (err) {

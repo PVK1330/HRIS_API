@@ -10,7 +10,7 @@ const { labelForField } = require('./attendanceLabels');
 const REPORT_TITLES = {
   employee: 'Employee Attendance Report',
   department: 'Department Attendance Report',
-  organization: 'Organization Attendance Report',
+  organization: 'Organisation Attendance Report',
   summary: 'Attendance Summary Report',
   overtime: 'Overtime Report',
   late: 'Late Arrival Report',
@@ -44,7 +44,7 @@ function pdfHeader(doc, branding, title, generatedBy) {
       /* ignore bad image */
     }
   }
-  doc.fontSize(14).text(branding.companyName || 'Organization', logo ? 100 : 40, 42);
+  doc.fontSize(14).text(branding.companyName || 'Organisation', logo ? 100 : 40, 42);
   if (branding.address) doc.fontSize(9).text(branding.address, logo ? 100 : 40, 62, { width: 400 });
   if (branding.contactDetails) doc.fontSize(9).text(branding.contactDetails, logo ? 100 : 40, 78, { width: 400 });
   doc.moveDown(2);
@@ -60,7 +60,7 @@ async function buildExcel(branding, reportType, rows, filtersSummary) {
   const title = REPORT_TITLES[reportType] || 'Attendance Report';
 
   ws.mergeCells('A1:H1');
-  ws.getCell('A1').value = `${branding.companyName || 'Organization'} — ${title}`;
+  ws.getCell('A1').value = `${branding.companyName || 'Organisation'} — ${title}`;
   ws.getCell('A1').font = { size: 14, bold: true };
   ws.mergeCells('A2:H2');
   ws.getCell('A2').value = branding.address || '';

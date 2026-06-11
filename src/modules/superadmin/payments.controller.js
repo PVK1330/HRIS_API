@@ -151,7 +151,7 @@ const getInvoiceHtml = async (req, res, next) => {
       year: 'numeric'
     })}`;
 
-    const html = await renderEmail('invoice', {
+    const { html } = await renderEmail('invoice', {
       name: invoice.tenant_name || 'Tenant',
       email: invoice.admin_email || '-',
       invoiceId: invoice.id,
@@ -169,7 +169,7 @@ const getInvoiceHtml = async (req, res, next) => {
             : invoice.status === 'refunded'
               ? 'This invoice has been refunded.'
               : 'Payment is pending confirmation.'
-    });
+    }, { preferUrl: true });
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.status(200).send(html);

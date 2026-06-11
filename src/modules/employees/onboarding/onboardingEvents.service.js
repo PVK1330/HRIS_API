@@ -71,7 +71,7 @@ async function notifyOfferSent(tenant, pool, emp, actor = {}) {
           recipient_name: r.full_name || 'Colleague',
           candidate_name: candidateName,
           job_title: emp.job_title || '',
-          company_name: tenant.companyName || 'Organization',
+          company_name: tenant.companyName || 'Organisation',
         },
       },
       {
@@ -128,7 +128,7 @@ async function notifyHrRejected(tenant, pool, emp, reason, actor = {}) {
         variables: {
           candidate_name: candidateName,
           reason: reason || 'Not specified',
-          company_name: tenant.companyName || 'Organization',
+          company_name: tenant.companyName || 'Organisation',
         },
       },
       {
@@ -212,7 +212,7 @@ async function notifyDocumentReviewed(tenant, pool, emp, item, normalized, hrRev
           candidate_name: candidateName,
           document_name: docName,
           reason: hrReviewComment || 'Not specified',
-          company_name: tenant.companyName || 'Organization',
+          company_name: tenant.companyName || 'Organisation',
         },
       },
       {
@@ -257,7 +257,7 @@ async function notifyDocumentReviewed(tenant, pool, emp, item, normalized, hrRev
             candidate_name: candidateName,
             document_name: docName,
             review_status: normalized,
-            company_name: tenant.companyName || 'Organization',
+            company_name: tenant.companyName || 'Organisation',
           },
         },
         {

@@ -82,7 +82,7 @@ async function provisionEmployeeRow(pool, user) {
         email,
         username,
         roleId,
-        user.role === 'admin' ? 'Organization Admin' : 'Employee',
+        user.role === 'admin' ? 'Organisation Admin' : 'Employee',
         'General',
         'Full-time',
       ],

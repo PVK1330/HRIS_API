@@ -58,12 +58,12 @@ INSERT INTO rbac_permissions (key, label, sort_order) VALUES
 ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO rbac_roles (name, description, is_system)
-SELECT 'Organization Admin', 'Full module access within the tenant. Create custom roles in Settings for restricted portal users.', TRUE
-WHERE NOT EXISTS (SELECT 1 FROM rbac_roles WHERE name = 'Organization Admin');
+SELECT 'Organisation Admin', 'Full module access within the tenant. Create custom roles in Settings for restricted portal users.', TRUE
+WHERE NOT EXISTS (SELECT 1 FROM rbac_roles WHERE name = 'Organisation Admin');
 
 INSERT INTO rbac_role_permissions (role_id, permission_id)
 SELECT r.id, p.id
 FROM rbac_roles r
 CROSS JOIN rbac_permissions p
-WHERE r.name = 'Organization Admin'
+WHERE r.name = 'Organisation Admin'
 ON CONFLICT DO NOTHING;

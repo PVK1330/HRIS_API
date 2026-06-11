@@ -206,7 +206,7 @@ async function getTicketById(user, ticketId) {
   const ticket = rows[0];
 
   const repliesResult = await pool.query(
-    `SELECT id, ticket_id, superadmin_id, message, internal_notes, created_at
+    `SELECT id, ticket_id, superadmin_id, sender_role, message, internal_notes, created_at
      FROM support_ticket_replies
      WHERE ticket_id = $1
      ORDER BY created_at ASC`,
@@ -217,6 +217,41 @@ async function getTicketById(user, ticketId) {
     ...ticket,
     replies: repliesResult.rows || [],
   };
+}
+
+/**
+ * Store a tenant ADMIN's follow-up message as a reply (sender_role = 'admin').
+ * Enables a two-way conversation: the admin's first message is the ticket
+ * description, the superadmin responds via support_ticket_replies, and the admin
+ * can now reply back through this. Scoped to the tenant pool, so it can only
+ * touch this tenant's tickets.
+ */
+async function addAdminReply(user, ticketId, message) {
+  const pool = getPool(user);
+  await ensureMigrated(user.db_name);
+
+  const text = String(message || '').trim();
+  if (!text) throw ApiError.badRequest('Reply message is required');
+
+  const { rows: ticketRows } = await pool.query(
+    `SELECT id FROM support_tickets WHERE id = $1 AND admin_deleted = false`,
+    [ticketId],
+  );
+  if (!ticketRows.length) throw ApiError.notFound('Support ticket not found');
+
+  const { rows } = await pool.query(
+    `INSERT INTO support_ticket_replies (ticket_id, superadmin_id, sender_role, sender_id, message, created_at)
+     VALUES ($1, NULL, 'admin', $2, $3, CURRENT_TIMESTAMP)
+     RETURNING *`,
+    [ticketId, user.id, text],
+  );
+
+  await pool.query(
+    `UPDATE support_tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+    [ticketId],
+  );
+
+  return rows[0];
 }
 
 async function updateTicket(user, ticketId, ticketData) {
@@ -388,5 +423,6 @@ module.exports = {
   listTickets,
   getTicketById,
   updateTicket,
+  addAdminReply,
   deleteTicket,
 };

@@ -100,6 +100,22 @@ router.post(
 
 router.get('/access-profile', authenticate, controller.getAccessProfile);
 
+/* --- Self-service profile (tenant admin / hr / employee + superadmin) --- */
+router.get('/me', authenticate, controller.getMe);
+router.put(
+  '/me',
+  authenticate,
+  [
+    body('name')
+      .optional()
+      .isString().withMessage('name must be a string')
+      .trim()
+      .isLength({ min: 1 }).withMessage('name must not be empty'),
+  ],
+  validate,
+  controller.updateMe,
+);
+
 router.post(
   '/exchange-impersonation-code',
   authLimiter,

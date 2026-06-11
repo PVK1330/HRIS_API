@@ -70,6 +70,29 @@ router.post(
   controller.disableMfa
 );
 
+/* --- Self-service profile (superadmin + sub-admins) --- */
+router.get(
+  '/profile',
+  authenticate,
+  requireRole('superadmin', 'billing_admin', 'support_admin'),
+  controller.getProfile
+);
+
+router.put(
+  '/profile',
+  authenticate,
+  requireRole('superadmin', 'billing_admin', 'support_admin'),
+  [
+    body('name')
+      .optional()
+      .isString().withMessage('name must be a string')
+      .trim()
+      .isLength({ min: 1 }).withMessage('name must not be empty'),
+  ],
+  validate,
+  controller.updateProfile
+);
+
 router.get(
   '/admin-users',
   authenticate,

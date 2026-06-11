@@ -312,6 +312,25 @@ async function updateAdminUser(id, input) {
   return updated;
 }
 
+// Self-service profile for the currently authenticated superadmin / sub-admin.
+async function getProfile(userId) {
+  const profile = await repo.getProfileById(userId);
+  if (!profile) throw ApiError.notFound('Profile not found');
+  return profile;
+}
+
+async function updateProfile(userId, input = {}) {
+  const updates = {};
+  if (input.name != null) {
+    const name = String(input.name).trim();
+    if (!name) throw ApiError.badRequest('Name cannot be empty');
+    updates.name = name;
+  }
+  const updated = await repo.updateProfile(userId, updates);
+  if (!updated) throw ApiError.notFound('Profile not found');
+  return updated;
+}
+
 async function getRoles() {
   return repo.listRoles();
 }
@@ -526,6 +545,8 @@ module.exports = {
   getAdminUsers,
   createAdminUser,
   updateAdminUser,
+  getProfile,
+  updateProfile,
   getRoles,
   createRole,
   updateRole,

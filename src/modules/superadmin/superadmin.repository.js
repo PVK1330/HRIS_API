@@ -260,6 +260,33 @@ async function updateAdminUser(id, { name, role, status }) {
   return rows[0] || null;
 }
 
+// Self-service profile for the logged-in superadmin / sub-admin.
+async function getProfileById(id) {
+  await ensureSchema();
+  const sql = `
+    SELECT id, email, name, role, status, last_login_at, created_at,
+           COALESCE(two_factor_enabled, false) AS two_factor_enabled
+    FROM public.superadmins
+    WHERE id = $1
+    LIMIT 1
+  `;
+  const { rows } = await db.query(sql, [id]);
+  return rows[0] || null;
+}
+
+async function updateProfile(id, { name }) {
+  await ensureSchema();
+  const sql = `
+    UPDATE public.superadmins
+    SET name = COALESCE($1, name)
+    WHERE id = $2
+    RETURNING id, email, name, role, status, last_login_at, created_at,
+              COALESCE(two_factor_enabled, false) AS two_factor_enabled
+  `;
+  const { rows } = await db.query(sql, [name, id]);
+  return rows[0] || null;
+}
+
 async function listRoles() {
   await ensureRolesSchema();
   const sql = `
@@ -509,6 +536,8 @@ module.exports = {
   listAdminUsers,
   createAdminUser,
   updateAdminUser,
+  getProfileById,
+  updateProfile,
   listRoles,
   createRole,
   updateRole,

@@ -61,6 +61,22 @@ const changePassword = asyncHandler(async (req, res) => {
 });
 
 /**
+ * GET /api/v1/auth/me — current user's own profile.
+ */
+const getMe = asyncHandler(async (req, res) => {
+  const profile = await authService.getMe(req.user);
+  return ApiResponse.ok(res, { profile }, 'Profile retrieved successfully.');
+});
+
+/**
+ * PUT /api/v1/auth/me — update current user's own profile (name).
+ */
+const updateMe = asyncHandler(async (req, res) => {
+  const profile = await authService.updateMe(req.user, { name: req.body?.name });
+  return ApiResponse.ok(res, { profile }, 'Profile updated successfully.');
+});
+
+/**
  * Login — issues short-lived access token (JSON) + long-lived refresh token (httpOnly cookie).
  */
 const login = asyncHandler(async (req, res) => {
@@ -159,6 +175,8 @@ module.exports = {
   verifyOtp,
   resetPassword,
   changePassword,
+  getMe,
+  updateMe,
   getAccessProfile,
   verifyTwoFactor,
   getMfaStatus,

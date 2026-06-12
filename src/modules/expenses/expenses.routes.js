@@ -1,37 +1,42 @@
 'use strict';
 
 const { Router } = require('express');
-const { authenticate, loadAuthContext } = require('../../middlewares/auth.middleware');
+const {
+  authenticate,
+  loadAuthContext,
+  requirePermission,
+} = require('../../middlewares/auth.middleware');
 const { tenantResolver } = require('../../middlewares/tenant.middleware');
-const { uploadFile } = require('../../middlewares/upload.middleware');
+const { uploadReceipt, uploadExcel } = require('../../middlewares/upload.middleware');
+const { P } = require('../../constants/permissions');
 const ctrl = require('./expenses.controller');
 
 const router = Router();
 
-// Apply authentication, tenant resolving, and authorization context to all routes
 router.use(authenticate, tenantResolver, loadAuthContext);
 
-// Get statistics / summary (must be defined BEFORE /:id parameter)
+// Stats (before /:id)
 router.get('/statistics', ctrl.getStats);
 router.get('/summary', ctrl.getStats);
 
-// Get all claims with pagination, search, and filter
+// Approval-level config (EXP-02) — before /:id
+router.get('/approval-levels', ctrl.getApprovalLevels);
+router.put('/approval-levels', requirePermission(P.EXPENSES_MANAGE), ctrl.setApprovalLevels);
+
+// Excel export (EXP-10) — all authenticated users (scoped by role in controller)
+router.get('/export', ctrl.exportExpenses);
+
+// Excel import (EXP-30) — admin only
+router.get('/import/template', ctrl.downloadImportTemplate);
+router.post('/import', requirePermission(P.EXPENSES_MANAGE), uploadExcel('file'), ctrl.importExpenses);
+
+// Claims CRUD
 router.get('/', ctrl.list);
-
-// Create new expense claim with receipt upload (both /create and root POST)
-router.post('/create', uploadFile('receipt', 'receipt'), ctrl.create);
-router.post('/', uploadFile('receipt', 'receipt'), ctrl.create);
-
-// Get single claim by ID
+router.post('/create', uploadReceipt('receipt'), ctrl.create);
+router.post('/', uploadReceipt('receipt'), ctrl.create);
 router.get('/:id', ctrl.getOne);
-
-// Update claim (draft / rejected — fields as JSON)
-router.patch('/:id', ctrl.update);
-
-// Update claim status
-router.put('/:id/status', ctrl.updateStatus);
-
-// Delete claim
+router.patch('/:id', uploadReceipt('receipt'), ctrl.update);
+router.put('/:id/status', requirePermission(P.EXPENSES_APPROVE), ctrl.updateStatus);
 router.delete('/:id', ctrl.remove);
 
 module.exports = router;

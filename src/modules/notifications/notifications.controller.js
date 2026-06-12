@@ -27,8 +27,10 @@ const markRead = asyncHandler(async (req, res) => {
 });
 
 const markAllRead = asyncHandler(async (req, res) => {
-  await service.readAllNotifications(req.user, req.tenant);
-  return ApiResponse.ok(res, null, 'All notifications marked as read');
+  const updated = await service.readAllNotifications(req.user, req.tenant);
+  // Surface the authoritative new unread count (0) and how many rows changed, so the
+  // client doesn't have to rely on a follow-up /unread-count round-trip to reset the badge.
+  return ApiResponse.ok(res, { updated, count: 0 }, 'All notifications marked as read', { unreadCount: 0 });
 });
 
 const remove = asyncHandler(async (req, res) => {

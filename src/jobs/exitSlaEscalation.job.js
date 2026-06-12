@@ -12,9 +12,9 @@ async function getCompanyName(tenant) {
   try {
     const tenantSettingsService = require('../modules/tenantSettings/tenantSettings.service');
     const settings = await tenantSettingsService.getAdminSettings(tenant.db_name, '');
-    return settings.companyName || tenant.name || 'Organization';
+    return settings.companyName || tenant.name || 'Organisation';
   } catch (_) {
-    return tenant.name || 'Organization';
+    return tenant.name || 'Organisation';
   }
 }
 
@@ -120,7 +120,7 @@ async function processTenantSlas(tenant) {
     JOIN employees e            ON e.id = er.employee_id
     WHERE er.status = 'IN_PROGRESS'
       AND s.escalation_enabled = true
-      AND s.sla_hours IS NOT NULL
+      AND COALESCE(s.escalation_after_hours, s.sla_hours) IS NOT NULL
       AND (er.stage_entered_at
            + (COALESCE(s.escalation_after_hours, s.sla_hours) || ' hours')::interval) < NOW()
       AND NOT EXISTS (

@@ -1,6 +1,6 @@
-# Performance Management — Organization Admin Flow
+# Performance Management — Organisation Admin Flow
 
-> **Scope:** Multi-tenant SaaS HRIS. This document describes the **end-to-end Performance Management flow from the Organization (Tenant) Admin perspective**, mapped to the *actual* code in `HRIS_API` (backend) and `HRIS` (frontend). It also lists the gaps that must be closed to make the flow "proper" and production-grade.
+> **Scope:** Multi-tenant SaaS HRIS. This document describes the **end-to-end Performance Management flow from the Organisation (Tenant) Admin perspective**, mapped to the *actual* code in `HRIS_API` (backend) and `HRIS` (frontend). It also lists the gaps that must be closed to make the flow "proper" and production-grade.
 >
 > Companion docs: [`MULTITENANT_ARCHITECTURE.md`](./MULTITENANT_ARCHITECTURE.md), [`ATTENDANCE_LEAVE_FLOW.md`](./ATTENDANCE_LEAVE_FLOW.md), [`NOTIFICATION_LOGIC.md`](./NOTIFICATION_LOGIC.md).
 
@@ -26,7 +26,7 @@ Performance Management is a **per-tenant feature module**. Nothing here touches 
 
 | Role | `role` value | What they do in Performance | Data scope |
 |------|--------------|------------------------------|------------|
-| **Organization Admin** (HR Admin) | `admin` | Owns the whole cycle: defines cycles, competencies, assigns assessments, approves final assessments, exports reports | `ALL` (whole tenant) |
+| **Organisation Admin** (HR Admin) | `admin` | Owns the whole cycle: defines cycles, competencies, assigns assessments, approves final assessments, exports reports | `ALL` (whole tenant) |
 | **Manager** | `manager` | Sets goals/KPIs for their department's assigned assessments, reviews team | `TEAM` / department they manage |
 | **Employee** | `employee` | Updates own progress against assigned goals | `SELF` |
 
@@ -197,7 +197,7 @@ Not Started ──► In Progress ──► Completed ──(admin approves)─�
 
 ---
 
-## 7. Frontend (Organization Admin)
+## 7. Frontend (Organisation Admin)
 
 | Concern | File |
 |---------|------|

@@ -9,6 +9,7 @@ const repo = require('./messages.repository');
 const { inferMessageType } = require('./messages.upload');
 const {
   ensureMessagingEmployeeId,
+  provisionMessagingEmployeeId,
   parseConversationId,
   isConversationParticipant,
   otherParticipantId,
@@ -19,11 +20,22 @@ function getPool(user) {
   return getTenantPool(user.db_name);
 }
 
-async function requireMessagingEmployeeId(user) {
+// Resolve the messaging context. provision:false (default) is READ-ONLY — it never
+// writes, so reads and the socket-connect path can't auto-create employee rows.
+// provision:true is used only by deliberate write actions (open conversation /
+// send), which race-safely create the identity if the caller lacks one.
+async function getMessagingContext(user, { provision = false } = {}) {
   if (!user?.db_name) throw ApiError.unauthorized('Tenant not found');
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
-  const employeeId = await ensureMessagingEmployeeId(pool, user);
+  const employeeId = provision
+    ? await provisionMessagingEmployeeId(pool, user)
+    : await ensureMessagingEmployeeId(pool, user);
+  return { pool, employeeId }; // employeeId may be null (caller decides)
+}
+
+async function requireMessagingEmployeeId(user, opts = {}) {
+  const { pool, employeeId } = await getMessagingContext(user, opts);
   if (!employeeId) {
     throw ApiError.badRequest(
       'Could not link your account to an employee profile for messaging. Please log out and sign in again.',
@@ -48,13 +60,15 @@ function formatMessagePayload(msg) {
   };
 }
 
-function emitMessageRealtime(conversationId, participants, employeeId, msg) {
+function emitMessageRealtime(conversationId, participants, employeeId, msg, clientId = null) {
   try {
     const { getIo } = require('../../socket');
     const io = getIo();
     if (!io) return;
 
-    const payload = formatMessagePayload(msg);
+    // Echo the sender's stable client temp id so their originating tab can drop the
+    // matching optimistic placeholder by id (harmless null for the other party).
+    const payload = { ...formatMessagePayload(msg), client_id: clientId ?? null };
     const preview = payload.body || (payload.attachment_name ? `📎 ${payload.attachment_name}` : 'Attachment');
     const otherId = otherParticipantId(participants, employeeId);
 
@@ -77,12 +91,15 @@ function emitMessageRealtime(conversationId, participants, employeeId, msg) {
 }
 
 async function listConversations(user) {
-  const { pool, employeeId } = await requireMessagingEmployeeId(user);
+  // Page-load read: tolerate a not-yet-provisioned identity (e.g. an admin who
+  // hasn't started a chat). Their identity is created on the first openConversation.
+  const { pool, employeeId } = await getMessagingContext(user);
+  if (!employeeId) return [];
   return repo.listConversations(pool, employeeId);
 }
 
 async function listContacts(user, query = {}) {
-  const { pool, employeeId } = await requireMessagingEmployeeId(user);
+  const { pool, employeeId } = await getMessagingContext(user);
   const limit = query.limit != null ? parseInt(query.limit, 10) : 10000;
   return repo.listMessageContacts(pool, employeeId, {
     search: query.search || '',
@@ -91,7 +108,10 @@ async function listContacts(user, query = {}) {
 }
 
 async function openConversation(user, otherEmployeeId) {
-  const { pool, employeeId } = await requireMessagingEmployeeId(user);
+  // Deliberate authenticated action → create the caller's messaging identity if
+  // they don't have one yet (race-safe). This is the proper provisioning flow,
+  // replacing the old side-effectful auto-provision on the read/socket path.
+  const { pool, employeeId } = await requireMessagingEmployeeId(user, { provision: true });
   const otherId = parseInt(otherEmployeeId, 10);
   if (!Number.isInteger(otherId) || otherId <= 0) {
     throw ApiError.badRequest('Invalid employee id');
@@ -125,11 +145,11 @@ async function getMessages(user, conversationIdRaw, query = {}) {
   return { messages: msgs, conversationId };
 }
 
-async function sendMessage(user, conversationIdRaw, body) {
+async function sendMessage(user, conversationIdRaw, body, clientId = null) {
   const conversationId = parseConversationId(conversationIdRaw);
   if (!conversationId) throw ApiError.badRequest('Invalid conversation id');
 
-  const { pool, employeeId } = await requireMessagingEmployeeId(user);
+  const { pool, employeeId } = await requireMessagingEmployeeId(user, { provision: true });
   const text = String(body || '').trim();
   if (!text) throw ApiError.badRequest('Message body is required');
 
@@ -146,7 +166,7 @@ async function sendMessage(user, conversationIdRaw, body) {
     messageType: 'text',
   });
 
-  emitMessageRealtime(conversationId, participants, employeeId, msg);
+  emitMessageRealtime(conversationId, participants, employeeId, msg, clientId);
   return msg;
 }
 
@@ -155,7 +175,7 @@ async function sendMessageAttachment(user, conversationIdRaw, file, caption = ''
   if (!conversationId) throw ApiError.badRequest('Invalid conversation id');
   if (!file) throw ApiError.badRequest('No file uploaded');
 
-  const { pool, employeeId } = await requireMessagingEmployeeId(user);
+  const { pool, employeeId } = await requireMessagingEmployeeId(user, { provision: true });
   const participants = await repo.getConversationParticipants(pool, conversationId);
   if (!participants) throw ApiError.notFound('Conversation not found');
   if (!isConversationParticipant(participants, employeeId)) {
@@ -183,7 +203,9 @@ async function sendMessageAttachment(user, conversationIdRaw, file, caption = ''
 }
 
 async function getUnreadCount(user) {
-  const { pool, employeeId } = await requireMessagingEmployeeId(user);
+  // Page-load read — no identity yet means no unread messages.
+  const { pool, employeeId } = await getMessagingContext(user);
+  if (!employeeId) return 0;
   return repo.getUnreadCount(pool, employeeId);
 }
 

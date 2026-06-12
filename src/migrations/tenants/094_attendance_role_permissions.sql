@@ -1,12 +1,12 @@
 -- 094_attendance_role_permissions.sql
 -- Assign granular attendance permissions to roles (fixes "Missing attendance.manage")
 
--- Organization Admin: all attendance.* slugs
+-- Organisation Admin: all attendance.* slugs
 INSERT INTO rbac_role_permissions (role_id, permission_id)
 SELECT r.id, p.id
 FROM rbac_roles r
 CROSS JOIN rbac_permissions p
-WHERE r.name = 'Organization Admin'
+WHERE r.name = 'Organisation Admin'
   AND p.key LIKE 'attendance.%'
 ON CONFLICT DO NOTHING;
 
@@ -77,7 +77,7 @@ WHERE p.key IN (
     OR r.name ILIKE '%Lead%'
     OR rds.scope IN ('DEPARTMENT', 'TEAM', 'ALL')
   )
-  AND r.name NOT IN ('HR Admin', 'HR Executive', 'HR Manager', 'Organization Admin')
+  AND r.name NOT IN ('HR Admin', 'HR Executive', 'HR Manager', 'Organisation Admin')
 ON CONFLICT DO NOTHING;
 
 -- Employee / self scope: punch + own view + regularization

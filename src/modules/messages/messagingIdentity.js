@@ -38,7 +38,18 @@ async function findEmployeeByLogin(pool, loginId) {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
-async function autoProvisionEmployee(pool, user) {
+/**
+ * Create the messaging employee row for a tenant-workspace user that doesn't have
+ * one yet (typically an org admin whose login lives in admin_users, not employees).
+ *
+ * RACE-SAFE: two concurrent connects/actions for the same admin could both try to
+ * provision. work_email is UNIQUE on employees, so `ON CONFLICT (work_email) DO
+ * NOTHING` makes the loser's INSERT a harmless no-op; we then re-select the row the
+ * winner created. This is the ONLY place that writes — it must be called from a
+ * deliberate, authenticated action (see provisionMessagingEmployeeId), NEVER from a
+ * read/socket-connect path.
+ */
+async function provisionEmployeeRow(pool, user) {
   const email = String(user.email || '').trim();
   if (!email) return null;
 
@@ -54,11 +65,16 @@ async function autoProvisionEmployee(pool, user) {
     const username = email.includes('@') ? email.split('@')[0] : email;
     const empId = await empRepo.getNextEmpId(pool);
 
+    // Race-safe: a concurrent socket/REST connect for the same login may insert
+    // first. ON CONFLICT on the unique work_email column means the loser of the
+    // race inserts nothing (no duplicate, no placeholder churn) and we fall back
+    // to re-resolving the existing row below.
     const { rows: newEmp } = await pool.query(
       `INSERT INTO employees (
          emp_id, full_name, work_email, username, portal_enabled, rbac_role_id,
          employment_status, job_title, department, employment_type, join_date
        ) VALUES ($1, $2, $3, $4, true, $5, 'Active', $6, $7, $8, CURRENT_DATE)
+       ON CONFLICT (work_email) DO NOTHING
        RETURNING id`,
       [
         empId,
@@ -66,27 +82,35 @@ async function autoProvisionEmployee(pool, user) {
         email,
         username,
         roleId,
-        user.role === 'admin' ? 'Organization Admin' : 'Employee',
+        user.role === 'admin' ? 'Organisation Admin' : 'Employee',
         'General',
         'Full-time',
       ],
     );
     const id = Number(newEmp[0]?.id);
     if (Number.isInteger(id) && id > 0) {
-      logger.info(`[messages] auto-provisioned employee ${id} for ${email}`);
+      logger.info(`[messages] provisioned messaging employee ${id} for ${email}`);
       return id;
     }
+    // Lost the insert race (ON CONFLICT DO NOTHING returned no row) — resolve the
+    // row the winning connect created.
+    const raced = await findEmployeeByLogin(pool, email);
+    if (raced) return raced;
   } catch (err) {
-    logger.error(`[messages] auto-provision failed for ${email}:`, err.message);
-    const retry = await findEmployeeByLogin(pool, email);
-    if (retry) return retry;
+    // emp_id race or any other write error — fall through to the re-select below.
+    logger.error(`[messages] provision failed for ${email}:`, err.message);
   }
 
-  return null;
+  // ON CONFLICT no-op (another connect won the race) or a write error → return
+  // whichever row now exists.
+  return findEmployeeByLogin(pool, email);
 }
 
 /**
  * Resolve the employees.id used for messaging (never admin_users.id).
+ * READ-ONLY: this is what the socket-connect/presence and all read paths call, so
+ * it must have NO side effects. Returns null if the user has no employee profile;
+ * provisioning happens only via provisionMessagingEmployeeId on a write action.
  */
 async function resolveMessagingEmployeeId(pool, user) {
   if (!user || !pool) return null;
@@ -105,15 +129,25 @@ async function resolveMessagingEmployeeId(pool, user) {
     if (byLogin) return byLogin;
   }
 
-  if (isTenantWorkspaceUser(user)) {
-    return autoProvisionEmployee(pool, user);
-  }
-
   return null;
 }
 
+// READ-ONLY alias used by the socket connect path and pure reads.
 async function ensureMessagingEmployeeId(pool, user) {
   return resolveMessagingEmployeeId(pool, user);
+}
+
+/**
+ * Resolve the messaging identity, CREATING it (race-safe) if missing. Call this
+ * ONLY from deliberate authenticated write actions (open conversation / send),
+ * never from reads — that's what keeps provisioning off the socket/read path.
+ */
+async function provisionMessagingEmployeeId(pool, user) {
+  if (!user || !pool) return null;
+  const existing = await resolveMessagingEmployeeId(pool, user);
+  if (existing) return existing;
+  if (isTenantWorkspaceUser(user)) return provisionEmployeeRow(pool, user);
+  return null;
 }
 
 function parseConversationId(value) {
@@ -140,6 +174,7 @@ function otherParticipantId(participants, employeeId) {
 module.exports = {
   resolveMessagingEmployeeId,
   ensureMessagingEmployeeId,
+  provisionMessagingEmployeeId,
   parseConversationId,
   isConversationParticipant,
   otherParticipantId,

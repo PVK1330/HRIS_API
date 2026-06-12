@@ -1,6 +1,7 @@
 'use strict';
 
 const cron = require('node-cron');
+const moment = require('moment-timezone');
 const logger = require('../utils/logger');
 const { superAdminPool, getTenantPool } = require('../config/db');
 const { runTenantMigrations } = require('../modules/tenant/tenant.service');
@@ -12,6 +13,38 @@ function yesterdayStr() {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().split('T')[0];
+}
+
+// Tenant-local "yesterday". Processing the previous day in UTC is wrong for tenants
+// west of UTC: when the cron runs at 01:15 UTC, UTC-yesterday is still the *current*
+// (in-progress) day for, say, a Pacific tenant — so it would mark people absent for a
+// day that isn't over locally. Tenant timezones are stored as labels like
+// 'UTC+05:30 - India (IST)' (not always IANA), so use a real zone when moment knows
+// it, otherwise parse the 'UTC±HH:MM' offset; fall back to UTC-yesterday.
+function tenantYesterdayStr(timezone) {
+  const tz = String(timezone || '').trim();
+  if (tz && moment.tz.zone(tz)) {
+    return moment.utc().tz(tz).subtract(1, 'day').format('YYYY-MM-DD');
+  }
+  const m = tz.match(/UTC\s*([+-])(\d{1,2}):?(\d{2})?/i);
+  if (m) {
+    const sign = m[1] === '-' ? -1 : 1;
+    const offsetMin = sign * (Number(m[2]) * 60 + Number(m[3] || 0));
+    return moment.utc().utcOffset(offsetMin).subtract(1, 'day').format('YYYY-MM-DD');
+  }
+  return yesterdayStr();
+}
+
+async function resolveTenantTimezone(pool, dbName) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT timezone FROM tenant_admin_settings ORDER BY id LIMIT 1`,
+    );
+    if (rows[0] && rows[0].timezone) return rows[0].timezone;
+  } catch (e) {
+    logger.debug(`[attendanceCron] timezone lookup failed for ${dbName}, using UTC`, e.message);
+  }
+  return 'UTC';
 }
 
 async function processMissingCheckout(pool, tenantDb, dateStr) {
@@ -41,7 +74,8 @@ async function processMissingCheckout(pool, tenantDb, dateStr) {
 async function processTenant(tenant) {
   const pool = getTenantPool(tenant.db_name);
   await runTenantMigrations(tenant.db_name);
-  const yday = yesterdayStr();
+  const timezone = await resolveTenantTimezone(pool, tenant.db_name);
+  const yday = tenantYesterdayStr(timezone);
 
   const absentResult = await cronService.processDailyAbsent(pool, yday);
   if (absentResult.marked > 0) {
@@ -113,6 +147,14 @@ function startAttendanceCron() {
     logger.debug('Attendance cron disabled');
     return;
   }
+  // Defense-in-depth single-runner guard (server.js already gates all crons on the leader, but
+  // this cron's auto-approve/reject/month-close are the racy ones, so guard here too in case the
+  // start fn is ever called directly).
+  const { isCronLeader } = require('../utils/cronLeader');
+  if (!isCronLeader()) {
+    logger.info('[attendanceCron] not the cron leader — not scheduling');
+    return;
+  }
   cron.schedule('15 1 * * *', () => {
     runAllTenants().catch((e) => logger.error('[attendanceCron] run failed', e));
   });
@@ -124,4 +166,5 @@ module.exports = {
   runAllTenants,
   processTenant,
   yesterdayStr,
+  tenantYesterdayStr,
 };

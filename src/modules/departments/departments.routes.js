@@ -18,7 +18,7 @@ router.get('/filter-options', requirePermission(P.DEPARTMENTS_MANAGE), validateW
 
 router.get('/export', requirePermission(P.DEPARTMENTS_MANAGE), validateWithJoi(v.exportQuery, 'query'), ctrl.exportList);
 
-router.get('/managers', requirePermission(P.DEPARTMENTS_MANAGE), ctrl.listManagers);
+router.get('/managers', requirePermission(P.DEPARTMENTS_MANAGE), validateWithJoi(v.managersQuery, 'query'), ctrl.listManagers);
 
 router.get('/:id', requirePermission(P.DEPARTMENTS_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.getOne);
 
@@ -37,6 +37,12 @@ router.put(
   ctrl.update,
 );
 
-router.delete('/:id', requirePermission(P.DEPARTMENTS_MANAGE), validateWithJoi(v.idParam, 'params'), ctrl.remove);
+router.delete(
+  '/:id',
+  requirePermission(P.DEPARTMENTS_MANAGE),
+  validateWithJoi(v.idParam, 'params'),
+  validateWithJoi(v.deleteQuery, 'query'),
+  ctrl.remove,
+);
 
 module.exports = router;

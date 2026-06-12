@@ -287,6 +287,7 @@ async function createEmployee(user, data) {
             joinDate: full.join_date || "",
             username: full.username || full.work_email,
             plainPassword: welcomePlain,
+            tenant: { dbName: user.db_name },
           });
         } catch (mailErr) {
           logger.warn(`Welcome email skipped: ${mailErr.message}`);
@@ -540,6 +541,7 @@ async function completeOnboardingActivation(user, id, auth = null) {
       username: activated.username || workEmail,
       plainPassword,
       portalUrl,
+      tenant: { dbName: user.db_name },
     });
     emailSent = true;
   } catch (mailErr) {

@@ -66,22 +66,39 @@ async function create(pool, data) {
  * Update asset
  */
 async function update(pool, id, data) {
-  const { type, categoryId, serialNumber, employeeId, condition, status, issueDate, notes } = data;
-  const { rows } = await pool.query(`
-    UPDATE assets
-    SET 
-      type = COALESCE($2, type),
-      category_id = COALESCE($3, category_id),
-      serial_number = COALESCE($4, serial_number),
-      employee_id = $5,
-      condition = COALESCE($6, condition),
-      status = COALESCE($7, status),
-      issue_date = $8,
-      notes = COALESCE($9, notes),
-      updated_at = NOW()
-    WHERE id = $1
-    RETURNING *
-  `, [id, type, categoryId, serialNumber, employeeId, condition, status, issueDate, notes]);
+  // Partial-update semantics: only touch the columns the caller actually supplied.
+  // The previous statement assigned employee_id/issue_date RAW, so omitting them on a
+  // partial update silently wiped them to NULL, while the COALESCE columns could never
+  // be cleared. Build the SET list dynamically from the keys present in `data`.
+  const colMap = {
+    type: 'type',
+    categoryId: 'category_id',
+    serialNumber: 'serial_number',
+    employeeId: 'employee_id',
+    condition: 'condition',
+    status: 'status',
+    issueDate: 'issue_date',
+    notes: 'notes',
+  };
+  // employee_id (FK int) and issue_date (date) can't accept '' — treat blanks as NULL
+  // (i.e. unassign / clear). The NOT NULL text columns are never blanked here.
+  const blankToNull = new Set(['employeeId', 'issueDate']);
+
+  const sets = [];
+  const params = [id];
+  for (const [key, col] of Object.entries(colMap)) {
+    if (!Object.prototype.hasOwnProperty.call(data, key)) continue;
+    let value = data[key];
+    if (blankToNull.has(key) && (value === '' || value === undefined)) value = null;
+    params.push(value);
+    sets.push(`${col} = $${params.length}`);
+  }
+  sets.push('updated_at = NOW()');
+
+  const { rows } = await pool.query(
+    `UPDATE assets SET ${sets.join(', ')} WHERE id = $1 RETURNING *`,
+    params,
+  );
   return rows[0] || null;
 }
 

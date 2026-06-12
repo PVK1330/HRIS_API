@@ -9,6 +9,7 @@ const ctrl = require('./onboarding.controller');
 const multer = require('multer');
 const ApiError = require('../../../utils/ApiError');
 const { uploadEmployeeDocument } = require('../../../middlewares/employeeDocumentUpload.middleware');
+const { MIN_ONBOARDING_STEP, MAX_ONBOARDING_STEP } = require('./onboarding.workflow');
 
 const router = Router({ mergeParams: true });
 
@@ -28,7 +29,9 @@ router.post(
   requirePermission(P.ONBOARDING_MANAGE),
   [
     param('id').isInt({ min: 1 }),
-    body('step').optional().isInt({ min: 1, max: 10 }),
+    // Workflow defines exactly steps 1–3; reject out-of-range so a stray high value can't be
+    // persisted permanently via the GREATEST(...) write in patchOnboardingFields.
+    body('step').optional().isInt({ min: MIN_ONBOARDING_STEP, max: MAX_ONBOARDING_STEP }),
   ],
   validate,
   ctrl.notifyStep,

@@ -88,7 +88,8 @@ async function sendDedupedEmailOnly(tenant, { to, templateSlug, variables }, ded
   try {
     const { Mailer } = require('../../helpers/mailer/mailer');
     const mailer = await Mailer.getInstance();
-    await mailer.send({ to, templateSlug, variables });
+    // Pass the tenant so the org's own logo/name brand the email (org context).
+    await mailer.send({ to, templateSlug, variables, tenant });
     await historyRepo.recordSent(pool, {
       tenantId: dedupMeta.tenantId ?? tenant?.id ?? null,
       notificationType: dedupMeta.notificationType,

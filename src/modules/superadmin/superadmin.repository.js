@@ -72,7 +72,7 @@ function ensurePlatformSchema() {
         id BIGSERIAL PRIMARY KEY,
         title VARCHAR(255) NOT NULL,
         message TEXT NOT NULL,
-        audience VARCHAR(128) NOT NULL DEFAULT 'All Organizations',
+        audience VARCHAR(128) NOT NULL DEFAULT 'All Organisations',
         type VARCHAR(32) NOT NULL DEFAULT 'Info',
         sent_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         recipients INTEGER NOT NULL DEFAULT 48,
@@ -149,7 +149,7 @@ async function findByEmail(email) {
 async function findById(id) {
   await ensureSchema();
   const sql = `
-    SELECT id, email, name, role, status, last_login_at, two_factor_secret, created_at
+    SELECT id, email, name, role, status, last_login_at, two_factor_enabled, two_factor_secret, created_at
     FROM public.superadmins
     WHERE id = $1
     LIMIT 1
@@ -257,6 +257,33 @@ async function updateAdminUser(id, { name, role, status }) {
     RETURNING id, name, email, role, status, last_login_at, created_at
   `;
   const { rows } = await db.query(sql, [name, role, status, id]);
+  return rows[0] || null;
+}
+
+// Self-service profile for the logged-in superadmin / sub-admin.
+async function getProfileById(id) {
+  await ensureSchema();
+  const sql = `
+    SELECT id, email, name, role, status, last_login_at, created_at,
+           COALESCE(two_factor_enabled, false) AS two_factor_enabled
+    FROM public.superadmins
+    WHERE id = $1
+    LIMIT 1
+  `;
+  const { rows } = await db.query(sql, [id]);
+  return rows[0] || null;
+}
+
+async function updateProfile(id, { name }) {
+  await ensureSchema();
+  const sql = `
+    UPDATE public.superadmins
+    SET name = COALESCE($1, name)
+    WHERE id = $2
+    RETURNING id, email, name, role, status, last_login_at, created_at,
+              COALESCE(two_factor_enabled, false) AS two_factor_enabled
+  `;
+  const { rows } = await db.query(sql, [name, id]);
   return rows[0] || null;
 }
 
@@ -509,6 +536,8 @@ module.exports = {
   listAdminUsers,
   createAdminUser,
   updateAdminUser,
+  getProfileById,
+  updateProfile,
   listRoles,
   createRole,
   updateRole,

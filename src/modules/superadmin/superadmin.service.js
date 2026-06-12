@@ -281,7 +281,7 @@ async function createAdminUser({ name, email, password, role, status }) {
 
   // Send invitation email
   try {
-    const html = await renderEmail('admin-invite', {
+    const { html, attachments } = await renderEmail('admin-invite', {
       name: cleanName,
       email: cleanEmail,
       password: password,
@@ -292,7 +292,8 @@ async function createAdminUser({ name, email, password, role, status }) {
     await sendMail({
       to: cleanEmail,
       subject: 'HRIS Internal Administration - Invitation',
-      html
+      html,
+      attachments
     });
   } catch (error) {
     // We don't want to fail user creation if email fails, but we should log it
@@ -309,6 +310,25 @@ async function updateAdminUser(id, input) {
   if (input.status != null) updates.status = normalizeStatus(input.status);
   const updated = await repo.updateAdminUser(id, updates);
   if (!updated) throw ApiError.notFound('Admin user not found');
+  return updated;
+}
+
+// Self-service profile for the currently authenticated superadmin / sub-admin.
+async function getProfile(userId) {
+  const profile = await repo.getProfileById(userId);
+  if (!profile) throw ApiError.notFound('Profile not found');
+  return profile;
+}
+
+async function updateProfile(userId, input = {}) {
+  const updates = {};
+  if (input.name != null) {
+    const name = String(input.name).trim();
+    if (!name) throw ApiError.badRequest('Name cannot be empty');
+    updates.name = name;
+  }
+  const updated = await repo.updateProfile(userId, updates);
+  if (!updated) throw ApiError.notFound('Profile not found');
   return updated;
 }
 
@@ -385,7 +405,7 @@ async function getAnnouncements() {
 async function createAnnouncement({ title, message, audience, type }) {
   const cleanTitle = String(title || '').trim();
   const cleanMessage = String(message || '').trim();
-  const cleanAudience = String(audience || 'All Organizations').trim();
+  const cleanAudience = String(audience || 'All Organisations').trim();
   const cleanType = normalizeAnnouncementType(type);
 
   if (!cleanTitle || !cleanMessage) {
@@ -526,6 +546,8 @@ module.exports = {
   getAdminUsers,
   createAdminUser,
   updateAdminUser,
+  getProfile,
+  updateProfile,
   getRoles,
   createRole,
   updateRole,

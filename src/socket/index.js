@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const env = require('../config/env');
 const { socketCorsOrigin } = require('../config/cors');
 const { getTenantPool } = require('../config/db');
+const { createRedisClient, isEnabled: redisEnabled } = require('../config/redis');
 const logger = require('../utils/logger');
 const { runTenantMigrations } = require('../modules/tenant/tenant.service');
 const repo = require('../modules/messages/messages.repository');
@@ -52,6 +53,99 @@ function onlineIdsForTenant(dbName) {
   return tenantMap ? Array.from(tenantMap.keys()) : [];
 }
 
+// ── Presence heartbeat / TTL ────────────────────────────────────────────────
+// Engine.io disconnects dead sockets on its own ping-timeout, but if that
+// `disconnect` is ever missed (process hiccup, half-open TCP, a dropped close
+// frame) the in-memory presence Map keeps a user "online" forever — a stale dot
+// that never clears. As a backstop we stamp a last-seen time per socket,
+// refreshed by the transport heartbeat, any app event, and an explicit client
+// `heartbeat`. A sweeper expires sockets that go silent past PRESENCE_TTL_MS and
+// broadcasts the offline transition to the owning tenant room (never globally).
+const PRESENCE_TTL_MS = Number(process.env.PRESENCE_TTL_MS) || 60_000;
+const PRESENCE_SWEEP_MS = Number(process.env.PRESENCE_SWEEP_MS) || 15_000;
+const socketLastSeen = new Map(); // socketId -> { dbName, userId, lastSeen }
+
+function trackPresence(socketId, dbName, userId) {
+  socketLastSeen.set(socketId, { dbName, userId: Number(userId), lastSeen: Date.now() });
+}
+
+function touchPresence(socketId) {
+  const e = socketLastSeen.get(socketId);
+  if (e) e.lastSeen = Date.now();
+}
+
+// Emit offline to the tenant room ONLY when the user has no live sockets left.
+function announceOfflineIfGone(io, dbName, userId) {
+  if (!isOnline(dbName, userId)) {
+    io.to(`tenant:${dbName}`).emit('user:offline', { userId: Number(userId) });
+  }
+}
+
+// Remove one socket from presence (used by both graceful disconnect and the
+// TTL sweeper) and announce offline if it was the user's last connection.
+function dropSocketPresence(io, socketId) {
+  const e = socketLastSeen.get(socketId);
+  if (!e) return;
+  socketLastSeen.delete(socketId);
+  removeOnline(e.dbName, e.userId, socketId);
+  announceOfflineIfGone(io, e.dbName, e.userId);
+}
+
+function startPresenceSweeper(io) {
+  const timer = setInterval(() => {
+    const now = Date.now();
+    for (const [socketId, e] of socketLastSeen) {
+      if (now - e.lastSeen <= PRESENCE_TTL_MS) continue;
+      logger.debug(`[presence] expiring stale socket ${socketId} (employee ${e.userId}, tenant ${e.dbName})`);
+      dropSocketPresence(io, socketId);
+      const s = io.sockets.sockets.get(socketId);
+      if (s) s.disconnect(true);
+    }
+  }, PRESENCE_SWEEP_MS);
+  timer.unref?.();
+  return timer;
+}
+
+// ── Cross-instance fan-out (horizontal scaling) ─────────────────────────────
+// The default Socket.IO adapter keeps rooms/sockets in THIS process's memory, so
+// across multiple API instances a broadcast (new_message, presence, tickets)
+// only reaches clients connected to the SAME instance — everyone else silently
+// misses it. When Redis is configured we attach the Redis adapter so every emit
+// fans out to all instances. Falls back to the in-memory adapter (single
+// instance) when Redis is unset or the optional package isn't installed.
+//
+// ⚠ LOAD BALANCER — STICKY SESSIONS REQUIRED: Socket.IO's HTTP long-polling
+// handshake spans several requests that MUST land on the same instance, so the
+// LB MUST enable session affinity (e.g. nginx `ip_hash` or hash on the `io`
+// cookie; AWS ALB target-group stickiness on the `io` cookie). The Redis adapter
+// handles message fan-out, NOT handshake routing — without stickiness clients
+// get repeated "Session ID unknown" handshake errors. (Forcing the pure
+// `websocket` transport sidesteps polling, but polling is the default fallback.)
+function attachRedisAdapter(io) {
+  if (!redisEnabled()) {
+    logger.info('[socket] Redis not configured — using in-memory adapter (single-instance only).');
+    return;
+  }
+  let createAdapter;
+  try {
+    ({ createAdapter } = require('@socket.io/redis-adapter'));
+  } catch {
+    logger.warn(
+      "[socket] REDIS_* set but '@socket.io/redis-adapter' is not installed — using in-memory " +
+      'adapter. Install for multi-instance: npm i @socket.io/redis-adapter',
+    );
+    return;
+  }
+  const pubClient = createRedisClient('socket-pub');
+  const subClient = createRedisClient('socket-sub');
+  if (!pubClient || !subClient) {
+    logger.warn('[socket] Redis clients unavailable — using in-memory adapter.');
+    return;
+  }
+  io.adapter(createAdapter(pubClient, subClient));
+  logger.info('[socket] Redis adapter attached — cross-instance fan-out enabled.');
+}
+
 function resolveExitId(payload) {
   if (payload == null) return null;
   if (typeof payload === 'object') return payload.exitId ?? payload.id ?? null;
@@ -76,8 +170,18 @@ function initSocket(httpServer) {
     },
     path: '/socket.io',
     transports: ['websocket', 'polling'],
+    // Engine-level heartbeat: server pings every 25s and considers a socket dead
+    // if no pong arrives within 20s. This is the first line of stale-presence
+    // defense; the PRESENCE_TTL_MS sweeper above is the backstop.
+    pingInterval: 25_000,
+    pingTimeout: 20_000,
   });
   ioInstance = io;
+
+  // Horizontal scaling: cross-instance fan-out (no-op/in-memory without Redis).
+  attachRedisAdapter(io);
+  // Stale-presence backstop: expire sockets that stop heartbeating.
+  startPresenceSweeper(io);
 
   io.use((socket, next) => {
     try {
@@ -110,30 +214,47 @@ function initSocket(httpServer) {
     try {
       await ensureMigrated(user.db_name);
       const pool = getTenantPool(user.db_name);
+      // READ-ONLY resolve (no auto-provision on the connect path). May be null for
+      // a tenant user who has no employee profile yet; that's NOT fatal — the same
+      // socket also carries ticket/exit realtime, so we keep it connected and join
+      // the tenant room regardless. Messaging identity is created on the first
+      // deliberate action (openConversation) via the REST provisioning flow.
       userId = await ensureMessagingEmployeeId(pool, user);
-      if (!userId) {
-        logger.warn(`Socket ${socket.id}: no employee profile for ${user.email}`);
-        socket.disconnect(true);
-        return;
-      }
-      socket.messagingEmployeeId = userId;
+      socket.messagingEmployeeId = userId || null;
     } catch (err) {
       logger.error(`Socket auth setup failed for ${socket.id}:`, err);
       socket.disconnect(true);
       return;
     }
 
-    addOnline(user.db_name, userId, socket.id);
-    logger.debug('[socket] user joined', { userId, socketId: socket.id });
-    socket.join(`user:${userId}`);
-    logger.debug('[socket] tenant joined', { dbName: user.db_name, socketId: socket.id });
+    // Tenant room is for ALL tenant-scoped realtime (tickets, exit, presence) and
+    // must be joined whether or not the user has a messaging identity.
     socket.join(`tenant:${user.db_name}`);
+    logger.debug('[socket] tenant joined', { dbName: user.db_name, socketId: socket.id });
 
-    // Presence is scoped to this tenant's room only — never broadcast globally.
-    io.to(`tenant:${user.db_name}`).emit('user:online', { userId });
-    socket.emit('online_users_list', { onlineIds: onlineIdsForTenant(user.db_name) });
+    // Refresh last-seen on the transport heartbeat (pong), on ANY app event, and
+    // on an explicit client `heartbeat` — so an active socket never gets swept.
+    socket.conn.on('heartbeat', () => touchPresence(socket.id));
+    socket.onAny(() => touchPresence(socket.id));
+    socket.on('heartbeat', (ack) => {
+      touchPresence(socket.id);
+      if (typeof ack === 'function') ack({ ok: true });
+    });
 
-    logger.debug(`Socket connected: ${socket.id} (employee ${userId})`);
+    // Messaging presence only applies to users with an employee identity.
+    if (userId) {
+      addOnline(user.db_name, userId, socket.id);
+      trackPresence(socket.id, user.db_name, userId);
+      logger.debug('[socket] user joined', { userId, socketId: socket.id });
+      socket.join(`user:${userId}`);
+      // Presence is scoped to this tenant's room only — never broadcast globally.
+      io.to(`tenant:${user.db_name}`).emit('user:online', { userId });
+      socket.emit('online_users_list', { onlineIds: onlineIdsForTenant(user.db_name) });
+    } else {
+      logger.debug(`Socket ${socket.id}: no messaging profile for ${user.email} — connected for non-messaging realtime only`);
+    }
+
+    logger.debug(`Socket connected: ${socket.id} (employee ${userId ?? 'none'})`);
 
     socket.on('join_exit', (payload) => {
       const exitId = resolveExitId(payload);
@@ -155,16 +276,18 @@ function initSocket(httpServer) {
       if (cid) socket.leave(`conv:${cid}`);
     });
 
-    socket.on('send_message', async ({ conversationId: rawConvId, body }, ack) => {
+    socket.on('send_message', async ({ conversationId: rawConvId, body, clientId }, ack) => {
       try {
         const conversationId = parseConversationId(rawConvId);
         if (!conversationId || !body?.trim()) {
           return ack?.({ error: 'Invalid message' });
         }
 
+        const senderId = socket.messagingEmployeeId;
+        if (!senderId) return ack?.({ error: 'No messaging profile' });
+
         await ensureMigrated(user.db_name);
         const pool = getTenantPool(user.db_name);
-        const senderId = socket.messagingEmployeeId;
 
         const participants = await repo.getConversationParticipants(pool, conversationId);
         if (!participants) return ack?.({ error: 'Conversation not found' });
@@ -178,8 +301,10 @@ function initSocket(httpServer) {
           body: body.trim(),
         });
 
-        emitMessageRealtime(conversationId, participants, senderId, msg);
-        ack?.({ ok: true, message: formatMessagePayload(msg) });
+        // Echo the sender's stable client temp id back on the realtime payload so
+        // their own tab can reconcile the optimistic placeholder by id (not body).
+        emitMessageRealtime(conversationId, participants, senderId, msg, clientId);
+        ack?.({ ok: true, message: { ...formatMessagePayload(msg), client_id: clientId ?? null } });
       } catch (err) {
         logger.error('send_message socket error:', err);
         ack?.({ error: err.message || 'Failed to send message' });
@@ -209,6 +334,7 @@ function initSocket(httpServer) {
       const conversationId = parseConversationId(rawConvId);
       if (!conversationId) return;
       const senderId = socket.messagingEmployeeId;
+      if (!senderId) return;
       socket.to(`conv:${conversationId}`).emit('user_typing', {
         conversationId,
         userId: senderId,
@@ -217,11 +343,10 @@ function initSocket(httpServer) {
     });
 
     socket.on('disconnect', () => {
-      removeOnline(user.db_name, userId, socket.id);
-      // Only announce offline to this tenant's room — never globally.
-      if (!isOnline(user.db_name, userId)) {
-        io.to(`tenant:${user.db_name}`).emit('user:offline', { userId });
-      }
+      // Removes this socket from presence and announces offline to THIS tenant's
+      // room only (never globally) when it was the user's last connection. Same
+      // path the TTL sweeper uses for ungraceful drops.
+      dropSocketPresence(io, socket.id);
       logger.debug(`Socket disconnected: ${socket.id}`);
     });
 

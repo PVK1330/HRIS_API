@@ -415,7 +415,7 @@ async function getPayrollSummary(pool, employeeId, year, month) {
        COUNT(*) FILTER (WHERE status = 'Absent')::int AS absent_days,
        COUNT(*) FILTER (WHERE status = 'Half Day')::int AS half_days,
        COUNT(*) FILTER (WHERE paid_day = true)::int AS paid_days,
-       ROUND(COALESCE(SUM(overtime_hours), 0)::numeric, 2) AS overtime_hours,
+       ROUND(COALESCE(SUM(overtime_hours) FILTER (WHERE overtime_status = 'Approved'), 0)::numeric, 2) AS overtime_hours,
        COUNT(*) FILTER (WHERE is_late = true)::int AS late_count,
        COUNT(*) FILTER (WHERE status = 'On Leave')::int AS leave_days,
        COUNT(*) FILTER (WHERE paid_day = true OR status IN ('Present','Late','Half Day','On Leave','Holiday'))::int AS payable_days

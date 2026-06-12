@@ -80,13 +80,13 @@ async function getCompany(tenant) {
     const tenantSettingsService = require('../tenantSettings/tenantSettings.service');
     const tenantSettings = await tenantSettingsService.getAdminSettings(tenant.dbName, '');
     return {
-      company_name: tenantSettings.companyName || tenant.companyName || 'Organization',
+      company_name: tenantSettings.companyName || tenant.companyName || 'Organisation',
       contact_email: tenantSettings.contactDetails || '',
       company_address: tenantSettings.address || '',
       company_logo_path: tenantSettings.logoUrl || '',
     };
   } catch (_) {
-    return { company_name: tenant.companyName || 'Organization', contact_email: '', company_address: '', company_logo_path: '' };
+    return { company_name: tenant.companyName || 'Organisation', contact_email: '', company_address: '', company_logo_path: '' };
   }
 }
 
@@ -263,10 +263,19 @@ async function getDownload(tenant, requestId, attachmentId) {
   );
   if (!rows.length) throw ApiError.notFound('Document not found');
   const row = rows[0];
+  const baseDir = path.resolve(env.UPLOAD.dir);
   const rel = String(row.file_url).replace(/^\/uploads\//, '');
-  const absPath = path.resolve(env.UPLOAD.dir, rel);
+  const absPath = path.resolve(baseDir, rel);
+  // Containment check: a crafted file_url (e.g. "/uploads/../../etc/passwd" or an absolute
+  // path) survives the leading-"/uploads/" strip and would otherwise resolve outside the
+  // uploads base. path.relative is ".."-prefixed (or absolute) exactly when absPath escapes.
+  const relToBase = path.relative(baseDir, absPath);
+  if (relToBase === '' || relToBase.startsWith('..') || path.isAbsolute(relToBase)) {
+    throw ApiError.notFound('Document not found');
+  }
   if (!fs.existsSync(absPath)) throw ApiError.notFound('Document file is missing on disk');
   return { absPath, fileName: row.file_name, mimeType: row.mime_type || 'application/pdf' };
 }
 
 module.exports = { listTemplates, listGenerated, generate, getDownload };
+

@@ -9,7 +9,7 @@ INSERT INTO letter_tags (tag, description, is_system) VALUES
 ('work_email', 'Official Work Email', TRUE),
 ('work_location', 'Work Location', TRUE),
 ('today_date', 'Current Date', TRUE),
-('company_name', 'Name of the Organization', TRUE)
+('company_name', 'Name of the Organisation', TRUE)
 ON CONFLICT DO NOTHING;
 
 -- Seed default templates

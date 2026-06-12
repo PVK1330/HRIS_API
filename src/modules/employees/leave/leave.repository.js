@@ -117,7 +117,7 @@ async function findRequestById(pool, id) {
 async function insertRequest(pool, data) {
   const {
     employeeId, leaveType, fromDate, toDate, totalDays,
-    reason, handoverNote, alternatContact, supportingDocumentUrl,
+    reason, handoverNote, alternateContact, supportingDocumentUrl,
     status = 'Pending Manager Approval',
   } = data;
 
@@ -132,7 +132,7 @@ async function insertRequest(pool, data) {
                TO_CHAR(created_at,'DD/MM/YYYY') AS "createdAt"`,
     [
       employeeId, leaveType, fromDate, toDate, totalDays,
-      reason, handoverNote || null, alternatContact || null,
+      reason, handoverNote || null, alternateContact || null,
       supportingDocumentUrl || null, status,
     ]
   );
@@ -245,6 +245,32 @@ async function findOverlappingRequest(pool, employeeId, fromDate, toDate) {
     [employeeId, fromDate, toDate]
   );
   return rows[0] || null;
+}
+
+/**
+ * Total leave days the employee already has tied up in OTHER in-flight (Pending) requests of
+ * the same leave type for the given balance year. These requests have NOT yet been deducted
+ * from leave_balances.used — only Approved days are — so the apply-time balance check must
+ * subtract them too, otherwise an employee can stack several pending requests that together
+ * exceed their entitlement.
+ *
+ * Counts only the not-yet-resolved Pending* statuses; Approved (already in `used`), Rejected,
+ * Cancelled and Draft are excluded. `excludeRequestId` lets a caller ignore one specific
+ * request (e.g. when re-checking an already-inserted one). Year is matched on from_date so it
+ * lines up with how leave_balances is bucketed.
+ */
+async function sumPendingDaysForType(pool, employeeId, leaveType, year, excludeRequestId = null) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(total_days), 0)::float AS pending_days
+       FROM leave_requests
+      WHERE employee_id = $1
+        AND LOWER(TRIM(leave_type)) = LOWER(TRIM($2))
+        AND status IN ('Pending Manager Approval', 'Pending Dept Approval', 'Pending HR Approval')
+        AND EXTRACT(YEAR FROM from_date) = $3
+        AND ($4::int IS NULL OR id <> $4)`,
+    [employeeId, leaveType, year, excludeRequestId]
+  );
+  return Number(rows[0].pending_days) || 0;
 }
 
 async function getBalances(pool, employeeId, year) {
@@ -376,7 +402,7 @@ module.exports = {
   findActiveLeaveType,
   findActiveLeaveTypeById,
   getActiveLeaveTypes,
-  getBalanceForType, findOverlappingRequest,
+  getBalanceForType, findOverlappingRequest, sumPendingDaysForType,
   getBalances, getAllBalances, upsertBalance,
   lockBalanceForUpdate, incrementUsed,
   getStats,

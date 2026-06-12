@@ -13,6 +13,9 @@ const SORT_COL = {
   status: 'd.status',
 };
 
+// Upper bound on page size, kept in sync with the Joi listingQuery limit (max 1000).
+const MAX_LIMIT = 1000;
+
 function normalizeListStatus(raw) {
   let s = (raw || 'all').toString().toLowerCase();
   if (!['all', 'active', 'inactive'].includes(s)) s = 'all';
@@ -67,6 +70,23 @@ function mapRow(r) {
     employeeCount: parseInt(r.employee_count, 10) || 0,
     status: r.is_active ? 'Active' : 'Inactive',
   };
+}
+
+// Employees are linked to a department by department_id (FK). Counting on the
+// department NAME (e.department = d.name) silently drops to 0 the moment a
+// department is renamed — the FK still holds, but the string no longer matches.
+// Count by id, falling back to the legacy name match only for rows that have not
+// been backfilled with a department_id yet. Mirrors empCountSql() in
+// designations.service.js so both stay consistent.
+function deptEmpCountSql() {
+  return `(
+    SELECT COUNT(*)::int FROM employees e
+    WHERE e.deleted_at IS NULL
+      AND (
+        e.department_id = d.id
+        OR (e.department_id IS NULL AND e.department IS NOT DISTINCT FROM d.name)
+      )
+  )`;
 }
 
 function buildWhereClause(query) {
@@ -131,10 +151,26 @@ async function assertParentExists(pool, parentId, selfId = null) {
   if (selfId && parentId === selfId) throw new ApiError(400, 'Department cannot be its own parent');
 }
 
+// Same existence guarantee parent_id/department_id already get: a manager_id must
+// point at a real, non-soft-deleted employee. Without this a phantom head could be
+// stored and a non-existent employee notified. NaN/0/null short-circuit as "not set".
+async function assertManagerExists(pool, managerId) {
+  if (!managerId) return;
+  const { rows } = await pool.query(
+    `SELECT id FROM employees WHERE id = $1 AND deleted_at IS NULL`,
+    [managerId],
+  );
+  if (!rows.length) throw new ApiError(400, 'manager_id does not exist or has been deleted');
+}
+
 async function listDepartments(tenant, query = {}) {
   const pool = await getTenantPool(tenant.dbName);
   const page = Math.max(1, parseInt(query.page, 10) || 1);
-  const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 10));
+  // Honour the requested limit up to a sane ceiling. The old Math.min(100, …)
+  // silently clipped the client's limit=500 dropdown request to 100, so
+  // designations could not be mapped to department #101+. MAX_LIMIT matches the
+  // Joi listingQuery cap (max 1000) so a validated request is never re-clipped here.
+  const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(query.limit, 10) || 10));
   const offset = (page - 1) * limit;
   const sortBy = SORT_COL[query.sortBy] ? query.sortBy : 'created_at';
   const sortOrder = String(query.sortOrder || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
@@ -146,6 +182,28 @@ async function listDepartments(tenant, query = {}) {
     countParams,
   );
   const total = countRows[0]?.total ?? 0;
+
+  // KPI totals for the cards. Computed over the whole filtered set (not the current
+  // page) and WITHOUT the status filter (status === 'all'), since the Active/Inactive
+  // cards double as status filters and must always show the full breakdown.
+  const statsScope = buildWhereClause({ ...query, status: 'all' });
+  const { rows: statsRows } = await pool.query(
+    `SELECT
+       COUNT(*)::int                                            AS total,
+       COUNT(*) FILTER (WHERE d.is_active = true)::int          AS active,
+       COUNT(*) FILTER (WHERE d.is_active = false)::int         AS inactive,
+       COUNT(*) FILTER (WHERE d.manager_id IS NOT NULL)::int    AS with_head
+     FROM departments d
+     WHERE ${statsScope.where}`,
+    statsScope.params,
+  );
+  const s = statsRows[0] ?? {};
+  const stats = {
+    total: s.total ?? 0,
+    active: s.active ?? 0,
+    inactive: s.inactive ?? 0,
+    assignedHeads: s.with_head ?? 0,
+  };
 
   const dataParams = [...params, limit, offset];
   const lim = dataParams.length - 1;
@@ -165,7 +223,7 @@ async function listDepartments(tenant, query = {}) {
        d.created_at,
        d.updated_at,
        mgr.full_name AS head,
-       (SELECT COUNT(*)::int FROM employees e WHERE e.deleted_at IS NULL AND e.department = d.name) AS employee_count
+       ${deptEmpCountSql()} AS employee_count
      FROM departments d
      LEFT JOIN departments p ON p.id = d.parent_id
      LEFT JOIN employees mgr ON mgr.id = d.manager_id AND mgr.deleted_at IS NULL
@@ -187,6 +245,7 @@ async function listDepartments(tenant, query = {}) {
 
   return {
     records: rows.map(mapRow),
+    stats,
     pagination: {
       total,
       page,
@@ -234,7 +293,7 @@ async function listAllForExport(tenant, query) {
        d.created_at,
        d.updated_at,
        mgr.full_name AS head,
-       (SELECT COUNT(*)::int FROM employees e WHERE e.deleted_at IS NULL AND e.department = d.name) AS employee_count
+       ${deptEmpCountSql()} AS employee_count
      FROM departments d
      LEFT JOIN departments p ON p.id = d.parent_id
      LEFT JOIN employees mgr ON mgr.id = d.manager_id AND mgr.deleted_at IS NULL
@@ -260,16 +319,76 @@ async function getFilterOptions(tenant) {
   };
 }
 
-async function listDepartmentManagers(tenant) {
+// Head-of-Department picker. The old version returned every employee capped at a
+// flat 500 with no search/paging/role filter, so in large tenants anyone past the
+// first 500 (alphabetically) was simply unselectable. Now searchable + paginated,
+// with an optional role filter, so any employee is reachable.
+async function listDepartmentManagers(tenant, query = {}) {
   const pool = await getTenantPool(tenant.dbName);
-  const { rows } = await pool.query(
-    `SELECT id, full_name AS name, emp_id
-     FROM employees
-     WHERE deleted_at IS NULL
-     ORDER BY full_name ASC
-     LIMIT 500`,
+  const page = Math.max(1, parseInt(query.page, 10) || 1);
+  const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(query.limit, 10) || 50));
+  const offset = (page - 1) * limit;
+
+  const conditions = ['e.deleted_at IS NULL'];
+  const params = [];
+  let i = 1;
+
+  const search = (query.search || query.q || '').trim();
+  if (search) {
+    params.push(`%${search}%`);
+    conditions.push(
+      `(e.full_name ILIKE $${i} OR e.emp_id ILIKE $${i} OR COALESCE(e.work_email, '') ILIKE $${i})`,
+    );
+    i += 1;
+  }
+
+  // Optional role filter: numeric → rbac_role_id, otherwise case-insensitive role name.
+  const roleId = parseInt(String(query.roleId ?? query.role_id ?? ''), 10);
+  if (Number.isInteger(roleId) && roleId > 0) {
+    params.push(roleId);
+    conditions.push(`e.rbac_role_id = $${i}`);
+    i += 1;
+  } else {
+    const role = (query.role || '').trim();
+    if (role) {
+      params.push(role);
+      conditions.push(`rr.name ILIKE $${i}`);
+      i += 1;
+    }
+  }
+
+  const where = conditions.join(' AND ');
+  const { rows: countRows } = await pool.query(
+    `SELECT COUNT(*)::int AS total
+     FROM employees e
+     LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
+     WHERE ${where}`,
+    params,
   );
-  return rows;
+  const total = countRows[0]?.total ?? 0;
+
+  const dataParams = [...params, limit, offset];
+  const { rows } = await pool.query(
+    `SELECT e.id, e.full_name AS name, e.emp_id, rr.name AS role
+     FROM employees e
+     LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
+     WHERE ${where}
+     ORDER BY e.full_name ASC, e.id ASC
+     LIMIT $${i} OFFSET $${i + 1}`,
+    dataParams,
+  );
+
+  return {
+    records: rows,
+    pagination: {
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+      hasNext: page * limit < total,
+      hasPrev: page > 1,
+    },
+  };
 }
 
 async function getDepartment(tenant, id) {
@@ -279,7 +398,7 @@ async function getDepartment(tenant, id) {
       d.*,
       p.name AS parent_name,
       mgr.full_name AS head,
-      (SELECT COUNT(*)::int FROM employees e WHERE e.deleted_at IS NULL AND e.department = d.name) AS employee_count
+      ${deptEmpCountSql()} AS employee_count
     FROM departments d
     LEFT JOIN departments p ON p.id = d.parent_id
     LEFT JOIN employees mgr ON mgr.id = d.manager_id AND mgr.deleted_at IS NULL
@@ -306,6 +425,7 @@ async function createDepartment(tenant, data) {
 
   await assertUniqueDepartmentName(pool, data.name);
   await assertParentExists(pool, parentId, null);
+  await assertManagerExists(pool, Number.isInteger(managerId) && managerId > 0 ? managerId : null);
 
   // User-supplied code → validate uniqueness (409 on dup); else auto-generate a
   // collision-resistant unique one.
@@ -411,7 +531,9 @@ async function updateDepartment(tenant, id, data) {
       managerRaw !== null && String(managerRaw).trim() !== ''
         ? parseInt(String(managerRaw), 10)
         : null;
-    params.push(Number.isInteger(managerId) && managerId > 0 ? managerId : null);
+    const normalizedManagerId = Number.isInteger(managerId) && managerId > 0 ? managerId : null;
+    await assertManagerExists(pool, normalizedManagerId);
+    params.push(normalizedManagerId);
     fields.push(`manager_id = $${n++}`);
   }
   if (data.manager_emp_id !== undefined) {
@@ -464,29 +586,72 @@ async function updateDepartment(tenant, id, data) {
   return result;
 }
 
-async function deleteDepartment(tenant, id) {
+async function deleteDepartment(tenant, id, opts = {}) {
   const pool = await getTenantPool(tenant.dbName);
+  const force = opts.force === true || String(opts.force).toLowerCase() === 'true';
+
   const { rows: existingRows } = await pool.query(
     `SELECT name FROM departments WHERE id = $1`,
     [id],
   );
-  const { rowCount } = await pool.query(
+  if (!existingRows.length) throw new ApiError(404, 'Department not found');
+  const deptName = existingRows[0].name;
+
+  // Guard: this is a SOFT delete (is_active=false). The employees → departments FK
+  // is ON DELETE SET NULL and the designations FK is ON DELETE CASCADE, but neither
+  // fires on a soft UPDATE — so without a guard we'd silently archive a department
+  // that still has live employees attached. Count by department_id (with the legacy
+  // name fallback for un-backfilled rows) and block unless the caller confirms.
+  const { rows: cntRows } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM employees e
+      WHERE e.deleted_at IS NULL
+        AND (
+          e.department_id = $1
+          OR (e.department_id IS NULL AND e.department IS NOT DISTINCT FROM $2)
+        )`,
+    [id, deptName],
+  );
+  const assigned = cntRows[0]?.n ?? 0;
+  if (assigned > 0 && !force) {
+    throw new ApiError(
+      409,
+      `${assigned} employee${assigned === 1 ? ' is' : 's are'} still assigned to "${deptName}". ` +
+        `Reassign them first, or confirm to archive the department anyway.`,
+    );
+  }
+
+  // Soft-delete the department itself.
+  await pool.query(
     `UPDATE departments SET is_active = false, status = 'inactive', updated_at = NOW() WHERE id = $1`,
     [id],
   );
-  if (!rowCount) throw new ApiError(404, 'Department not found');
+
+  // Cascade the soft delete to designations. The designations.department_id FK is
+  // ON DELETE CASCADE, but that only fires on a hard DELETE; on a soft UPDATE it
+  // never runs, leaving designations active under an archived department. Deactivate
+  // them here so state stays consistent. Only touch currently-active rows.
+  const { rowCount: deactivatedDesignations } = await pool.query(
+    `UPDATE designations
+        SET is_active = false, status = 'inactive', updated_at = NOW()
+      WHERE department_id = $1 AND is_active = true`,
+    [id],
+  );
 
   notify.pushNotification(tenant, {
     forAdmin: true,
-    title: `Department Deleted: ${existingRows[0]?.name || 'Department'}`,
-    message: `The "${existingRows[0]?.name || 'department'}" department has been deactivated.`,
+    title: `Department Deleted: ${deptName || 'Department'}`,
+    message:
+      `The "${deptName || 'department'}" department has been deactivated` +
+      (deactivatedDesignations
+        ? ` along with ${deactivatedDesignations} designation${deactivatedDesignations === 1 ? '' : 's'}.`
+        : '.'),
     type: 'warning',
     entityType: 'department',
     entityId: id,
     redirectUrl: '/admin/departments',
   }).catch(() => null);
 
-  return true;
+  return { archived: true, employeesAssigned: assigned, deactivatedDesignations };
 }
 
 module.exports = {

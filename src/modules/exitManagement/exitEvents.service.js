@@ -28,20 +28,20 @@ async function getCompany(tenant) {
     const tenantSettingsService = require('../tenantSettings/tenantSettings.service');
     const tenantSettings = await tenantSettingsService.getAdminSettings(tenant.dbName, '');
     return {
-      companyName: tenantSettings.companyName || tenant.companyName || 'Organization',
+      companyName: tenantSettings.companyName || tenant.companyName || 'Organisation',
       companyLogo: tenantSettings.logoUrl || '',
     };
   } catch (_) { 
-    return { companyName: tenant ? tenant.companyName : 'Organization', companyLogo: '' }; 
+    return { companyName: tenant ? tenant.companyName : 'Organisation', companyLogo: '' }; 
   }
 }
 
-async function sendTemplate(to, templateSlug, variables, attachments = []) {
+async function sendTemplate(tenant, to, templateSlug, variables, attachments = []) {
   if (!to) return;
   try {
     const { Mailer } = require('../../helpers/mailer/mailer');
     const mailer = await Mailer.getInstance();
-    await mailer.send({ to, templateSlug, variables, attachments });
+    await mailer.send({ to, templateSlug, variables, attachments, tenant });
   } catch (mailErr) {
     logger.warn('[exitEvents] template email failed', { to, templateSlug, err: mailErr.message });
   }
@@ -325,8 +325,11 @@ async function onSubmitted(tenant, requestId) {
 
   const hrAdmins = await getHROrAdminRecipients(pool);
 
+  // loadReq aliases reporting_manager_id AS reporting_to (line ~77), so the manager id lives
+  // on req.reporting_to — reading req.reporting_manager_id here was always undefined, so the
+  // manager notification silently never sent.
   const notifyList = [
-    { id: req.reporting_manager_id, role: 'Manager' },
+    { id: req.reporting_to, role: 'Manager' },
     { id: req.dept_head_id, role: 'Department Head' }
   ].filter(x => x.id && x.id !== req.employee_id);
 
@@ -479,7 +482,7 @@ async function onCompleted(tenant, requestId) {
           }
         }
         if (attachments.length && req.work_email) {
-          await sendTemplate(req.work_email, 'exit_request_completed', {
+          await sendTemplate(tenant, req.work_email, 'exit_request_completed', {
             employee_name: empName,
             company_name: company.companyName,
             app_name: company.companyName,
@@ -500,7 +503,7 @@ async function onCompleted(tenant, requestId) {
       redirectUrl: `/admin/exit-management/${requestId}`
     });
     if (!documentsEmailed) {
-      await sendTemplate(req.work_email, 'exit_request_completed', {
+      await sendTemplate(tenant, req.work_email, 'exit_request_completed', {
         employee_name: empName,
         company_name: company.companyName,
         app_name: company.companyName,
@@ -528,16 +531,12 @@ async function onCompleted(tenant, requestId) {
       entityId: requestId,
     });
 
-    // Epic P3: Employee Deactivation Workflow
-    // Deactivate the employee account immediately on exit completion
+    // Epic P3: Employee Deactivation Workflow — mark the employee separated using the SAME
+    // canonical field set as advanceStage / restored by withdraw (see exitSeparation.util),
+    // so completion and withdraw stay in lock-step.
     try {
-      await pool.query(
-        `UPDATE employees 
-         SET status = 'EXITED', 
-             deleted_at = COALESCE(deleted_at, NOW()) 
-         WHERE id = $1`,
-        [req.employee_id]
-      );
+      const separation = require('./exitSeparation.util');
+      await separation.markEmployeeSeparated(pool, req.employee_id);
       logger.info('[exit] employee deactivated', { employeeId: req.employee_id });
     } catch (e) {
       logger.error('[exit] failed to deactivate employee account', { err: e.message });
@@ -561,7 +560,7 @@ async function onRejected(tenant, requestId, reason) {
       entityId: requestId,
       redirectUrl: `/admin/exit-management/${requestId}`
     });
-    await sendTemplate(req.work_email, 'exit_request_rejected', {
+    await sendTemplate(tenant, req.work_email, 'exit_request_rejected', {
       employee_name: empName,
       company_name: company.companyName,
       app_name: company.companyName,
@@ -908,7 +907,7 @@ async function onReassigned(tenant, requestId) {
         entityId: requestId,
         redirectUrl: `/admin/exit-management/${requestId}`
       });
-      await sendTemplate(head.work_email, 'exit_stage_pending', {
+      await sendTemplate(tenant, head.work_email, 'exit_stage_pending', {
         recipient_name: head.full_name || 'Colleague', employee_name: empName,
         job_title: req.job_title || '', stage_name: req.stage_name || '', company_name: company.companyName,
       });
@@ -1060,12 +1059,18 @@ async function completeTask(tenant, taskId, exitUser) {
   if (!isOwner && !exitUser.isOrgExitAdmin) {
     throw ApiError.forbidden('You can only complete tasks assigned to you');
   }
+  // Only PENDING tasks can be completed. Scoping the UPDATE to status='PENDING'
+  // prevents resurrecting a task that already reached a terminal state — e.g. CLOSED
+  // (set by closeRequestTasks when the request completed/withdrew) or COMPLETED.
   const { rows: upd } = await pool.query(
     `UPDATE exit_tasks SET status = 'COMPLETED', completed_at = NOW(), completed_by = $2
-     WHERE id = $1 RETURNING *`,
+     WHERE id = $1 AND status = 'PENDING' RETURNING *`,
     [taskId, exitUser.employeeId || null],
   );
   const completed = upd[0];
+  if (!completed) {
+    throw ApiError.badRequest(`Task is already ${String(task.status || 'closed').toLowerCase()} and cannot be completed`);
+  }
   if (completed) {
     const desc = completed.description || '';
     const match = desc.match(/Checklist item ID:\s*(\d+)/i);

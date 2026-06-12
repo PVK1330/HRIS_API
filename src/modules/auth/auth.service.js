@@ -65,7 +65,7 @@ async function fetchPlanBundles(planId) {
 }
 
 /**
- * Tenant admin sidebar modules follow the "Organization Admin" RBAC role
+ * Tenant admin sidebar modules follow the "Organisation Admin" RBAC role
  * (Settings → Roles & permissions), not every permission in the database.
  */
 async function adminModulesForJwt(tenantPool) {
@@ -73,7 +73,7 @@ async function adminModulesForJwt(tenantPool) {
   try {
     const { rows: roleRows } = await tenantPool.query(
       `SELECT id FROM rbac_roles
-       WHERE is_system = TRUE AND name = 'Organization Admin'
+       WHERE is_system = TRUE AND name = 'Organisation Admin'
        LIMIT 1`,
     );
     const orgAdminRoleId = roleRows[0]?.id;
@@ -252,17 +252,22 @@ async function requestPasswordReset(email, context = {}) {
     [normalizedEmail, resolved.tenant.id, resolved.userType, otp, expiresAt]
   );
 
-  // 3. Render and Send Email
-  const html = await renderEmail('forgot-password', {
+  // 3. Render and Send Email — brand with the org logo for tenant users, else HRIS.
+  const resetTenant = resolved.tenant && resolved.tenant.db_name
+    ? { dbName: resolved.tenant.db_name }
+    : null;
+  const { html, attachments } = await renderEmail('forgot-password', {
     otp,
     name: resolved.user.name || resolved.tenant.name,
-  });
+  }, { tenant: resetTenant });
 
   await sendMail({
     to: normalizedEmail,
     subject: 'HRIS - Password Reset Code',
     text: `Your password reset code is: ${otp}. It will expire in 10 minutes.`,
     html,
+    attachments,
+    tenant: resetTenant,
   });
 
   return { success: true };
@@ -536,7 +541,7 @@ async function provisionTenantAdminUser(tenantPool, tenant, { email, passwordHas
             status = 'active'
       RETURNING id, email, password_hash, name, status
     `,
-    [tenant.id, normalized, passwordHash, name || 'Organization Admin'],
+    [tenant.id, normalized, passwordHash, name || 'Organisation Admin'],
   );
   logger.info(`[auth] provisioned admin_users for tenant ${tenant.id} (${normalized})`);
   if (rows[0] && tenant.id) {
@@ -822,9 +827,9 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
 
   if (!employeeId) {
     try {
-      // Get the default Organization Admin role ID
+      // Get the default Organisation Admin role ID
       const { rows: roleRows } = await tenantPool.query(
-        `SELECT id FROM rbac_roles WHERE name = 'Organization Admin' AND is_system = true LIMIT 1`
+        `SELECT id FROM rbac_roles WHERE name = 'Organisation Admin' AND is_system = true LIMIT 1`
       );
       const roleId = roleRows[0]?.id || null;
 
@@ -838,11 +843,11 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
          RETURNING id`,
         [
           nextEmpId,
-          adminUser.name || 'Organization Admin',
+          adminUser.name || 'Organisation Admin',
           adminUser.email,
           adminUser.email.split('@')[0],
           roleId,
-          'Organization Admin',
+          'Organisation Admin',
           'General',
           'Full-time',
         ],
@@ -958,7 +963,7 @@ async function verifyMfaLogin(mfaToken, code) {
 
   const { getTenantPool } = require('../../config/db');
   const tenant = await resolveTenantForLogin({ tenantId: payload.tenant_id });
-  if (!tenant) throw ApiError.unauthorized('Organization workspace not found');
+  if (!tenant) throw ApiError.unauthorized('Organisation workspace not found');
   if (tenant.status !== 'active') throw ApiError.unauthorized('Account is suspended or inactive');
 
   const tenantPool = getTenantPool(tenant.db_name);
@@ -1123,7 +1128,7 @@ async function login(email, password, options = {}) {
 
   if (options?.tenantSlug && String(options.tenantSlug).trim() && !tenant) {
     throw ApiError.unauthorized(
-      'Organization workspace not found. Verify the URL or sign in from your company login link.',
+      'Organisation workspace not found. Verify the URL or sign in from your company login link.',
     );
   }
 
@@ -1406,6 +1411,12 @@ async function login(email, password, options = {}) {
       }
     }
 
+    // When the user was pre-resolved during central resolution (password already
+    // verified inline), the lockout-enforcing branch above was skipped — enforce it
+    // here so a locked account cannot authenticate on the email-only login path.
+    if (resolvedUser) {
+      await enforceAdminLockout(tenantPool, user.id);
+    }
     await resetAdminLoginCounter(tenantPool, user.id);
     return buildAdminLoginResult(
       user,
@@ -1419,6 +1430,9 @@ async function login(email, password, options = {}) {
     if (String(resolvedUser.employment_status || '').toLowerCase() === 'terminated') {
       throw ApiError.unauthorized('User account is inactive');
     }
+    // Same as admin: the central path verified the password inline but never
+    // enforced lockout — block a locked account before issuing a session.
+    await enforceEmployeeLockout(tenantPool, resolvedUser.id);
     await resetEmployeeLoginCounter(tenantPool, resolvedUser.id);
     return buildEmployeeLoginResult(
       resolvedUser,
@@ -1574,8 +1588,8 @@ function redeemImpersonationCode(code) {
   if (!entry || entry.expiresAt < Date.now()) {
     throw ApiError.unauthorized('Impersonation code is invalid or has expired');
   }
-  const { token, user, plan_details, plan_features, tenant_features, allowedModules } = entry;
-  return { token, user, plan_details, plan_features, tenant_features, allowedModules };
+  const { token, refreshToken, user, plan_details, plan_features, tenant_features, allowedModules } = entry;
+  return { token, refreshToken, user, plan_details, plan_features, tenant_features, allowedModules };
 }
 
 async function getAccessProfile(currentUser) {
@@ -1752,11 +1766,84 @@ async function changePassword(user, { currentPassword, newPassword } = {}) {
   return { message: 'Password updated successfully.' };
 }
 
+/**
+ * Resolve the table/columns for the authenticated user's own account record.
+ * Mirrors the branching used by changePassword so /auth/me works for every panel.
+ */
+function resolveSelfAccount(user) {
+  const userType = String(user?.userType || user?.role || '').toLowerCase();
+  const id = user?.id;
+  if (!id) throw ApiError.unauthorized('Not authenticated');
+
+  if (userType === 'superadmin' || userType === 'billing_admin' || userType === 'support_admin') {
+    return {
+      userType,
+      id,
+      pool: superAdminPool,
+      table: 'public.superadmins',
+      nameColumn: 'name',
+      selectSql: `SELECT id, name, email, role, status, last_login_at, created_at
+                  FROM public.superadmins WHERE id = $1 LIMIT 1`,
+    };
+  }
+
+  const dbName = user?.db_name;
+  if (!dbName) throw ApiError.badRequest('No organization context');
+  const { getTenantPool } = require('../../config/db');
+  const pool = getTenantPool(dbName);
+
+  if (userType === 'employee') {
+    return {
+      userType,
+      id,
+      pool,
+      table: 'employees',
+      nameColumn: 'full_name',
+      role: user.role,
+      selectSql: `SELECT id, full_name AS name, work_email AS email, department, join_date
+                  FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+    };
+  }
+
+  // Tenant admin (admin / hr_admin / hr_executive / manager).
+  return {
+    userType,
+    id,
+    pool,
+    table: 'admin_users',
+    nameColumn: 'name',
+    role: user.role,
+    selectSql: `SELECT id, name, email FROM admin_users WHERE id = $1 LIMIT 1`,
+  };
+}
+
+async function getMe(user) {
+  const acct = resolveSelfAccount(user);
+  const { rows } = await acct.pool.query(acct.selectSql, [acct.id]);
+  if (!rows[0]) throw ApiError.notFound('Account not found');
+  return { ...rows[0], role: rows[0].role ?? acct.role ?? user.role, userType: acct.userType };
+}
+
+async function updateMe(user, { name } = {}) {
+  const acct = resolveSelfAccount(user);
+  const cleanName = name != null ? String(name).trim() : null;
+  if (cleanName === null) return getMe(user); // nothing to update
+  if (!cleanName) throw ApiError.badRequest('Name cannot be empty');
+
+  await acct.pool.query(
+    `UPDATE ${acct.table} SET ${acct.nameColumn} = $1 WHERE id = $2`,
+    [cleanName, acct.id],
+  );
+  return getMe(user);
+}
+
 module.exports = {
   requestPasswordReset,
   verifyOTP,
   resetPassword,
   changePassword,
+  getMe,
+  updateMe,
   verify2FA,
   verifyMfaLogin,
   login,

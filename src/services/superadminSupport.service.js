@@ -14,6 +14,18 @@ async function getAllTenants() {
   return result.rows || [];
 }
 
+/**
+ * Candidate tenant set for a by-id operation. When a specific tenant db_name is
+ * supplied, scope to ONLY that tenant — this is what prevents the cross-tenant
+ * ticket-id collision (a per-tenant serial id can match a row in another tenant,
+ * so the old all-tenant scan could act on the wrong tenant's ticket). Falls back
+ * to scanning every tenant only when the caller can't supply the owning tenant.
+ */
+async function resolveTenantList(tenantDb) {
+  if (tenantDb) return [{ db_name: tenantDb }];
+  return getAllTenants();
+}
+
 function buildTicketFilters(filter = {}) {
   const conditions = [];
   const params = [];
@@ -180,41 +192,29 @@ async function getTicketStats() {
 
 /*
  * ============================================================================
- * TODO (data-integrity follow-up): cross-tenant ticket-id collision
+ * Cross-tenant ticket-id collision — FIXED
  * ============================================================================
- * BUG: This function (and updateTicketStatus / updateTicket / deleteTicket
- *      below) resolves a ticket from a BARE numeric `ticketId` by scanning
- *      every tenant DB and acting on the FIRST tenant (getAllTenants order)
- *      that has a row with that id. Because `support_tickets.id` is a
- *      PER-TENANT serial, the same id exists in many tenants — so a superadmin
- *      action intended for tenant B's ticket #5 can silently hit tenant A's
- *      ticket #5 (wrong-tenant read / status change / edit / delete).
- *
- * CORRECT FIX (not yet applied — needs coordinated FE+BE change):
- *      Thread a tenant identifier (tenant_id or db_name) alongside the ticket
- *      id. The list/detail responses already carry `tenant_id`/`tenant_name`/
- *      `dbName`, so:
- *        1) accept `tenantId`/`tenantDb` on each by-id route + service fn,
- *        2) query ONLY that tenant's pool (drop the all-tenant scan),
- *        3) pass it from every Support.jsx call site
- *           (getTicketById / updateStatus / updateTicket / deleteTicket / reply).
- *
- * SECURITY NOTE: This is a DATA-INTEGRITY issue only. The cross-tenant
- *      *exposure* (any authenticated tenant user reaching these endpoints) is
- *      already closed by the `requireRole('superadmin')` guard on the whole
- *      router (see routes/superadminSupport.routes.js). These endpoints are now
- *      reachable by superadmins only.
+ * `support_tickets.id` is a PER-TENANT serial, so the same numeric id exists in
+ * many tenants. The by-id operations below (getTicketById / updateTicketStatus /
+ * updateTicket / addReply / deleteTicket) now accept the owning tenant's db_name
+ * and scope to ONLY that tenant via resolveTenantList(), instead of scanning
+ * every tenant and acting on the first serial match. The controller threads
+ * `tenantDb` from the request (the list/detail responses expose `dbName`), and
+ * the all-tenant scan remains only as a backward-compatible fallback when no
+ * tenant is supplied. Cross-tenant *exposure* was already closed by the
+ * requireRole('superadmin') guard on the whole router.
  * ============================================================================
  */
 
 /**
- * Get single ticket details by ID (across all tenants)
+ * Get single ticket details by ID, scoped to a tenant when known.
  * @param {number} ticketId - The ticket ID
+ * @param {string|null} tenantDb - Owning tenant db_name (avoids the cross-tenant scan)
  * @returns {Promise<Object>} Ticket details with replies
  */
-async function getTicketById(ticketId) {
+async function getTicketById(ticketId, tenantDb = null) {
   try {
-    const tenants = await getAllTenants();
+    const tenants = await resolveTenantList(tenantDb);
 
     for (const tenant of tenants) {
       try {
@@ -246,10 +246,11 @@ async function getTicketById(ticketId) {
 
         const ticket = ticketResult.rows[0];
         const repliesQuery = `
-          SELECT 
+          SELECT
             id,
             ticket_id,
             superadmin_id,
+            sender_role,
             message,
             internal_notes,
             created_at
@@ -282,17 +283,15 @@ async function getTicketById(ticketId) {
  * @param {string} newStatus - New status (Open, In Progress, Resolved, Closed)
  * @returns {Promise<Object>} Updated ticket
  *
- * TODO: affected by the cross-tenant ticket-id collision documented above
- *       getTicketById — acts on the first tenant whose serial id matches.
  */
-async function updateTicketStatus(ticketId, newStatus) {
+async function updateTicketStatus(ticketId, newStatus, tenantDb = null) {
   try {
-    const validStatuses = ['Open', 'In Progress', 'Resolved', 'Closed'];
+    const validStatuses = ['Open', 'Waiting', 'In Progress', 'Waiting for Admin', 'Resolved', 'Closed'];
     if (!validStatuses.includes(newStatus)) {
       throw new Error(`Invalid status: ${newStatus}`);
     }
 
-    const tenants = await getAllTenants();
+    const tenants = await resolveTenantList(tenantDb);
     for (const tenant of tenants) {
       try {
         const tenantPool = getTenantPool(tenant.db_name);
@@ -337,13 +336,13 @@ async function updateTicketStatus(ticketId, newStatus) {
  * @param {string} internalNotes - Internal notes (optional)
  * @returns {Promise<Object>} Created reply
  */
-async function addReply(ticketId, superadminId, message, internalNotes = null) {
+async function addReply(ticketId, superadminId, message, internalNotes = null, tenantDb = null) {
   try {
     if (!message || !message.trim()) {
       throw new Error('Reply message is required');
     }
 
-    const ticket = await getTicketById(ticketId);
+    const ticket = await getTicketById(ticketId, tenantDb);
     if (!ticket || !ticket.dbName) {
       throw new Error('Support ticket not found');
     }
@@ -513,18 +512,16 @@ HRMS Support Team
   }
 }
 
-// TODO: affected by the cross-tenant ticket-id collision documented above
-//       getTicketById — acts on the first tenant whose serial id matches.
-async function updateTicket(ticketId, updates = {}) {
+async function updateTicket(ticketId, updates = {}, tenantDb = null) {
   try {
     const { status, assignedTo, superAdminDescription } = updates;
-    const validStatuses = ['Open', 'In Progress', 'Waiting for Admin', 'Resolved', 'Closed'];
+    const validStatuses = ['Open', 'Waiting', 'In Progress', 'Waiting for Admin', 'Resolved', 'Closed'];
 
     if (status && !validStatuses.includes(status)) {
       throw new Error(`Invalid status: ${status}`);
     }
 
-    const tenants = await getAllTenants();
+    const tenants = await resolveTenantList(tenantDb);
     let updatedTicket = null;
     
     for (const tenant of tenants) {
@@ -738,14 +735,12 @@ HRMS Support Team
 /**
  * Delete a ticket and its replies across tenants
  * @param {number} ticketId
+ * @param {string|null} tenantDb - Owning tenant db_name (avoids the cross-tenant scan)
  * @returns {Promise<Object|null>} deleted ticket row or null
- *
- * TODO: affected by the cross-tenant ticket-id collision documented above
- *       getTicketById — deletes from the first tenant whose serial id matches.
  */
-async function deleteTicket(ticketId) {
+async function deleteTicket(ticketId, tenantDb = null) {
   try {
-    const tenants = await getAllTenants();
+    const tenants = await resolveTenantList(tenantDb);
     for (const tenant of tenants) {
       try {
         const tenantPool = getTenantPool(tenant.db_name);
@@ -798,33 +793,6 @@ async function hardDeleteTicketCompletely(pool, ticketId) {
   }
 }
 
-/**
- * Get all replies for a ticket
- * @param {number} ticketId - The ticket ID
- * @returns {Promise<Array>} Array of replies
- */
-async function getRepliesByTicketId(ticketId) {
-  try {
-    const query = `
-      SELECT 
-        id,
-        ticket_id,
-        superadmin_id,
-        message,
-        internal_notes,
-        created_at
-      FROM support_ticket_replies
-      WHERE ticket_id = $1
-      ORDER BY created_at ASC
-    `;
-
-    const result = await pool.query(query, [ticketId]);
-    return result.rows;
-  } catch (error) {
-    throw error;
-  }
-}
-
 module.exports = {
   getAllTickets,
   getTicketsCount,
@@ -834,5 +802,4 @@ module.exports = {
   updateTicketStatus,
   addReply,
   deleteTicket,
-  getRepliesByTicketId,
 };

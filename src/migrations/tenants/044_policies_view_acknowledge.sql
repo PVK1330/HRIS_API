@@ -14,11 +14,11 @@ JOIN rbac_permissions action_p ON action_p.key IN ('policies.view', 'policies.ac
 WHERE legacy_p.key = 'policies'
 ON CONFLICT DO NOTHING;
 
--- Organization Admin: all policy actions
+-- Organisation Admin: all policy actions
 INSERT INTO rbac_role_permissions (role_id, permission_id)
 SELECT r.id, p.id
 FROM rbac_roles r
 CROSS JOIN rbac_permissions p
-WHERE r.name = 'Organization Admin'
+WHERE r.name = 'Organisation Admin'
   AND p.key IN ('policies.view', 'policies.acknowledge', 'policies.manage')
 ON CONFLICT DO NOTHING;

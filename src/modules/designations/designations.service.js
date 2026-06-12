@@ -117,6 +117,30 @@ async function listDesignations(tenant, query = {}) {
   );
   const total = countRows[0]?.total ?? 0;
 
+  // KPI totals for the cards: over the whole filtered set (not the current page)
+  // and WITHOUT the status filter, so the Active/Inactive cards (which double as
+  // status filters) always show the full breakdown. departments_mapped is the
+  // distinct count of departments that have at least one designation.
+  const statsScope = buildWhereClause({ ...query, status: 'all' });
+  const { rows: statsRows } = await pool.query(
+    `SELECT
+       COUNT(*)::int                                       AS total,
+       COUNT(*) FILTER (WHERE ds.is_active = true)::int    AS active,
+       COUNT(*) FILTER (WHERE ds.is_active = false)::int   AS inactive,
+       COUNT(DISTINCT ds.department_id)::int               AS departments_mapped
+     FROM designations ds
+     LEFT JOIN departments d ON d.id = ds.department_id
+     WHERE ${statsScope.where}`,
+    statsScope.params,
+  );
+  const sd = statsRows[0] ?? {};
+  const stats = {
+    total: sd.total ?? 0,
+    active: sd.active ?? 0,
+    inactive: sd.inactive ?? 0,
+    departmentsMapped: sd.departments_mapped ?? 0,
+  };
+
   const dataParams = [...params, limit, offset];
   const lim = dataParams.length - 1;
   const off = dataParams.length;
@@ -150,6 +174,7 @@ async function listDesignations(tenant, query = {}) {
 
   return {
     records: rows.map(mapRow),
+    stats,
     pagination: {
       total,
       page,
@@ -298,8 +323,12 @@ async function createDesignation(tenant, data) {
   const pool = await getTenantPool(tenant.dbName);
   const st = normalizePayloadStatus(data, true);
   const departmentId = data.department_id ?? data.departmentId;
-  const { rows: drows } = await pool.query(`SELECT id FROM departments WHERE id = $1`, [departmentId]);
+  const { rows: drows } = await pool.query(`SELECT id, name FROM departments WHERE id = $1`, [departmentId]);
   if (!drows.length) throw new ApiError(400, 'department_id does not exist');
+  // Keep the denormalized department_name label in sync. employees.repository.js
+  // reads it as a COALESCE(d.name, ds.department_name) fallback (and in a WHERE
+  // filter); hard-setting null left that fallback permanently dead.
+  const departmentName = drows[0].name ?? null;
 
   await assertUniqueDesignation(pool, data.name, departmentId);
 
@@ -312,7 +341,7 @@ async function createDesignation(tenant, data) {
     [
       data.name.trim(),
       departmentId,
-      null,
+      departmentName,
       grade,
       st.is_active,
       st.status,
@@ -339,10 +368,12 @@ async function updateDesignation(tenant, id, data) {
 
   const depRaw = data.department_id ?? data.departmentId;
   let departmentId;
+  let departmentName;
   if (depRaw !== undefined) {
     departmentId = parseInt(String(depRaw), 10);
-    const { rows: drows } = await pool.query(`SELECT id FROM departments WHERE id = $1`, [departmentId]);
+    const { rows: drows } = await pool.query(`SELECT id, name FROM departments WHERE id = $1`, [departmentId]);
     if (!drows.length) throw new ApiError(400, 'department_id does not exist');
+    departmentName = drows[0].name ?? null;
   }
 
   // Pre-check (name, department) uniqueness whenever either changes. Resolves the
@@ -366,7 +397,9 @@ async function updateDesignation(tenant, id, data) {
   if (depRaw !== undefined) {
     params.push(departmentId);
     fields.push(`department_id = $${n++}`);
-    params.push(null);
+    // Keep the denormalized label in sync with the new department (was hard-set
+    // to null, which silently blanked the column on every department change).
+    params.push(departmentName);
     fields.push(`department_name = $${n++}`);
   }
   if (data.description !== undefined) {

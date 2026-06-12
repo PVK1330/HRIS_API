@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS public.superadmin_announcements (
     id BIGSERIAL PRIMARY KEY,
     title VARCHAR(255) NOT NULL,
     message TEXT NOT NULL,
-    audience VARCHAR(128) NOT NULL DEFAULT 'All Organizations',
+    audience VARCHAR(128) NOT NULL DEFAULT 'All Organisations',
     type VARCHAR(32) NOT NULL DEFAULT 'Info',
     sent_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     recipients INTEGER NOT NULL DEFAULT 48,

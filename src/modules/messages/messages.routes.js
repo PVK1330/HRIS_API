@@ -34,6 +34,9 @@ router.get('/conversations/:id/messages', [
 router.post('/conversations/:id/messages', [
   param('id').isInt({ min: 1 }),
   body('body').notEmpty().isString().trim().isLength({ max: 4000 }),
+  // Optional stable client-generated temp id, echoed back so the sender's tab can
+  // reconcile its optimistic placeholder by id instead of by body text.
+  body('clientId').optional().isString().isLength({ max: 100 }),
 ], validate, ctrl.sendMessage);
 
 router.post(

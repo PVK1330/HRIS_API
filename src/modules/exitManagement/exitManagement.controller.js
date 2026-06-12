@@ -20,7 +20,9 @@
   });
 
   const stats = asyncHandler(async (req, res) => {
-    const result = await dashboard.getWidgets(req.tenant, req.exitUser);
+    // Real export is getDashboardWidgets (same method /dashboard/widgets -> ctrl.widgets uses);
+    // dashboard.getWidgets was undefined and 500'd this route.
+    const result = await dashboard.getDashboardWidgets(req.tenant, req.exitUser);
     return ApiResponse.ok(res, result, 'Stats retrieved successfully');
   });
 

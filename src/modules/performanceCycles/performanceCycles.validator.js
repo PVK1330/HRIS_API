@@ -63,7 +63,8 @@ const createCycleSchema = Joi.object({
 
 /**
  * Validation schema for updating a performance cycle
- * All fields are optional
+ * All fields are optional, but startDate and endDate must be supplied together
+ * so that the end > start invariant can always be enforced at validation time.
  */
 const updateCycleSchema = Joi.object({
   cycleName: Joi.string()
@@ -86,7 +87,11 @@ const updateCycleSchema = Joi.object({
   endDate: Joi.date()
     .iso()
     .optional()
-    .greater(Joi.ref('startDate'))
+    .when('startDate', {
+      is: Joi.date().required(),
+      then: Joi.date().greater(Joi.ref('startDate')),
+      otherwise: Joi.date().iso().optional(),
+    })
     .messages({
       'date.base': 'End date must be a valid ISO date',
       'date.greater': 'End date must be after start date',
@@ -104,7 +109,14 @@ const updateCycleSchema = Joi.object({
     .messages({
       'boolean.base': 'Automated reminder must be a boolean',
     }),
-});
+})
+  // Require both dates to be present when either is supplied so the
+  // end > start cross-field check is never skipped on a one-sided PATCH.
+  .and('startDate', 'endDate')
+  .messages({
+    'object.and':
+      'Both startDate and endDate must be provided together when updating cycle dates',
+  });
 
 /**
  * Validation schema for query parameters

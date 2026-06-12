@@ -128,6 +128,42 @@ async function updateEmailTemplateBySlug(slug, patch) {
   return rows[0] || null;
 }
 
+/* -------------------- public.email_logs -------------------- */
+
+async function findEmailLogs({ limit = 200 } = {}) {
+  const sql = `
+    SELECT
+      id,
+      sent_at   AS "sentAt",
+      recipient AS "to",
+      subject,
+      status,
+      error,
+      message_id AS "messageId"
+    FROM public.email_logs
+    ORDER BY sent_at DESC
+    LIMIT $1
+  `;
+  const { rows } = await db.query(sql, [limit]);
+  return rows;
+}
+
+async function insertEmailLog({ recipient, subject, status, error = null, messageId = null }) {
+  const sql = `
+    INSERT INTO public.email_logs (recipient, subject, status, error, message_id)
+    VALUES ($1, $2, $3, $4, $5)
+    RETURNING id
+  `;
+  const { rows } = await db.query(sql, [
+    String(recipient || ''),
+    String(subject || ''),
+    String(status || 'sent'),
+    error ? String(error) : null,
+    messageId ? String(messageId) : null,
+  ]);
+  return rows[0] || null;
+}
+
 module.exports = {
   // settings
   findAllSettings,
@@ -139,4 +175,7 @@ module.exports = {
   findAllEmailTemplates,
   findEmailTemplateBySlug,
   updateEmailTemplateBySlug,
+  // email logs
+  findEmailLogs,
+  insertEmailLog,
 };

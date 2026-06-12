@@ -285,7 +285,7 @@ function getSettingsMeta() {
 }
 
 async function getEmailLogs() {
-  return [];
+  return repo.findEmailLogs();
 }
 
 module.exports = {

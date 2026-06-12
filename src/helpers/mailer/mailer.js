@@ -269,9 +269,23 @@ class Mailer {
         ...(finalAttachments.length ? { attachments: finalAttachments } : {}),
       });
       logger.info(`[mailer] sent to=${to} subject="${subject}" messageId=${info.messageId}`);
+      // Write audit log (best-effort — never fail the send on a log write error).
+      try {
+        const { insertEmailLog } = require('../../modules/settings/settings.repository');
+        await insertEmailLog({ recipient: to, subject, status: 'sent', messageId: info.messageId });
+      } catch (logErr) {
+        logger.warn(`[mailer] email log write failed: ${logErr.message}`);
+      }
       return { success: true, messageId: info.messageId };
     } catch (err) {
       logger.error('[mailer] send failed', err.message);
+      // Log the failure (best-effort).
+      try {
+        const { insertEmailLog } = require('../../modules/settings/settings.repository');
+        await insertEmailLog({ recipient: to, subject, status: 'failed', error: err.message });
+      } catch (logErr) {
+        logger.warn(`[mailer] email log write failed: ${logErr.message}`);
+      }
       throw new ApiError(400, `Failed to send email: ${err.message}`);
     }
   }

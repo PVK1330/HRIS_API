@@ -136,7 +136,9 @@ async function activateSubscription(tenantId, { via = 'manual', reference = null
   // Best-effort: flip tenant_subscriptions + the latest pending payment to completed.
   await superAdminPool
     .query(
-      `UPDATE public.tenant_subscriptions SET status = 'active' WHERE tenant_id = $1`,
+      `UPDATE public.tenant_subscriptions SET status = 'active'
+       WHERE tenant_id = $1
+         AND id = (SELECT id FROM public.tenant_subscriptions WHERE tenant_id = $1 ORDER BY id DESC LIMIT 1)`,
       [tenantId],
     )
     .catch(() => {});

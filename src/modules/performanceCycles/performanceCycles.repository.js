@@ -123,15 +123,24 @@ async function findAll(pool, options = {}) {
   const { search = '', status = null, limit = 100, offset = 0 } = options;
 
   let query = `
-    SELECT 
+    SELECT
       id,
       cycle_name,
       start_date,
       end_date,
       submission_deadline,
       automated_reminder,
-      status,
-      completion_percentage,
+      CASE
+        WHEN NOW() < start_date THEN 'UPCOMING'
+        WHEN NOW() >= start_date AND NOW() <= end_date THEN 'ACTIVE'
+        ELSE 'COMPLETED'
+      END AS status,
+      CASE
+        WHEN NOW() < start_date THEN 0
+        WHEN NOW() > end_date THEN 100
+        ELSE ROUND(((EXTRACT(EPOCH FROM NOW()) - EXTRACT(EPOCH FROM start_date)) /
+                   (EXTRACT(EPOCH FROM end_date) - EXTRACT(EPOCH FROM start_date))) * 100)
+      END AS completion_percentage,
       created_at,
       updated_at,
       created_by
@@ -149,9 +158,13 @@ async function findAll(pool, options = {}) {
     paramCount++;
   }
 
-  // Add status filter
+  // Add status filter — compare against the dynamically computed status expression
   if (status && ['ACTIVE', 'UPCOMING', 'COMPLETED'].includes(status)) {
-    query += ` AND status = $${paramCount}`;
+    query += ` AND CASE
+        WHEN NOW() < start_date THEN 'UPCOMING'
+        WHEN NOW() >= start_date AND NOW() <= end_date THEN 'ACTIVE'
+        ELSE 'COMPLETED'
+      END = $${paramCount}`;
     values.push(status);
     paramCount++;
   }
@@ -177,7 +190,11 @@ async function findAll(pool, options = {}) {
   }
 
   if (status && ['ACTIVE', 'UPCOMING', 'COMPLETED'].includes(status)) {
-    countQuery += ` AND status = $${countParamCount}`;
+    countQuery += ` AND CASE
+        WHEN NOW() < start_date THEN 'UPCOMING'
+        WHEN NOW() >= start_date AND NOW() <= end_date THEN 'ACTIVE'
+        ELSE 'COMPLETED'
+      END = $${countParamCount}`;
     countValues.push(status);
   }
 
@@ -200,15 +217,24 @@ async function findAll(pool, options = {}) {
  */
 async function findById(pool, id) {
   const query = `
-    SELECT 
+    SELECT
       id,
       cycle_name,
       start_date,
       end_date,
       submission_deadline,
       automated_reminder,
-      status,
-      completion_percentage,
+      CASE
+        WHEN NOW() < start_date THEN 'UPCOMING'
+        WHEN NOW() >= start_date AND NOW() <= end_date THEN 'ACTIVE'
+        ELSE 'COMPLETED'
+      END AS status,
+      CASE
+        WHEN NOW() < start_date THEN 0
+        WHEN NOW() > end_date THEN 100
+        ELSE ROUND(((EXTRACT(EPOCH FROM NOW()) - EXTRACT(EPOCH FROM start_date)) /
+                   (EXTRACT(EPOCH FROM end_date) - EXTRACT(EPOCH FROM start_date))) * 100)
+      END AS completion_percentage,
       created_at,
       updated_at,
       created_by
@@ -338,12 +364,16 @@ async function softDelete(pool, id, userId) {
  */
 async function getSummary(pool) {
   const query = `
-    SELECT 
-      status,
+    SELECT
+      CASE
+        WHEN NOW() < start_date THEN 'UPCOMING'
+        WHEN NOW() >= start_date AND NOW() <= end_date THEN 'ACTIVE'
+        ELSE 'COMPLETED'
+      END AS status,
       COUNT(*) as count
     FROM performance_cycles
     WHERE deleted_at IS NULL
-    GROUP BY status;
+    GROUP BY 1;
   `;
 
   const result = await pool.query(query);

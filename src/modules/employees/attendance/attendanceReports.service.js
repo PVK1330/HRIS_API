@@ -85,7 +85,7 @@ async function runReport(pool, reportType, scoped, query) {
               COUNT(*) FILTER (WHERE a.status IN ('Present','Late','Remote','Work From Home'))::int AS present,
               COUNT(*) FILTER (WHERE a.status = 'Absent')::int AS absent,
               COUNT(*) FILTER (WHERE a.is_late = true)::int AS late_count,
-              ROUND(COALESCE(SUM(a.overtime_hours), 0)::numeric, 2) AS overtime_hours
+              ROUND(COALESCE(SUM(a.overtime_hours) FILTER (WHERE a.overtime_status = 'Approved'), 0)::numeric, 2) AS overtime_hours
        FROM attendance a
        JOIN employees e ON e.id = a.employee_id
        WHERE ${where}
@@ -104,7 +104,7 @@ async function runReport(pool, reportType, scoped, query) {
          COUNT(*) FILTER (WHERE a.status IN ('Present','Late','Remote','Work From Home'))::int AS present,
          COUNT(*) FILTER (WHERE a.status = 'Absent')::int AS absent,
          COUNT(*) FILTER (WHERE a.is_late = true)::int AS late_count,
-         ROUND(COALESCE(SUM(a.overtime_hours), 0)::numeric, 2) AS overtime_hours,
+         ROUND(COALESCE(SUM(a.overtime_hours) FILTER (WHERE a.overtime_status = 'Approved'), 0)::numeric, 2) AS overtime_hours,
          COUNT(*) FILTER (WHERE a.status = 'On Leave')::int AS leave_days
        FROM attendance a
        JOIN employees e ON e.id = a.employee_id
@@ -121,7 +121,7 @@ async function runReport(pool, reportType, scoped, query) {
               COUNT(*) FILTER (WHERE a.status IN ('Present','Late','Remote','Work From Home'))::int AS present,
               COUNT(*) FILTER (WHERE a.status = 'Absent')::int AS absent,
               COUNT(*) FILTER (WHERE a.is_late = true)::int AS late_count,
-              ROUND(COALESCE(SUM(a.overtime_hours), 0)::numeric, 2) AS overtime_hours,
+              ROUND(COALESCE(SUM(a.overtime_hours) FILTER (WHERE a.overtime_status = 'Approved'), 0)::numeric, 2) AS overtime_hours,
               COUNT(*) FILTER (WHERE a.status = 'On Leave')::int AS leave_days,
               COUNT(*) FILTER (WHERE a.paid_day = true)::int AS payable_days
        FROM attendance a
@@ -213,7 +213,7 @@ async function runReport(pool, reportType, scoped, query) {
                 COUNT(*)::int AS working_days,
                 COUNT(*) FILTER (WHERE a.paid_day = true)::int AS payable_days,
                 COUNT(*) FILTER (WHERE a.is_late = true)::int AS late_count,
-                ROUND(COALESCE(SUM(a.overtime_hours), 0)::numeric, 2) AS overtime_hours,
+                ROUND(COALESCE(SUM(a.overtime_hours) FILTER (WHERE a.overtime_status = 'Approved'), 0)::numeric, 2) AS overtime_hours,
                 COUNT(*) FILTER (WHERE a.status = 'On Leave')::int AS leave_days
          FROM attendance a
          JOIN employees e ON e.id = a.employee_id
@@ -228,7 +228,7 @@ async function runReport(pool, reportType, scoped, query) {
               COUNT(*)::int AS working_days,
               COUNT(*) FILTER (WHERE a.paid_day = true)::int AS payable_days,
               COUNT(*) FILTER (WHERE a.is_late = true)::int AS late_count,
-              ROUND(COALESCE(SUM(a.overtime_hours), 0)::numeric, 2) AS overtime_hours,
+              ROUND(COALESCE(SUM(a.overtime_hours) FILTER (WHERE a.overtime_status = 'Approved'), 0)::numeric, 2) AS overtime_hours,
               COUNT(*) FILTER (WHERE a.status = 'On Leave')::int AS leave_days
        FROM attendance a
        JOIN employees e ON e.id = a.employee_id

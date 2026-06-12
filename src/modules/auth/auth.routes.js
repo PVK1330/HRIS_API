@@ -6,6 +6,7 @@ const validate = require('../../middlewares/validate.middleware');
 const controller = require('./auth.controller');
 const { authLimiter, otpLimiter, refreshLimiter } = require('../../middlewares/rateLimit.middleware');
 const { authenticate } = require('../../middlewares/auth.middleware');
+const { verifyRecaptcha } = require('../../middlewares/recaptcha.middleware');
 
 const router = Router();
 
@@ -27,6 +28,7 @@ function loginIdentifierValidator(value) {
 router.post(
   '/login',
   authLimiter,
+  verifyRecaptcha,
   [
     body('email')
       .trim()

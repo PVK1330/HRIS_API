@@ -17,6 +17,7 @@ const UPLOADS_DIR = path.resolve(env.UPLOAD.dir);
 const LOGO_DIR = path.join(UPLOADS_DIR, 'logos');
 const TENANT_LOGO_DIR = path.join(UPLOADS_DIR, 'tenant-logos');
 const SUPERADMIN_LOGO_DIR = path.join(UPLOADS_DIR, 'superadmin-logos');
+const RECEIPTS_DIR = path.join(UPLOADS_DIR, 'receipts');
 const MAX_SIZE_MB = Math.round(env.UPLOAD.maxSize / (1024 * 1024)) || 2;
 const MAX_SIZE_BYTES = env.UPLOAD.maxSize;
 
@@ -345,6 +346,71 @@ const policyUploader = multer({
   fileFilter,
 });
 
+// ── Expense receipts (EXP-23) ────────────────────────────────────────────────
+// Receipts are images/PDFs that prove a purchase. Stored in uploads/receipts/
+// (separate from logos so static serving headers can be scoped correctly).
+const RECEIPT_EXT = new Set(['.png', '.jpg', '.jpeg', '.pdf']);
+const RECEIPT_MIME = new Set(['image/png', 'image/jpeg', 'image/jpg', 'application/pdf']);
+
+function ensureReceiptsDir() {
+  if (!fs.existsSync(RECEIPTS_DIR)) fs.mkdirSync(RECEIPTS_DIR, { recursive: true });
+}
+
+function receiptFileFilter(_req, file, cb) {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (!RECEIPT_EXT.has(ext) || !RECEIPT_MIME.has(file.mimetype)) {
+    return cb(new ApiError(400, 'Only PNG, JPG and PDF files are allowed for receipts'));
+  }
+  cb(null, true);
+}
+
+const receiptStorage = aws.isS3Configured
+  ? multerS3({
+      s3: aws.s3Client,
+      bucket: aws.bucketName,
+      key(req, file, cb) {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const tenantId = req.tenant?.id != null ? String(req.tenant.id) : 'unknown';
+        cb(null, `receipts/${tenantId}-receipt-${Date.now()}${ext}`);
+      },
+    })
+  : multer.diskStorage({
+      destination(_req, _file, cb) {
+        try {
+          ensureReceiptsDir();
+          cb(null, RECEIPTS_DIR);
+        } catch (err) {
+          cb(err);
+        }
+      },
+      filename(req, file, cb) {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const tenantId = req.tenant?.id != null ? String(req.tenant.id) : 'unknown';
+        cb(null, `${tenantId}-receipt-${Date.now()}${ext}`);
+      },
+    });
+
+const receiptUploader = multer({
+  storage: receiptStorage,
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: receiptFileFilter,
+});
+
+function uploadReceipt(fieldName) {
+  const single = receiptUploader.single(fieldName);
+  return function uploadReceiptMiddleware(req, res, next) {
+    single(req, res, function handleMulter(err) {
+      if (!err) return next();
+      if (err instanceof ApiError) return next(err);
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') return next(new ApiError(400, 'Receipt must be under 5 MB'));
+        return next(new ApiError(400, `Upload error: ${err.message}`));
+      }
+      return next(new ApiError(400, err.message || 'Receipt upload failed'));
+    });
+  };
+}
+
 /** Single policy-document upload (field `file`) into uploads/policies/. */
 function uploadPolicyFile(fieldName) {
   const single = policyUploader.single(fieldName);
@@ -383,6 +449,46 @@ function uploadFile(fieldName, type = 'document') {
   };
 }
 
+// ── Excel import upload (EXP-30) ─────────────────────────────────────────────
+// Uses memory storage so the buffer is available as req.file.buffer for ExcelJS.
+const EXCEL_EXT = new Set(['.xlsx', '.xls']);
+const EXCEL_MIME = new Set([
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/octet-stream', // some browsers send this for .xlsx
+]);
+
+function excelFileFilter(_req, file, cb) {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (!EXCEL_EXT.has(ext)) {
+    return cb(new ApiError(400, 'Only .xlsx or .xls files are allowed'));
+  }
+  cb(null, true);
+}
+
+const excelUploader = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  fileFilter: excelFileFilter,
+});
+
+function uploadExcel(fieldName) {
+  const single = excelUploader.single(fieldName);
+  return function uploadExcelMiddleware(req, res, next) {
+    single(req, res, function handleMulter(err) {
+      if (!err) return next();
+      if (err instanceof ApiError) return next(err);
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return next(new ApiError(400, 'Excel file must be under 10 MB'));
+        }
+        return next(new ApiError(400, `Upload error: ${err.message}`));
+      }
+      return next(new ApiError(400, err.message || 'Excel upload failed'));
+    });
+  };
+}
+
 module.exports = {
   uploadLogo,
   uploadSuperAdminLogo,
@@ -390,8 +496,11 @@ module.exports = {
   uploadSupportFile,
   uploadFile,
   uploadPolicyFile,
+  uploadReceipt,
+  uploadExcel,
   LOGO_DIR,
   POLICY_DIR,
+  RECEIPTS_DIR,
   TENANT_LOGO_DIR,
   SUPERADMIN_LOGO_DIR,
   MAX_SIZE_MB,

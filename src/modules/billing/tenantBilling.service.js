@@ -5,6 +5,8 @@ const ApiError = require('../../utils/ApiError');
 const plansRepo = require('../superadmin/plans.repository');
 const tenantRepo = require('../tenant/tenant.repository');
 const stripeCheckout = require('./stripeCheckout.service');
+const paypalCheckout = require('./paypalCheckout.service');
+const { getPlatformContext } = require('../../utils/platformSettings');
 const logger = require('../../utils/logger');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -299,11 +301,92 @@ async function confirmTenantCheckout(tenantId, sessionId) {
   return { paid: true, billing };
 }
 
+/**
+ * Create a PayPal order for the org admin self-service payment and return the approval URL.
+ */
+async function createPaypalCheckoutForTenant(tenantId, { planId, billingCycle = 'monthly', returnPath, returnOrigin } = {}) {
+  const tenant = await loadTenant(tenantId);
+  if (!tenant) throw ApiError.notFound('Tenant not found');
+
+  const chosenPlanId = planId != null && String(planId) !== '' ? String(planId) : tenant.plan_id;
+  if (!chosenPlanId) throw ApiError.badRequest('Please select a plan to continue.');
+
+  const plan = await plansRepo.findById(chosenPlanId).catch(() => null);
+  if (!plan || plan.is_active === false) {
+    throw ApiError.badRequest('Selected plan is not available. Please choose another plan.');
+  }
+
+  const cycleKey = String(billingCycle || 'monthly').toLowerCase() === 'annual' ? 'annual' : 'monthly';
+  const price = cycleKey === 'annual' ? Number(plan.annual_price) : Number(plan.monthly_price);
+
+  if (!Number.isFinite(price) || price <= 0) {
+    const billing = await activateSubscription(tenantId, { via: 'free', planId: chosenPlanId });
+    return { free: true, billing };
+  }
+
+  const base = resolveOrgBase(returnOrigin);
+  const ret  = safeAdminReturnPath(returnPath);
+
+  const platform = await getPlatformContext().catch(() => ({ currency: 'USD' }));
+  const platformCurrency = (platform.currency || 'USD').toUpperCase();
+
+  let paymentId = null;
+  try {
+    const { rows } = await superAdminPool.query(
+      `SELECT id FROM public.payments WHERE tenant_id = $1 AND status <> 'completed' ORDER BY id DESC LIMIT 1`,
+      [tenantId],
+    );
+    paymentId = rows[0]?.id || null;
+  } catch { paymentId = null; }
+
+  // PayPal auto-appends ?token=ORDER_ID to the return URL — do not include it.
+  const successUrl = `${base}${withQuery(ret, 'paypal=success')}`;
+  const cancelUrl  = `${base}${withQuery(ret, 'paypal=cancelled')}`;
+
+  return paypalCheckout.createOrder({
+    amount:      price,
+    currency:    platformCurrency,
+    tenantId,
+    paymentId,
+    planId:      chosenPlanId,
+    billingCycle: cycleKey,
+    successUrl,
+    cancelUrl,
+  });
+}
+
+/**
+ * Capture an approved PayPal order and activate the subscription if paid.
+ * `orderId` is the PayPal order ID returned in the ?token= query param.
+ */
+async function confirmPaypalCheckout(tenantId, orderId) {
+  if (!orderId) throw ApiError.badRequest('Missing PayPal order ID');
+
+  const result = await paypalCheckout.captureOrder(orderId);
+
+  if (!result.paid) {
+    return { paid: false, billing: await getBillingForTenant(tenantId) };
+  }
+
+  if (result.tenantId && String(result.tenantId) !== String(tenantId)) {
+    throw ApiError.badRequest('This PayPal order does not belong to your organization.');
+  }
+
+  const billing = await activateSubscription(tenantId, {
+    via:       'paypal',
+    reference: orderId,
+    planId:    result.planId || null,
+  });
+  return { paid: true, billing };
+}
+
 module.exports = {
   computeBillingState,
   getBillingForTenant,
   activateSubscription,
   createCheckoutForTenant,
   confirmTenantCheckout,
+  createPaypalCheckoutForTenant,
+  confirmPaypalCheckout,
   listPlans,
 };

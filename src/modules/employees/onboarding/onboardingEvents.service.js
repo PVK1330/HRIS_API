@@ -5,6 +5,7 @@ const workflowAudit = require('../../workflow/workflowAudit.service');
 const { getHROrAdminRecipients } = require('./utils/onboardingRecipients.utils');
 const { sendHandoverNotification } = require('./onboardingNotification.service');
 const handoverRepo = require('../../onboardingHandover/onboardingHandover.repository');
+const { resolveCandidatePortalContext, buildCandidateUrls } = require('./candidatePortalUrl');
 
 function tenantCtx(dbName, tenantId) {
   return { dbName, db_name: dbName, id: tenantId };
@@ -203,6 +204,16 @@ async function notifyDocumentReviewed(tenant, pool, emp, item, normalized, hrRev
   });
 
   if (personalEmail) {
+    let reuploadUrl = '';
+    if (!isApproved && emp.onboarding_token) {
+      try {
+        const { base, tenantSlug } = await resolveCandidatePortalContext(tenant.id);
+        reuploadUrl = buildCandidateUrls(base, emp.onboarding_token, tenantSlug).documentsUrl;
+      } catch {
+        reuploadUrl = '';
+      }
+    }
+
     await delivery.sendDedupedEmailOnly(
       tenant,
       {
@@ -213,6 +224,7 @@ async function notifyDocumentReviewed(tenant, pool, emp, item, normalized, hrRev
           document_name: docName,
           reason: hrReviewComment || 'Not specified',
           company_name: tenant.companyName || 'Organisation',
+          reupload_url: reuploadUrl,
         },
       },
       {

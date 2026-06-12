@@ -23,4 +23,18 @@ router.post(
   ctrl.createStripeCheckout,
 );
 
+router.post(
+  '/paypal/checkout-session',
+  [
+    body('tenantId').isInt({ min: 1 }).withMessage('tenantId is required'),
+    body('planId').isInt({ min: 1 }).withMessage('planId is required'),
+    body('paymentId').optional({ nullable: true }).isInt({ min: 1 }),
+    body('billingCycle').optional().isIn(['monthly', 'annual', 'Monthly', 'Annual']),
+  ],
+  validate,
+  ctrl.createPaypalCheckout,
+);
+
+router.post('/paypal/confirm', ctrl.confirmPaypalCheckout);
+
 module.exports = router;

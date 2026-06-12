@@ -61,6 +61,11 @@ async function pushNotification(tenant, {
       } else if (forAdmin) {
         logger.debug('[notifications] socket emit to admin tenant');
         io.to(`tenant:${dbName}`).emit('new_notification', notificationRecord);
+      } else if (recipientId) {
+        // Notifications addressed purely by recipientId (no employeeId/forAdmin)
+        // previously never emitted, so the recipient's badge stayed stale until poll.
+        logger.debug('[notifications] socket emit to recipient', { recipientId });
+        io.to(`user:${recipientId}`).emit('new_notification', notificationRecord);
       }
     }
   } catch (err) {
@@ -217,20 +222,43 @@ async function countUnread(user, tenant = null) {
   return list.filter((n) => !(n.read || n.isRead)).length;
 }
 
+// Tell the acting user's other devices/tabs to re-sync their unread badge in
+// real time (previously read-state changes emitted nothing, so other tabs stayed
+// stale until the 30s poll). Falls back to the tenant room only when the account
+// has no linked employeeId.
+function emitReadState(dbName, user, payload) {
+  try {
+    const io = getIo();
+    if (!io) return;
+    const empId = Number(user?.employeeId) || null;
+    if (empId) {
+      io.to(`user:${empId}`).emit('notification_read', payload);
+    } else if (dbName) {
+      io.to(`tenant:${dbName}`).emit('notification_read', payload);
+    }
+  } catch (err) {
+    logger.error('[notifications] failed to emit read-state', { err: err.message });
+  }
+}
+
 async function readNotification(user, id, tenant = null) {
   const dbName = user?.db_name || tenant?.dbName || tenant?.db_name;
   if (!dbName) return null;
   await ensureMigrated(dbName);
   const pool = await getTenantPool(dbName);
-  return repo.markAsRead(pool, id, user);
+  const updated = await repo.markAsRead(pool, id, user);
+  if (updated) emitReadState(dbName, user, { id: Number(id), all: false });
+  return updated;
 }
 
 async function readAllNotifications(user, tenant = null) {
   const dbName = user?.db_name || tenant?.dbName || tenant?.db_name;
-  if (!dbName) return true;
+  if (!dbName) return 0;
   await ensureMigrated(dbName);
   const pool = await getTenantPool(dbName);
-  return repo.markAllAsRead(pool, user);
+  const updated = await repo.markAllAsRead(pool, user);
+  emitReadState(dbName, user, { all: true });
+  return updated;
 }
 
 async function deleteNotification(user, id, tenant = null) {

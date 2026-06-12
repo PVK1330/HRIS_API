@@ -271,6 +271,26 @@ async function confirmTenantCheckout(tenantId, sessionId) {
     return { paid: false, billing: await getBillingForTenant(tenantId) };
   }
 
+  // Reconcile what Stripe actually charged against the total/currency we quoted at
+  // checkout creation (stamped into session metadata). Stripe reports amount_total in
+  // the currency's minor unit (cents/fils), so compare in major units. Without this,
+  // a drifted plan price / wrong-currency charge would still activate the subscription
+  // and record a stale figure with no detection.
+  const expectedTotal = Number(result.metadata?.total);
+  const expectedCurrency = String(result.metadata?.platform_currency || '').toUpperCase();
+  if (Number.isFinite(expectedTotal) && result.amount_total != null) {
+    const chargedMajor = Number(result.amount_total) / 100;
+    const chargedCurrency = String(result.currency || '').toUpperCase();
+    const amountMismatch = Math.abs(chargedMajor - expectedTotal) > 0.01;
+    const currencyMismatch = expectedCurrency && chargedCurrency && expectedCurrency !== chargedCurrency;
+    if (amountMismatch || currencyMismatch) {
+      logger.error('[billing] checkout amount/currency mismatch', {
+        tenantId, sessionId, expectedTotal, expectedCurrency, chargedMajor, chargedCurrency,
+      });
+      throw ApiError.badRequest('Payment amount could not be verified. Please contact support before retrying.');
+    }
+  }
+
   const billing = await activateSubscription(tenantId, {
     via: 'stripe',
     reference: sessionId,

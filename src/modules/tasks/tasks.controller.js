@@ -45,7 +45,10 @@ exports.getTask = async (req, res, next) => {
 exports.createTask = async (req, res, next) => {
   try {
     const pool = await resolvePool(req);
-    const assignerId = req.user.id;
+    // assigner_id is an FK to employees(id). req.user.id is the account id
+    // (admin_users.id for admin tokens), a different key-space — use the linked
+    // employeeId, falling back to null rather than pointing at an unrelated employee.
+    const assignerId = req.user.employeeId || null;
     const task = await Task.create(pool, req.body, assignerId);
     
     if (task.assigneeId) {

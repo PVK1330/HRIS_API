@@ -149,7 +149,7 @@ async function findByEmail(email) {
 async function findById(id) {
   await ensureSchema();
   const sql = `
-    SELECT id, email, name, role, status, last_login_at, two_factor_secret, created_at
+    SELECT id, email, name, role, status, last_login_at, two_factor_enabled, two_factor_secret, created_at
     FROM public.superadmins
     WHERE id = $1
     LIMIT 1

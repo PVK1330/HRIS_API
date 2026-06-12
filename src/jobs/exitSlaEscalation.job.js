@@ -120,7 +120,7 @@ async function processTenantSlas(tenant) {
     JOIN employees e            ON e.id = er.employee_id
     WHERE er.status = 'IN_PROGRESS'
       AND s.escalation_enabled = true
-      AND s.sla_hours IS NOT NULL
+      AND COALESCE(s.escalation_after_hours, s.sla_hours) IS NOT NULL
       AND (er.stage_entered_at
            + (COALESCE(s.escalation_after_hours, s.sla_hours) || ' hours')::interval) < NOW()
       AND NOT EXISTS (

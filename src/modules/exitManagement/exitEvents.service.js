@@ -1059,12 +1059,18 @@ async function completeTask(tenant, taskId, exitUser) {
   if (!isOwner && !exitUser.isOrgExitAdmin) {
     throw ApiError.forbidden('You can only complete tasks assigned to you');
   }
+  // Only PENDING tasks can be completed. Scoping the UPDATE to status='PENDING'
+  // prevents resurrecting a task that already reached a terminal state — e.g. CLOSED
+  // (set by closeRequestTasks when the request completed/withdrew) or COMPLETED.
   const { rows: upd } = await pool.query(
     `UPDATE exit_tasks SET status = 'COMPLETED', completed_at = NOW(), completed_by = $2
-     WHERE id = $1 RETURNING *`,
+     WHERE id = $1 AND status = 'PENDING' RETURNING *`,
     [taskId, exitUser.employeeId || null],
   );
   const completed = upd[0];
+  if (!completed) {
+    throw ApiError.badRequest(`Task is already ${String(task.status || 'closed').toLowerCase()} and cannot be completed`);
+  }
   if (completed) {
     const desc = completed.description || '';
     const match = desc.match(/Checklist item ID:\s*(\d+)/i);

@@ -5,15 +5,24 @@ const notify = require('./attendanceNotifications.service');
 const { sendSystemNotification } = require('../../notifications/notifications.service');
 const calc = require('./attendanceCalculation.service');
 
-async function findStalePendingRegularizations(pool, maxDays) {
+async function findStalePendingRegularizations(pool, maxDays, autoApproveEnabled = false) {
   const days = Math.max(1, Number(maxDays) || 3);
+  // Scope the auto-reject sweep to requests stuck at the FIRST (manager) stage —
+  // the same stage the manager-absent auto-approve (findStuckManagerStageRegularizations)
+  // is able to rescue. A request that has already advanced to the department/HR
+  // stage simply has a present-but-slow approver and has no auto-approve counterpart,
+  // so blindly auto-rejecting it would penalise the employee for the approver's delay.
+  //
+  // When auto-approve is ENABLED, the manager stage is rescued (approved) by that
+  // sweep, so exclude it here — otherwise a reject window SHORTER than the approve
+  // window would reject manager-stage requests before auto-approve ever runs (the
+  // same-pass "approve before reject" ordering can't help when the request hasn't
+  // reached the approve threshold yet). Legacy un-staged (NULL) requests have no
+  // auto-approve counterpart, so they remain auto-rejectable either way.
+  const stageClause = autoApproveEnabled
+    ? `a.reg_current_stage IS NULL`
+    : `(a.reg_current_stage = 'manager' OR a.reg_current_stage IS NULL)`;
   const { rows } = await pool.query(
-    // Scope the auto-reject sweep to requests stuck at the FIRST (manager) stage —
-    // the same stage the manager-absent auto-approve (findStuckManagerStageRegularizations)
-    // is able to rescue. A request that has already advanced to the department/HR
-    // stage simply has a present-but-slow approver and has no auto-approve counterpart,
-    // so blindly auto-rejecting it would penalise the employee for the approver's delay.
-    // Conservatively, we only auto-reject manager-stage (or legacy un-staged) requests.
     `SELECT a.id, a.employee_id,
             TO_CHAR(a.date, 'YYYY-MM-DD') AS date,
             a.regularization_status, a.regularization_reason,
@@ -22,7 +31,7 @@ async function findStalePendingRegularizations(pool, maxDays) {
      FROM attendance a
      JOIN employees e ON e.id = a.employee_id AND e.deleted_at IS NULL
      WHERE a.regularization_status = 'Pending'
-       AND (a.reg_current_stage = 'manager' OR a.reg_current_stage IS NULL)
+       AND ${stageClause}
        AND a.updated_at < NOW() - ($1::int * INTERVAL '1 day')
      ORDER BY a.updated_at ASC`,
     [days],
@@ -88,7 +97,8 @@ async function processAutoRejections(pool, tenantDb, { skipBatchAudit = false } 
     return { rejected: 0, skipped: true };
   }
 
-  const stale = await findStalePendingRegularizations(pool, maxDays);
+  const autoApproveEnabled = settings?.regularization_auto_approve_enabled === true;
+  const stale = await findStalePendingRegularizations(pool, maxDays, autoApproveEnabled);
   let rejected = 0;
   for (const row of stale) {
     try {

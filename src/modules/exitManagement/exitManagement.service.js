@@ -121,6 +121,20 @@ async function submitExitRequest(tenant, data, exitUser, file = null) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Serialize concurrent submissions for the same employee. The pre-transaction
+    // SELECT above is only a fast-path; two parallel requests could both pass it and
+    // create duplicate active exit requests. This transaction-scoped advisory lock
+    // (held until COMMIT/ROLLBACK) plus the re-check below is the race-safe guard.
+    await client.query('SELECT pg_advisory_xact_lock($1)', [Number(employeeId)]);
+    const { rows: activeInTx } = await client.query(
+      `SELECT id FROM exit_requests
+       WHERE employee_id = $1 AND status IN ('DRAFT','SUBMITTED','IN_PROGRESS')`,
+      [employeeId],
+    );
+    if (activeInTx.length) {
+      throw ApiError.conflict('An active exit request already exists for this employee');
+    }
+
     const firstStage = await engine.getFirstStage(client, workflow.id);
     if (!firstStage) throw ApiError.badRequest('The configured workflow has no stages');
 

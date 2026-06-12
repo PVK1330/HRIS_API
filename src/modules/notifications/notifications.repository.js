@@ -186,49 +186,17 @@ async function markAsRead(pool, id, user) {
 }
 
 async function markAllAsRead(pool, user) {
-  const role = String(user.role || user.panel || '').toLowerCase().replace(/[_\s]/g, '');
-  const isSuperadmin = role === 'superadmin';
-  const isAdminRole = ['admin', 'hradmin', 'supportadmin', 'billingadmin'].includes(role);
-
-  let updateQuery = '';
-  let params = [];
-
-  if (isSuperadmin) {
-    // Mark only genuine superadmin notifications as read — must mirror the
-    // listForUser superadmin filter (no for_admin backward-compat clause).
-    updateQuery = `
-      UPDATE notifications
-      SET is_read = true
-      WHERE recipient_role = 'superadmin'
-    `;
-  } else if (isAdminRole) {
-    // Admin marks their own notifications as read
-    updateQuery = `
-      UPDATE notifications
-      SET is_read = true
-      WHERE (for_admin = true AND recipient_role IS NULL)
-         OR recipient_id = $1
-         OR recipient_role = 'admin'
-         OR employee_id = $1
-         OR employee_id IN (SELECT id FROM employees WHERE LOWER(work_email) = LOWER($2))
-    `;
-    params = [user.id, user.email || ''];
-  } else {
-    // Employee marks their own notifications as read
-    updateQuery = `
-      UPDATE notifications
-      SET is_read = true
-      WHERE employee_id = $1
-         OR employee_id IN (SELECT id FROM employees WHERE work_email = $2)
-    `;
-    params = [user.id, user.email || ''];
-  }
-
-  logger.debug('[notifications] markAllAsRead query built');
-  logger.debug('[notifications] markAllAsRead params', { count: params.length });
-
-  await pool.query(updateQuery, params);
-  return true;
+  // Mark exactly the notifications this user can see, using the SAME predicate as
+  // listForUser / markAsRead (buildUserScope). The previous bespoke clauses were
+  // looser than listForUser (admin branch dropped the recipient_id/messaging-id
+  // predicates, employee branch used case-sensitive email), so "mark all read"
+  // left rows unread and the unread badge re-appeared after the client re-fetched.
+  const { clause, params } = await buildUserScope(pool, user, 1);
+  const { rowCount } = await pool.query(
+    `UPDATE notifications SET is_read = true WHERE ${clause} AND is_read = false`,
+    params,
+  );
+  return rowCount;
 }
 
 async function remove(pool, id, user) {

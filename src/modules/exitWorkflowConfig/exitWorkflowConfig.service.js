@@ -57,26 +57,36 @@ async function insertStage(client, workflowId, s, order) {
   );
   const stageId = rows[0].id;
 
+  // Assign a CONTINUOUS approver_order across departments → roles → users. The
+  // stage engine UNIONs all three approver tables and orders by approver_order
+  // (NULLS LAST), so leaving role/user order NULL made SEQUENTIAL approval order
+  // undefined (all role/user approvers collapsed to the end arbitrarily).
+  let approverOrder = 0;
   const depts = [...new Set((s.department_ids || []).map(Number).filter(Boolean))];
   for (let i = 0; i < depts.length; i += 1) {
+    approverOrder += 1;
     await client.query(
       `INSERT INTO exit_stage_departments (stage_id, department_id, is_primary, approver_order)
        VALUES ($1,$2,$3,$4) ON CONFLICT (stage_id, department_id) DO NOTHING`,
-      [stageId, depts[i], i === 0, i + 1],
+      [stageId, depts[i], i === 0, approverOrder],
     );
   }
-  for (const roleId of [...new Set((s.role_ids || []).map(Number).filter(Boolean))]) {
+  const roleIds = [...new Set((s.role_ids || []).map(Number).filter(Boolean))];
+  for (let i = 0; i < roleIds.length; i += 1) {
+    approverOrder += 1;
     await client.query(
-      `INSERT INTO exit_stage_roles (stage_id, role_id) VALUES ($1,$2)
+      `INSERT INTO exit_stage_roles (stage_id, role_id, approver_order) VALUES ($1,$2,$3)
        ON CONFLICT (stage_id, role_id) DO NOTHING`,
-      [stageId, roleId],
+      [stageId, roleIds[i], approverOrder],
     );
   }
-  for (const userId of [...new Set((s.user_ids || []).map(Number).filter(Boolean))]) {
+  const userIds = [...new Set((s.user_ids || []).map(Number).filter(Boolean))];
+  for (let i = 0; i < userIds.length; i += 1) {
+    approverOrder += 1;
     await client.query(
-      `INSERT INTO exit_stage_users (stage_id, employee_id) VALUES ($1,$2)
+      `INSERT INTO exit_stage_users (stage_id, employee_id, approver_order) VALUES ($1,$2,$3)
        ON CONFLICT (stage_id, employee_id) DO NOTHING`,
-      [stageId, userId],
+      [stageId, userIds[i], approverOrder],
     );
   }
   for (const [i, item] of (s.checklist_items || []).entries()) {

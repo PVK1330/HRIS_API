@@ -80,6 +80,15 @@ app.use(helmet({
 // Apply general rate limit to all requests
 app.use(generalLimiter);
 
+// Stripe webhook MUST receive the raw, unparsed body for signature verification,
+// so it is registered before express.json(). It is the authoritative source of
+// truth for payment success (the browser /confirm call is only a fast-path).
+app.post(
+  '/api/v1/billing/stripe/webhook',
+  express.raw({ type: 'application/json' }),
+  require('./modules/billing/stripeWebhook.controller').handleStripeWebhook,
+);
+
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use(cookieParser());

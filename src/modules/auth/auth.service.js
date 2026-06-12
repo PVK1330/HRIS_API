@@ -1411,6 +1411,12 @@ async function login(email, password, options = {}) {
       }
     }
 
+    // When the user was pre-resolved during central resolution (password already
+    // verified inline), the lockout-enforcing branch above was skipped — enforce it
+    // here so a locked account cannot authenticate on the email-only login path.
+    if (resolvedUser) {
+      await enforceAdminLockout(tenantPool, user.id);
+    }
     await resetAdminLoginCounter(tenantPool, user.id);
     return buildAdminLoginResult(
       user,
@@ -1424,6 +1430,9 @@ async function login(email, password, options = {}) {
     if (String(resolvedUser.employment_status || '').toLowerCase() === 'terminated') {
       throw ApiError.unauthorized('User account is inactive');
     }
+    // Same as admin: the central path verified the password inline but never
+    // enforced lockout — block a locked account before issuing a session.
+    await enforceEmployeeLockout(tenantPool, resolvedUser.id);
     await resetEmployeeLoginCounter(tenantPool, resolvedUser.id);
     return buildEmployeeLoginResult(
       resolvedUser,
@@ -1579,8 +1588,8 @@ function redeemImpersonationCode(code) {
   if (!entry || entry.expiresAt < Date.now()) {
     throw ApiError.unauthorized('Impersonation code is invalid or has expired');
   }
-  const { token, user, plan_details, plan_features, tenant_features, allowedModules } = entry;
-  return { token, user, plan_details, plan_features, tenant_features, allowedModules };
+  const { token, refreshToken, user, plan_details, plan_features, tenant_features, allowedModules } = entry;
+  return { token, refreshToken, user, plan_details, plan_features, tenant_features, allowedModules };
 }
 
 async function getAccessProfile(currentUser) {

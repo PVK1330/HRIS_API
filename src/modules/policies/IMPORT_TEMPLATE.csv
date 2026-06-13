@@ -1,0 +1,6 @@
+Title,Category,Description,Effective Date,Review Date,Acknowledgement Required,Audience Type,Department IDs,Role IDs,New Joiners Days
+"Code of Conduct","HR","Company-wide code of conduct and professional behavior standards","2024-01-01","2024-12-31","yes","all","","",90
+"Data Security Policy","IT","Information security and data protection policy for all employees","2024-01-15","2024-06-15","yes","roles","","1,2,3",
+"Work From Home Policy","HR","Guidelines for remote work and flexible working arrangements","2024-02-01","2024-12-31","yes","departments","1,2","",
+"Leave Policy","HR","Annual and casual leave guidelines","2024-01-01","2024-12-31","yes","all","","",90
+"Anti-Harassment Policy","HR","Zero tolerance policy on harassment and discrimination","2024-03-01","2024-12-31","yes","new_joiners","","",90

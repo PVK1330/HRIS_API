@@ -1,5 +1,41 @@
 // src/modules/superadmin/plans.controller.js
 const plansRepository = require('./plans.repository');
+const { getPlatformContext } = require('../../utils/platformSettings');
+
+// Stripe minimum chargeable amounts per currency (major units)
+const STRIPE_MIN = {
+  usd: 0.5, eur: 0.5, gbp: 0.3, aed: 2, sar: 2, qar: 2,
+  inr: 0.5, aud: 0.5, cad: 0.5, sgd: 0.5, nzd: 0.5, chf: 0.5,
+  hkd: 4, jpy: 50, mxn: 10, brl: 0.5,
+};
+
+async function validatePlanPrice(monthly_price, annual_price) {
+  let currency = 'aed';
+  try {
+    const platform = await getPlatformContext();
+    currency = String(platform.currency || 'AED').toLowerCase();
+  } catch { /* fallback to aed */ }
+
+  const min = STRIPE_MIN[currency];
+  if (min == null) return; // unknown currency — skip
+
+  const monthly = Number(monthly_price);
+  const annual = Number(annual_price);
+  const upper = currency.toUpperCase();
+
+  if (!isNaN(monthly) && monthly > 0 && monthly < min) {
+    throw Object.assign(new Error(
+      `Monthly price (${monthly} ${upper}) is below the Stripe minimum of ${min} ${upper}. ` +
+      `Increase the price to at least ${min} ${upper} to allow payments.`
+    ), { statusCode: 400 });
+  }
+  if (!isNaN(annual) && annual > 0 && annual < min) {
+    throw Object.assign(new Error(
+      `Annual price (${annual} ${upper}) is below the Stripe minimum of ${min} ${upper}. ` +
+      `Increase the price to at least ${min} ${upper} to allow payments.`
+    ), { statusCode: 400 });
+  }
+}
 
 /**
  * Get all subscription plans
@@ -117,6 +153,8 @@ const createPlan = async (req, res, next) => {
       });
     }
 
+    await validatePlanPrice(monthly_price, annual_price);
+
     const plan = await plansRepository.create({
       plan_name,
       plan_code,
@@ -163,6 +201,8 @@ const updatePlan = async (req, res, next) => {
         });
       }
     }
+
+    await validatePlanPrice(req.body.monthly_price, req.body.annual_price);
 
     const updatedPlan = await plansRepository.update(req.params.id, req.body);
     return res.status(200).json({

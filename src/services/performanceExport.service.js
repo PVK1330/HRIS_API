@@ -1,10 +1,11 @@
 'use strict';
 
 const PdfKit = require('pdfkit');
+const ExcelJS = require('exceljs');
 const ApiError = require('../utils/ApiError');
 const { assertEmployeeRecordAccess } = require('../utils/applyDataScope');
 
-const validExportTypes = ['csv', 'pdf'];
+const validExportTypes = ['csv', 'pdf', 'excel'];
 
 async function fetchCycles(pool) {
   const { rows } = await pool.query(
@@ -21,6 +22,26 @@ async function fetchCycles(pool) {
   }));
 }
 
+async function fetchCyclesForEmployee(pool, employeeId) {
+  if (!employeeId) return [];
+  const { rows } = await pool.query(
+    `SELECT DISTINCT pc.id, pc.cycle_name, pc.start_date, pc.end_date
+     FROM employee_performance ep
+     JOIN performance_cycles pc ON ep.performance_cycle_id = pc.id
+     WHERE ep.employee_id = $1
+       AND ep.deleted_at IS NULL
+       AND pc.deleted_at IS NULL
+     ORDER BY pc.start_date DESC`,
+    [employeeId]
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    cycleName: row.cycle_name,
+    startDate: row.start_date ? row.start_date.toISOString().split('T')[0] : null,
+    endDate: row.end_date ? row.end_date.toISOString().split('T')[0] : null,
+  }));
+}
+
 async function exportData(pool, options, auth) {
   const {
     employeeId,
@@ -28,6 +49,7 @@ async function exportData(pool, options, auth) {
     startDate,
     endDate,
     exportType,
+    organizationName,
   } = options;
 
   // 1. Validation
@@ -96,11 +118,14 @@ async function exportData(pool, options, auth) {
     FROM employee_performance ep
     LEFT JOIN performance_cycles pc ON ep.performance_cycle_id = pc.id
     LEFT JOIN employees mgr ON ep.manager_id = mgr.id AND mgr.deleted_at IS NULL
-    WHERE ep.employee_id = $1 
+    WHERE ep.employee_id = $1
       AND ep.deleted_at IS NULL
       AND (
-        (pc.id = $2) OR
-        ($2 IS NULL AND ep.assessment_date::date BETWEEN $3::date AND $4::date)
+        ($2::integer IS NOT NULL AND ep.performance_cycle_id = $2::integer) OR
+        ($2 IS NULL AND (
+          ep.assessment_date::date BETWEEN $3::date AND $4::date
+          OR (ep.assessment_date IS NULL AND ep.created_at::date BETWEEN $3::date AND $4::date)
+        ))
       )
     ORDER BY ep.created_at DESC
     LIMIT 1
@@ -162,13 +187,13 @@ async function exportData(pool, options, auth) {
     employeeProgress: assessment.employee_progress || '0',
     employeeComments: assessment.employee_comments || 'N/A',
     completionNotes: assessment.completion_notes || 'N/A',
-    reportGeneratedDate: new Date().toLocaleString()
+    reportGeneratedDate: new Date().toLocaleString(),
+    organizationName: organizationName || 'HRIS System',
   };
 
-  if (exportType.toLowerCase() === 'csv') {
-    return generateCsv(completeData);
-  }
-
+  const type = exportType.toLowerCase();
+  if (type === 'csv') return generateCsv(completeData);
+  if (type === 'excel') return generateExcel(completeData);
   return generatePdf(completeData);
 }
 
@@ -368,9 +393,9 @@ function generatePdf(data) {
        .fontSize(11)
        .text(`${data.performanceCycle}  •  ${data.cycleDuration}`, MARGIN, 46);
 
-    // HRIS logo label (right)
+    // Organization name (right)
     doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(13)
-       .text('ELITEPIC', 0, 18, { align: 'right', width: PAGE_W - MARGIN });
+       .text(data.organizationName, 0, 18, { align: 'right', width: PAGE_W - MARGIN });
     doc.fillColor('#BFDBFE').font('Helvetica').fontSize(9)
        .text('HRIS System', 0, 35, { align: 'right', width: PAGE_W - MARGIN });
 
@@ -575,6 +600,179 @@ function generatePdf(data) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// EXCEL GENERATION
+// ────────────────────────────────────────────────────────────────────────
+
+async function generateExcel(data) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Elitepic HRIS';
+  wb.created = new Date();
+
+  // ── colour palette (mirrors PDF) ────────────────────────────────────────
+  const HEADER_BG  = '1E3A8A';
+  const ACCENT1    = '2563EB';
+  const ACCENT2    = '7C3AED';
+  const ACCENT3    = '0F766E';
+  const ACCENT4    = 'C2410C';
+  const ACCENT5    = '065F46';
+  const LIGHT_GREY = 'F1F5F9';
+  const WHITE      = 'FFFFFF';
+
+  function hdrFont(color = WHITE) {
+    return { name: 'Calibri', bold: true, size: 11, color: { argb: `FF${color}` } };
+  }
+  function bodyFont(bold = false) {
+    return { name: 'Calibri', bold, size: 10, color: { argb: 'FF1E293B' } };
+  }
+  function hdrFill(hex) {
+    return { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${hex}` } };
+  }
+  function lightFill(hex) {
+    return { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${hex}` } };
+  }
+  function thinBorder() {
+    const s = { style: 'thin', color: { argb: 'FFE2E8F0' } };
+    return { top: s, left: s, bottom: s, right: s };
+  }
+
+  // ── Sheet 1: Overview ────────────────────────────────────────────────────
+  const ws = wb.addWorksheet('Performance Report', {
+    pageSetup: { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1 },
+    properties: { tabColor: { argb: `FF${HEADER_BG}` } },
+  });
+  ws.columns = [
+    { key: 'a', width: 28 },
+    { key: 'b', width: 38 },
+    { key: 'c', width: 18 },
+    { key: 'd', width: 20 },
+  ];
+
+  // ── Title banner ─────────────────────────────────────────────────────────
+  ws.mergeCells('A1:D1');
+  const titleCell = ws.getCell('A1');
+  titleCell.value = 'Employee Performance Report';
+  titleCell.font = { name: 'Calibri', bold: true, size: 16, color: { argb: `FF${WHITE}` } };
+  titleCell.fill = hdrFill(HEADER_BG);
+  titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+  ws.getRow(1).height = 32;
+
+  ws.mergeCells('A2:D2');
+  const subCell = ws.getCell('A2');
+  subCell.value = `${data.performanceCycle}  •  ${data.cycleDuration}`;
+  subCell.font = { name: 'Calibri', size: 10, color: { argb: 'FFBFDBFE' } };
+  subCell.fill = hdrFill(HEADER_BG);
+  subCell.alignment = { vertical: 'middle', horizontal: 'center' };
+  ws.getRow(2).height = 20;
+
+  ws.addRow([]);
+
+  // ── Section helper ───────────────────────────────────────────────────────
+  function addSectionHeader(label, hex) {
+    ws.addRow([]);
+    const r = ws.addRow([label]);
+    ws.mergeCells(`A${r.number}:D${r.number}`);
+    r.getCell(1).font = hdrFont(WHITE);
+    r.getCell(1).fill = hdrFill(hex);
+    r.getCell(1).alignment = { vertical: 'middle', indent: 1 };
+    r.height = 22;
+    return r;
+  }
+
+  function addDataRow(label, value, bgHex = null) {
+    const r = ws.addRow([label, value]);
+    r.getCell(1).font = bodyFont(true);
+    r.getCell(1).fill = lightFill(bgHex || LIGHT_GREY);
+    r.getCell(2).font = bodyFont();
+    r.getCell(2).fill = lightFill(bgHex || WHITE);
+    [1, 2].forEach((c) => { r.getCell(c).border = thinBorder(); r.getCell(c).alignment = { wrapText: true, vertical: 'middle' }; });
+    r.height = 18;
+    return r;
+  }
+
+  // ── 1. Employee Details ───────────────────────────────────────────────────
+  addSectionHeader('Employee Details', ACCENT1);
+  addDataRow('Employee Name', data.employeeName);
+  addDataRow('Employee ID', data.employeeCode);
+  addDataRow('Department', data.departmentName);
+  addDataRow('Manager', data.managerName);
+  addDataRow('Performance Cycle', data.performanceCycle);
+  addDataRow('Cycle Duration', data.cycleDuration);
+  addDataRow('Overall Rating', data.overallRating ? `${data.overallRating.toFixed(1)} / 5.0` : '0.0 / 5.0');
+  addDataRow('Performance Band', data.performanceBand);
+
+  // ── 2. Competency Ratings ─────────────────────────────────────────────────
+  addSectionHeader('Competency Ratings', ACCENT2);
+  const compHdr = ws.addRow(['Competency', 'Rating (out of 5)', 'Score %', '']);
+  ws.mergeCells(`C${compHdr.number}:D${compHdr.number}`);
+  [1, 2, 3].forEach((c) => {
+    compHdr.getCell(c).font = hdrFont('FFFFFF');
+    compHdr.getCell(c).fill = hdrFill('DDD6FE');
+    compHdr.getCell(c).font = { name: 'Calibri', bold: true, size: 10, color: { argb: `FF${ACCENT2}` } };
+    compHdr.getCell(c).border = thinBorder();
+    compHdr.getCell(c).alignment = { vertical: 'middle', horizontal: 'center' };
+  });
+  compHdr.height = 20;
+
+  const competencies = Array.isArray(data.competencyRatings) ? data.competencyRatings : [];
+  if (competencies.length === 0) {
+    const r = ws.addRow(['No competency ratings available.', '', '', '']);
+    ws.mergeCells(`A${r.number}:D${r.number}`);
+    r.getCell(1).font = { name: 'Calibri', italic: true, size: 10, color: { argb: 'FF64748B' } };
+  } else {
+    competencies.forEach((cr, i) => {
+      const pct = Math.round((cr.rating / 5) * 100);
+      const r = ws.addRow([cr.competencyName, cr.rating, `${pct}%`, '']);
+      ws.mergeCells(`C${r.number}:D${r.number}`);
+      const bg = i % 2 === 0 ? 'FFFFFF' : 'F5F3FF';
+      [1, 2, 3].forEach((c) => {
+        r.getCell(c).font = bodyFont();
+        r.getCell(c).fill = lightFill(bg);
+        r.getCell(c).border = thinBorder();
+        r.getCell(c).alignment = { vertical: 'middle', horizontal: c === 1 ? 'left' : 'center' };
+      });
+      r.height = 18;
+    });
+  }
+
+  // ── 3. Admin Feedback ────────────────────────────────────────────────────
+  addSectionHeader('Admin Feedback', ACCENT3);
+  addDataRow('Key Contributions / Strengths', data.keyContributions, 'F0FDFA');
+  addDataRow('Growth Objectives', data.growthObjectives, 'F0FDFA');
+  if (data.remarks && data.remarks !== 'N/A') {
+    addDataRow('Remarks', data.remarks, 'F8FAFC');
+  }
+
+  // ── 4. Goal & KPI Details ────────────────────────────────────────────────
+  addSectionHeader('Goal & KPI Details', ACCENT4);
+  addDataRow('Goal Title', data.goalTitle, 'FFF7ED');
+  addDataRow('Priority', data.priority, 'FFF7ED');
+  addDataRow('KPI / Target', data.kpiTarget, 'FFF7ED');
+  addDataRow('Due Date', formatDate(data.goalDueDate), 'FFF7ED');
+  addDataRow('Weightage', data.weightage ? `${data.weightage}%` : 'N/A', 'FFF7ED');
+
+  // ── 5. Employee Progress ─────────────────────────────────────────────────
+  addSectionHeader('Employee Progress Update', ACCENT5);
+  addDataRow('Status', data.employeeStatus, 'ECFDF5');
+  addDataRow('Progress', `${data.employeeProgress}%`, 'ECFDF5');
+  addDataRow('Employee Comments', data.employeeComments, 'ECFDF5');
+  addDataRow('Completion Notes', data.completionNotes, 'ECFDF5');
+
+  // ── Footer row ───────────────────────────────────────────────────────────
+  ws.addRow([]);
+  const footerRow = ws.addRow([`Report Generated: ${data.reportGeneratedDate}  |  Elitepic HRIS - Confidential`]);
+  ws.mergeCells(`A${footerRow.number}:D${footerRow.number}`);
+  footerRow.getCell(1).font = { name: 'Calibri', italic: true, size: 9, color: { argb: 'FF64748B' } };
+  footerRow.getCell(1).alignment = { horizontal: 'center' };
+
+  const buffer = await wb.xlsx.writeBuffer();
+  return {
+    data: Buffer.from(buffer),
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    contentDisposition: 'attachment; filename=employee-performance-report.xlsx',
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // CSV GENERATION
 // ────────────────────────────────────────────────────────────────────────
 
@@ -632,5 +830,6 @@ function generateCsv(data) {
 
 module.exports = {
   fetchCycles,
+  fetchCyclesForEmployee,
   exportData,
 };

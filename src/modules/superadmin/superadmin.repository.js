@@ -396,7 +396,7 @@ async function listAnnouncementRecipients(audience) {
   }
 
   const sql = `
-    SELECT DISTINCT t.id, t.name, t.admin_email
+    SELECT DISTINCT t.id, t.name, t.admin_email, t.db_name
     FROM public.tenants t
     LEFT JOIN public.tenant_subscriptions ts
       ON ts.tenant_id = t.id

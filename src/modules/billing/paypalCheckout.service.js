@@ -19,6 +19,28 @@ const gatewayRepo = require('../paymentGateways/paymentGateways.repository');
 const SANDBOX_BASE = 'https://api-m.sandbox.paypal.com';
 const LIVE_BASE    = 'https://api-m.paypal.com';
 
+// Full list of currencies PayPal Orders v2 supports.
+// Source: https://developer.paypal.com/reference/currency-codes/
+const PAYPAL_SUPPORTED_CURRENCIES = new Set([
+  'AUD', 'BRL', 'CAD', 'CNY', 'CZK', 'DKK', 'EUR', 'HKD', 'HUF', 'ILS',
+  'JPY', 'MYR', 'MXN', 'TWD', 'NZD', 'NOK', 'PHP', 'PLN', 'GBP',
+  'SGD', 'SEK', 'CHF', 'THB', 'USD',
+]);
+
+function assertPaypalCurrency(currency) {
+  const code = String(currency || '').toUpperCase();
+  if (!PAYPAL_SUPPORTED_CURRENCIES.has(code)) {
+    const supported = [...PAYPAL_SUPPORTED_CURRENCIES].join(', ');
+    throw ApiError.badRequest(
+      `PayPal does not support the currency "${code}". ` +
+      `Configure a supported currency (e.g. USD, EUR, GBP) in Settings → Payment Gateways → PayPal, ` +
+      `or use Stripe which supports ${code}. ` +
+      `Supported PayPal currencies: ${supported}.`,
+    );
+  }
+  return code;
+}
+
 async function getAccessToken(credentials, testMode) {
   const base = testMode ? SANDBOX_BASE : LIVE_BASE;
   const auth = Buffer.from(`${credentials.client_id}:${credentials.client_secret}`).toString('base64');
@@ -78,6 +100,19 @@ async function createOrder({
   const { creds, testMode } = await loadPaypalGateway();
   const { accessToken, base } = await getAccessToken(creds, testMode);
 
+  // Resolve the currency to use for this PayPal order:
+  // 1. Admin-configured override in gateway credentials (e.g. "paypal_currency": "USD") — validated strictly.
+  // 2. Platform currency if it is in PayPal's supported list.
+  // 3. Automatic fallback to USD when the platform currency (e.g. AED, INR) is not supported.
+  let resolvedCurrency;
+  if (creds.paypal_currency) {
+    // Admin explicitly chose a currency — validate it and throw if wrong.
+    resolvedCurrency = assertPaypalCurrency(String(creds.paypal_currency).toUpperCase());
+  } else {
+    const platformCode = String(currency || 'USD').toUpperCase();
+    resolvedCurrency = PAYPAL_SUPPORTED_CURRENCIES.has(platformCode) ? platformCode : 'USD';
+  }
+
   const customId = JSON.stringify({
     tenant_id:    String(tenantId),
     payment_id:   paymentId  ? String(paymentId)  : '',
@@ -90,7 +125,7 @@ async function createOrder({
     purchase_units: [
       {
         amount: {
-          currency_code: String(currency).toUpperCase(),
+          currency_code: resolvedCurrency,
           value: Number(amount).toFixed(2),
         },
         custom_id: customId,

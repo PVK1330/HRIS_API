@@ -119,7 +119,9 @@ async function createCheckoutSession({
     }
   }
 
-  const platformCurrency = (paymentRow?.currency || platform.currency || 'AED').toUpperCase();
+  // Plans are priced in the platform's base currency — always use that for
+  // Stripe, not the payment record's currency which may be stale or wrong.
+  const platformCurrency = (platform.currency || 'AED').toUpperCase();
   const base = resolveFrontendBase();
   const currency = platformCurrency.toLowerCase();
   const invoiceDate = formatDate(new Date(), platformTz, 'DD/MM/YYYY');

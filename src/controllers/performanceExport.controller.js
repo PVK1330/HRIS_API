@@ -12,6 +12,14 @@ const getPerformanceCycles = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, cycles, 'Performance cycles retrieved successfully');
 });
 
+const getEmployeePerformanceCycles = asyncHandler(async (req, res) => {
+  const pool = getTenantPool(req.user.db_name);
+  const employeeId = Number(req.query.employeeId);
+  if (!employeeId) throw ApiError.badRequest('employeeId query param is required');
+  const cycles = await performanceExportService.fetchCyclesForEmployee(pool, employeeId);
+  return ApiResponse.ok(res, cycles, 'Employee performance cycles retrieved successfully');
+});
+
 const exportPerformanceData = asyncHandler(async (req, res) => {
   const pool = getTenantPool(req.user.db_name);
   const { cycleId, startDate, endDate, departmentId, employeeId, exportType } = req.body;
@@ -23,6 +31,7 @@ const exportPerformanceData = asyncHandler(async (req, res) => {
     departmentId,
     employeeId,
     exportType,
+    organizationName: req.tenant?.name,
   }, req.auth);
 
   res.setHeader('Content-Type', result.contentType);
@@ -32,5 +41,6 @@ const exportPerformanceData = asyncHandler(async (req, res) => {
 
 module.exports = {
   getPerformanceCycles,
+  getEmployeePerformanceCycles,
   exportPerformanceData,
 };

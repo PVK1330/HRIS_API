@@ -11,7 +11,7 @@ const repo = require('./superadmin.repository');
 const { sendMail } = require('../../utils/mail');
 const { renderEmail } = require('../../utils/emailTemplate');
 const logger = require('../../utils/logger');
-const { superAdminPool } = require('../../config/db');
+const { superAdminPool, getTenantPool } = require('../../config/db');
 
 async function issueSuperadminRefreshToken(userId, role) {
   const jti = crypto.randomUUID();
@@ -447,6 +447,24 @@ async function createAnnouncement({ title, message, audience, type }) {
     if (failed > 0) {
       logger.warn('[superadmin] announcement email send failures', { failed, total: recipients.length });
     }
+
+    // Push announcement into each tenant's in-app feed
+    await Promise.allSettled(
+      recipients.map(async (recipient) => {
+        if (!recipient.db_name) return;
+        try {
+          const pool = getTenantPool(recipient.db_name);
+          await pool.query(
+            `INSERT INTO announcements
+               (title, category, priority, content, visibility, status, dispatch_channels, dispatched_at)
+             VALUES ($1, $2, $3, $4, 'All Employees', 'Published', 'In App', NOW())`,
+            [cleanTitle, 'General', 'Normal', cleanMessage],
+          );
+        } catch (err) {
+          logger.warn(`[superadmin] failed to push announcement into tenant ${recipient.db_name}: ${err.message}`);
+        }
+      })
+    );
   }
 
   return announcement;

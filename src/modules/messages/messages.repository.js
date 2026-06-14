@@ -30,9 +30,10 @@ async function listConversations(pool, employeeId) {
        c.last_message_at,
        -- other participant
        CASE WHEN c.participant_a = $1 THEN c.participant_b ELSE c.participant_a END AS other_id,
-       e.full_name  AS other_name,
-       e.job_title  AS other_role,
-       e.emp_id     AS other_emp_id,
+       e.full_name         AS other_name,
+       e.job_title         AS other_role,
+       e.emp_id            AS other_emp_id,
+       e.profile_image_url AS other_profile_image_url,
        -- unread count for this employee
        (SELECT COUNT(*)::int FROM messages m
         WHERE m.conversation_id = c.id

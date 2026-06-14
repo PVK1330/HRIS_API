@@ -36,6 +36,11 @@ const getLogo = asyncHandler(async (req, res) => {
   res.status(200).json({ success: true, data });
 });
 
+const getTimezone = asyncHandler(async (req, res) => {
+  const data = await tenantSettingsService.getAdminSettings(req.tenant.dbName, '');
+  res.status(200).json({ success: true, data: { timezone: data?.timezone || 'UTC' } });
+});
+
 const uploadLogo = asyncHandler(async (req, res) => {
   if (!req.file) throw new ApiError(400, 'No file uploaded');
   const baseUrl = resolvePublicBaseUrl(req);
@@ -52,4 +57,5 @@ module.exports = {
   updateAdminSettings,
   getLogo,
   uploadLogo,
+  getTimezone,
 };

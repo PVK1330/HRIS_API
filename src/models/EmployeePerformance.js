@@ -4,8 +4,24 @@ function calculateOverallRating(competencyRatings) {
   if (!Array.isArray(competencyRatings) || competencyRatings.length === 0) {
     return 0;
   }
-  const sum = competencyRatings.reduce((acc, curr) => acc + Number(curr.rating || 0), 0);
-  return Math.round((sum / competencyRatings.length) * 100) / 100;
+
+  // Exclude entries where rating is null, undefined, or empty string
+  const scored = competencyRatings.filter(
+    cr => cr.rating !== null && cr.rating !== undefined && cr.rating !== ''
+  );
+
+  if (scored.length === 0) return 0;
+
+  // Use weight field when present; fall back to equal weight of 1
+  const totalWeight = scored.reduce((acc, cr) => acc + (Number(cr.weight) || 1), 0);
+  if (totalWeight === 0) return 0;
+
+  const weightedSum = scored.reduce(
+    (acc, cr) => acc + Number(cr.rating) * (Number(cr.weight) || 1),
+    0
+  );
+
+  return Math.round((weightedSum / totalWeight) * 100) / 100;
 }
 
 function calculatePerformanceBand(overallRating) {

@@ -227,6 +227,37 @@ const getAuditLogs = asyncHandler(async (_req, res) => {
   return ApiResponse.ok(res, { logs }, 'Audit logs retrieved successfully');
 });
 
+/* ─── Export handlers ─────────────────────────────────────────────────────── */
+const exportLib = require('./superadmin.export');
+
+const exportAdminUsers = asyncHandler(async (req, res) => {
+  const users = await service.getAdminUsers();
+  const format = String(req.query.format || 'excel').toLowerCase();
+  if (format === 'pdf') return exportLib.buildAdminUsersPDF(res, users);
+  return exportLib.buildAdminUsersExcel(res, users);
+});
+
+const exportAuditLogs = asyncHandler(async (req, res) => {
+  const logs = await service.getAuditLogs();
+  const format = String(req.query.format || 'excel').toLowerCase();
+  if (format === 'pdf') return exportLib.buildAuditLogsPDF(res, logs);
+  return exportLib.buildAuditLogsExcel(res, logs);
+});
+
+const exportAnnouncements = asyncHandler(async (req, res) => {
+  const announcements = await service.getAnnouncements();
+  const format = String(req.query.format || 'excel').toLowerCase();
+  if (format === 'pdf') return exportLib.buildAnnouncementsPDF(res, announcements);
+  return exportLib.buildAnnouncementsExcel(res, announcements);
+});
+
+const exportSupportTickets = asyncHandler(async (req, res) => {
+  const tickets = await service.getSupportTickets();
+  const format = String(req.query.format || 'excel').toLowerCase();
+  if (format === 'pdf') return exportLib.buildSupportTicketsPDF(res, tickets);
+  return exportLib.buildSupportTicketsExcel(res, tickets);
+});
+
 module.exports = {
   login,
   verify2FA,
@@ -254,4 +285,8 @@ module.exports = {
   updateSupportTicket,
   addSupportTicketMessage,
   getAuditLogs,
+  exportAdminUsers,
+  exportAuditLogs,
+  exportAnnouncements,
+  exportSupportTickets,
 };

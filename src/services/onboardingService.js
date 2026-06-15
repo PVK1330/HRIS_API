@@ -36,6 +36,29 @@ async function superadminOnboardTenant(tenantData, superadminId) {
     const tempPassword = generateTempPassword();
     const passwordHash = await bcrypt.hash(tempPassword, env.BCRYPT_SALT_ROUNDS);
 
+    // Read free trial settings — respect trial_enabled flag
+    let trialEnabled = false;
+    let trialDaysCount = 0;
+    try {
+      const freeTrialRepo = require('../modules/freeTrial/freeTrial.repository');
+      const ft = await freeTrialRepo.findSingleton();
+      if (ft && ft.trial_enabled && Number(ft.trial_days) > 0) {
+        trialEnabled = true;
+        trialDaysCount = Number(ft.trial_days);
+      }
+    } catch {
+      // settings unavailable — no trial
+    }
+    // Superadmin can override trial days per tenant
+    if (tenantData.trialDays && Number(tenantData.trialDays) > 0) {
+      trialEnabled = true;
+      trialDaysCount = Number(tenantData.trialDays);
+    }
+    const subscriptionStatus = trialEnabled ? 'trial' : 'active';
+    const trialEndsAt = trialEnabled
+      ? new Date(Date.now() + trialDaysCount * 24 * 60 * 60 * 1000)
+      : null;
+
     // Insert tenant record
     const tenantResult = await client.query(
       `INSERT INTO public.tenants (
@@ -69,8 +92,8 @@ async function superadminOnboardTenant(tenantData, superadminId) {
         tenantData.country || 'United Arab Emirates',
         tenantData.postalCode || null,
         tenantData.planId,
-        'trial',
-        tenantData.trialDays ? new Date(Date.now() + tenantData.trialDays * 24 * 60 * 60 * 1000) : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+        subscriptionStatus,
+        trialEndsAt,
         tenantData.timezone || 'UTC',
         tenantData.dateFormat || 'DD/MM/YYYY',
         tenantData.timeFormat || '24h',
@@ -92,13 +115,17 @@ async function superadminOnboardTenant(tenantData, superadminId) {
     });
 
     // Create subscription record
+    const subStatus = trialEnabled ? 'trial' : 'active';
+    const subPeriodEnd = trialEnabled
+      ? `NOW() + INTERVAL '${trialDaysCount} days'`
+      : `NOW() + INTERVAL '1 month'`;
     const subscriptionResult = await client.query(
       `INSERT INTO public.tenant_subscriptions (
         tenant_id, plan_id, status, billing_cycle,
         current_period_start, current_period_end, trial_end
-      ) VALUES ($1, $2, 'trial', 'monthly', NOW(), NOW() + INTERVAL '14 days', NOW() + INTERVAL '14 days')
+      ) VALUES ($1, $2, $3, 'monthly', NOW(), ${subPeriodEnd}, ${trialEnabled ? `NOW() + INTERVAL '${trialDaysCount} days'` : 'NULL'})
       RETURNING id`,
-      [tenant.id, tenantData.planId]
+      [tenant.id, tenantData.planId, subStatus]
     );
 
     await client.query('COMMIT');
@@ -155,18 +182,23 @@ async function adminSelfOnboard(onboardingData) {
     const tenantSuffix = crypto.randomBytes(6).toString('hex');
     const schemaName = `tenant_${Date.now()}_${tenantSuffix}`;
 
-    // Trial length from the superadmin's Free Trial setting (fallback 14 days).
-    let selfTrialDays = 14;
+    // Trial length from the superadmin's Free Trial setting.
+    // If trial is disabled, onboard directly as active (no trial).
+    let selfTrialEnabled = false;
+    let selfTrialDays = 0;
     try {
       const freeTrialRepo = require('../modules/freeTrial/freeTrial.repository');
       const ft = await freeTrialRepo.findSingleton();
       if (ft && ft.trial_enabled && Number(ft.trial_days) > 0) {
+        selfTrialEnabled = true;
         selfTrialDays = Number(ft.trial_days);
       }
     } catch {
-      selfTrialDays = 14;
+      // settings unavailable — no trial
     }
-    const selfTrialEndsAt = new Date(Date.now() + selfTrialDays * 24 * 60 * 60 * 1000);
+    const selfTrialEndsAt = selfTrialEnabled
+      ? new Date(Date.now() + selfTrialDays * 24 * 60 * 60 * 1000)
+      : null;
 
     // Insert tenant record
     const tenantResult = await client.query(
@@ -201,7 +233,7 @@ async function adminSelfOnboard(onboardingData) {
         onboardingData.country || 'United Arab Emirates',
         onboardingData.postalCode || null,
         onboardingData.planId,
-        'trial',
+        selfTrialEnabled ? 'trial' : 'active',
         selfTrialEndsAt,
         onboardingData.timezone || 'UTC',
         onboardingData.dateFormat || 'DD/MM/YYYY',
@@ -222,13 +254,20 @@ async function adminSelfOnboard(onboardingData) {
     });
 
     // Create subscription record
+    const selfSubStatus = selfTrialEnabled ? 'trial' : 'active';
+    const selfSubPeriodEnd = selfTrialEnabled
+      ? `NOW() + INTERVAL '${selfTrialDays} days'`
+      : `NOW() + INTERVAL '1 month'`;
+    const selfTrialEnd = selfTrialEnabled
+      ? `NOW() + INTERVAL '${selfTrialDays} days'`
+      : 'NULL';
     const subscriptionResult = await client.query(
       `INSERT INTO public.tenant_subscriptions (
         tenant_id, plan_id, status, billing_cycle,
         current_period_start, current_period_end, trial_end
-      ) VALUES ($1, $2, 'trial', 'monthly', NOW(), NOW() + INTERVAL '14 days', NOW() + INTERVAL '14 days')
+      ) VALUES ($1, $2, $3, 'monthly', NOW(), ${selfSubPeriodEnd}, ${selfTrialEnd})
       RETURNING id`,
-      [tenant.id, onboardingData.planId]
+      [tenant.id, onboardingData.planId, selfSubStatus]
     );
 
     await client.query('COMMIT');

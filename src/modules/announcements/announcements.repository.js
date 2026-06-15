@@ -154,7 +154,8 @@ async function getRecipients(pool, visibility) {
       const { rows } = await pool.query(
         `SELECT id, full_name AS name, work_email AS email
          FROM employees
-         WHERE ${baseWhere} AND id = ANY($1::int[])`,
+         WHERE ${baseWhere} AND id = ANY($1::int[])
+           AND COALESCE(employment_status, 'Active') NOT IN ('Terminated', 'Exited')`,
         [ids],
       );
       return rows;
@@ -166,7 +167,8 @@ async function getRecipients(pool, visibility) {
   const { rows } = await pool.query(
     `SELECT id, full_name AS name, work_email AS email
      FROM employees
-     WHERE ${baseWhere} AND department = $1`,
+     WHERE ${baseWhere} AND department = $1
+       AND COALESCE(employment_status, 'Active') NOT IN ('Terminated', 'Exited')`,
     [visibility],
   );
   return rows;

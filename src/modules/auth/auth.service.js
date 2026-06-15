@@ -513,7 +513,7 @@ async function findEmployeeForLogin(tenantPool, loginId) {
   const { rows } = await tenantPool.query(
     `
       SELECT id, full_name, work_email, username, password_hash, portal_enabled,
-             rbac_role_id, employment_status, department
+             rbac_role_id, employment_status, department, profile_image_url
       FROM employees
       WHERE deleted_at IS NULL
         AND (
@@ -803,6 +803,7 @@ async function buildEmployeeLoginResult(emp, tenant, tenantPool, tenantFeatures,
       rbacRoleId: rbacRoleId || null,
       employeeId: emp.id,
       department: emp.department || null,
+      profile_image_url: emp.profile_image_url || null,
       permissions,
       dataScope,
     },
@@ -820,10 +821,11 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
 
   // Try to find a matching employee record by email
   const { rows: empRows } = await tenantPool.query(
-    `SELECT id FROM employees WHERE deleted_at IS NULL AND LOWER(work_email) = LOWER($1) LIMIT 1`,
+    `SELECT id, profile_image_url FROM employees WHERE deleted_at IS NULL AND LOWER(work_email) = LOWER($1) LIMIT 1`,
     [adminUser.email]
   );
   let employeeId = empRows[0]?.id || null;
+  const adminProfileImageUrl = empRows[0]?.profile_image_url || null;
 
   if (!employeeId) {
     try {
@@ -902,6 +904,7 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
       tenantId: tenant.id,
       tenantName: tenant.name,
       employeeId: employeeId,
+      profile_image_url: adminProfileImageUrl,
       permissions,
       dataScope: 'all',
     },
@@ -1800,7 +1803,7 @@ function resolveSelfAccount(user) {
       table: 'employees',
       nameColumn: 'full_name',
       role: user.role,
-      selectSql: `SELECT id, full_name AS name, work_email AS email, department, join_date
+      selectSql: `SELECT id, full_name AS name, work_email AS email, department, join_date, profile_image_url
                   FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
     };
   }
@@ -1813,7 +1816,10 @@ function resolveSelfAccount(user) {
     table: 'admin_users',
     nameColumn: 'name',
     role: user.role,
-    selectSql: `SELECT id, name, email FROM admin_users WHERE id = $1 LIMIT 1`,
+    selectSql: `SELECT a.id, a.name, a.email, e.profile_image_url
+                FROM admin_users a
+                LEFT JOIN employees e ON LOWER(e.work_email) = LOWER(a.email) AND e.deleted_at IS NULL
+                WHERE a.id = $1 LIMIT 1`,
   };
 }
 

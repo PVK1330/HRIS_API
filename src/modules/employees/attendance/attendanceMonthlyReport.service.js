@@ -152,21 +152,33 @@ async function emailMonthlyReports(pool, tenantDb, year, month) {
       continue;
     }
 
+    // Write the idempotency row FIRST inside a transaction, then send the email.
+    // If the email send fails we roll back the row so the next cron run retries.
+    // This prevents the inverse race where email succeeds but the DB write crashes,
+    // causing a duplicate send on the next run.
+    const client = await pool.connect();
     try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO attendance_monthly_report_log (report_year, report_month, department, recipients, late_count, early_count)
+         VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+        [year, month, department, recipients.join(', '), lateCount, earlyCount],
+      );
+
       await sendMail({
         to: recipients.join(', '),
         subject: `Late Arrival & Early Exit Report — ${department} — ${periodLabel}`,
         html: buildHtml(department, periodLabel, deptRows),
       });
-      await pool.query(
-        `INSERT INTO attendance_monthly_report_log (report_year, report_month, department, recipients, late_count, early_count)
-         VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
-        [year, month, department, recipients.join(', '), lateCount, earlyCount],
-      );
+
+      await client.query('COMMIT');
       emailsSent += 1;
       logger.info(`[attendanceMonthlyReport] sent tenant=${tenantDb} dept="${department}" ${periodLabel} to ${recipients.join(', ')}`);
     } catch (e) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
       logger.error(`[attendanceMonthlyReport] send failed tenant=${tenantDb} dept="${department}" ${periodLabel}`, e);
+    } finally {
+      client.release();
     }
   }
 

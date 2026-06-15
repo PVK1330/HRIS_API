@@ -34,6 +34,21 @@ router.use(authenticate);
 router.use(tenantResolver);
 router.use(loadAuthContext);
 
+// Export & Import (declare BEFORE /:id routes to avoid collision)
+router.post('/import', [
+  requirePermission(P.POLICIES_MANAGE),
+], uploadPolicyFile('file'), ctrl.importPolicies);
+
+router.post('/export/batch', [
+  requirePermission(P.POLICIES_MANAGE),
+  body('policyIds').isArray({ min: 1, max: 10 }).withMessage('policyIds must be an array of 1-10 items'),
+], validate, ctrl.exportBatch);
+
+router.get('/:id/export', [
+  requirePermission(P.POLICIES_MANAGE),
+  param('id').isInt().withMessage('ID must be an integer'),
+], validate, ctrl.exportPolicy);
+
 router.get('/categories', requirePermission(P.POLICIES_MANAGE), ctrl.listCategories);
 router.post('/categories', requirePermission(P.POLICIES_MANAGE), ctrl.createCategory);
 router.patch('/categories/:id', requirePermission(P.POLICIES_MANAGE), ctrl.updateCategory);

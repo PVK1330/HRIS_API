@@ -199,6 +199,78 @@ async function deleteCategory(tenant, id) {
   return repo.deleteCategory(pool, id);
 }
 
+/**
+ * Bulk create policies from import (CSV or JSON).
+ * Returns { success: [], failed: [] }.
+ */
+async function bulkCreatePolicies(tenant, user, policies) {
+  const pool = await getTenantPool(tenant.dbName);
+  const success = [];
+  const failed = [];
+
+  for (let i = 0; i < policies.length; i++) {
+    try {
+      const payload = {
+        ...policies[i],
+        createdBy: user.id,
+      };
+      const policy = await repo.create(pool, payload);
+
+      // Notify audience if published (though imported policies start as Draft)
+      if (String(policy.status) === 'Published') {
+        await employeePolicies.notifyAudienceToAcknowledge(tenant, pool, policy).catch(() => {});
+      }
+
+      // Audit
+      await workflowAudit.log(tenant, {
+        module: 'policies',
+        action: 'import',
+        entityType: 'policy',
+        entityId: policy.id,
+        ...auditActor(user),
+        detail: { status: policy.status, contentVersion: policy.contentVersion },
+      });
+
+      success.push(policy);
+    } catch (err) {
+      failed.push({
+        index: i + 1,
+        policy: policies[i],
+        error: err.message,
+      });
+    }
+  }
+
+  return { success, failed };
+}
+
+/**
+ * Get all employees who match a policy's audience configuration.
+ * Used for export tracking and compliance reporting.
+ */
+async function getPolicyTargetEmployees(tenant, policy) {
+  const pool = await getTenantPool(tenant.dbName);
+  const { buildAudienceWhere } = require('./policies.audience');
+  const { clause, params } = buildAudienceWhere(policy.audienceConfig || {});
+
+  const { rows } = await pool.query(
+    `
+    SELECT
+      e.id,
+      e.full_name as "fullName",
+      e.email,
+      d.name as "departmentName"
+    FROM employees e
+    LEFT JOIN departments d ON e.department_id = d.id
+    WHERE ${clause}
+    ORDER BY e.full_name
+  `,
+    params,
+  );
+
+  return rows;
+}
+
 module.exports = {
   listPolicies,
   getPolicy,
@@ -217,4 +289,6 @@ module.exports = {
   createCategory,
   updateCategory,
   deleteCategory,
+  bulkCreatePolicies,
+  getPolicyTargetEmployees,
 };

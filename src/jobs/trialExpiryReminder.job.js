@@ -75,7 +75,14 @@ async function runTrialReminders(now = new Date()) {
           html: reminderHtml({ name: t.admin_name, expired: true, planName: t.plan_name }),
         });
         sent += 1;
-      } else if (daysLeft === 3 || daysLeft === 1) {
+      } else if (daysLeft <= 1 && daysLeft > 0) {
+        await sendMail({
+          to: t.admin_email,
+          subject: `Your HRIS free trial ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`,
+          html: reminderHtml({ name: t.admin_name, daysLeft, expired: false, planName: t.plan_name }),
+        });
+        sent += 1;
+      } else if (daysLeft <= 3 && daysLeft > 0) {
         await sendMail({
           to: t.admin_email,
           subject: `Your HRIS free trial ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`,

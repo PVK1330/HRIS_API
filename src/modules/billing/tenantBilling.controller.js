@@ -43,6 +43,34 @@ const confirm = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, result, result.paid ? 'Payment confirmed.' : 'Payment not completed yet.');
 });
 
+/** POST /tenant-billing/paypal/checkout — start a PayPal order for the org (org admin only). */
+const paypalCheckout = asyncHandler(async (req, res) => {
+  if (req.user?.role !== 'admin') {
+    throw ApiError.forbidden('Only an organization admin can make a payment.');
+  }
+  const result = await service.createPaypalCheckoutForTenant(req.user.tenant_id, {
+    planId:       req.body.planId,
+    billingCycle: req.body.billingCycle,
+    returnPath:   req.body.returnPath,
+    returnOrigin: req.get('origin') || req.body.returnOrigin,
+  });
+  return ApiResponse.ok(res, result, 'PayPal order created.');
+});
+
+/** POST /tenant-billing/paypal/confirm — capture the approved PayPal order. */
+const paypalConfirm = asyncHandler(async (req, res) => {
+  if (!req.user?.tenant_id) throw ApiError.badRequest('No organization context');
+  const result = await service.confirmPaypalCheckout(req.user.tenant_id, req.body.orderId);
+  return ApiResponse.ok(res, result, result.paid ? 'PayPal payment confirmed.' : 'Payment not completed yet.');
+});
+
+/** GET /tenant-billing/gateways — enabled payment gateways visible to org admins (no credentials). */
+const getGateways = asyncHandler(async (_req, res) => {
+  const gwSvc = require('../paymentGateways/paymentGateways.service');
+  const list = await gwSvc.listEnabledGateways();
+  return ApiResponse.ok(res, list, 'Enabled gateways.');
+});
+
 /** POST /tenant-billing/:tenantId/activate — superadmin offline/manual mark-as-paid (optionally set a plan). */
 const activate = asyncHandler(async (req, res) => {
   const billing = await service.activateSubscription(req.params.tenantId, {
@@ -53,4 +81,4 @@ const activate = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, billing, 'Subscription activated.');
 });
 
-module.exports = { getStatus, getPlans, checkout, confirm, activate };
+module.exports = { getStatus, getPlans, getGateways, checkout, confirm, paypalCheckout, paypalConfirm, activate };

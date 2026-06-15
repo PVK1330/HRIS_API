@@ -3,11 +3,14 @@
 /**
  * Leave carry-forward — roll unused leave balances into the next leave year.
  *
- * For every previous-year balance of an ACTIVE leave type:
+ * Processes ALL existing leave_balance rows regardless of whether the leave type
+ * is still active. Inactive / deleted leave types are carried forward using the
+ * balance's own stored figures so historical balances are never silently zeroed.
+ *
  *   remaining = max(0, total_allocated + carry_forward - used)
  *   carry     = min(remaining, leave_type.max_carry_forward_days)
- * and the target-year balance is (re)seeded with a fresh annual entitlement plus the
- * carried days. The computation is deterministic, so re-running the job is idempotent.
+ *             (uncapped when leave type no longer exists)
+ * The computation is deterministic, so re-running the job is idempotent.
  */
 
 async function processCarryForward(pool, targetYear) {
@@ -19,9 +22,8 @@ async function processCarryForward(pool, targetYear) {
             lb.total_allocated, lb.used, lb.carry_forward,
             lt.annual_entitlement_days, lt.carry_forward_allowed, lt.max_carry_forward_days
      FROM leave_balances lb
-     JOIN leave_types lt
+     LEFT JOIN leave_types lt
        ON LOWER(TRIM(lt.name)) = LOWER(TRIM(lb.leave_type))
-      AND lt.is_active = true
      WHERE lb.year = $1`,
     [prevYear],
   );
@@ -30,11 +32,18 @@ async function processCarryForward(pool, targetYear) {
   let carried = 0;
 
   for (const r of rows) {
-    const carryAllowed = r.carry_forward_allowed !== false;
+    // When the leave type no longer exists (inactive/renamed/deleted), treat carry as allowed
+    // and use the balance's own stored allocation — do NOT zero it out.
+    const typeExists = r.annual_entitlement_days != null;
+    const carryAllowed = r.carry_forward_allowed !== false; // null → true (permissive)
     const remaining = Math.max(0, (r.total_allocated + r.carry_forward) - r.used);
-    const cap = Math.max(0, r.max_carry_forward_days || 0);
+    // If the leave type is gone, carry the full remaining (no cap from a non-existent type).
+    const cap = typeExists ? Math.max(0, r.max_carry_forward_days || 0) : remaining;
     const carry = carryAllowed ? Math.max(0, Math.min(remaining, cap)) : 0;
-    const annual = Math.max(0, r.annual_entitlement_days || 0);
+    // Use existing total_allocated when the leave type no longer defines an entitlement.
+    const annual = typeExists
+      ? Math.max(0, r.annual_entitlement_days || 0)
+      : Math.max(0, r.total_allocated || 0);
 
     // Insert a fresh target-year balance, or reconcile an existing row (e.g. the employee already
     // applied for leave in the new year). We never clobber `used`, and total_allocated is
@@ -75,18 +84,21 @@ async function reconcileEmployeeCarryForward(db, employeeId, leaveType, startYea
       `SELECT lb.total_allocated, lb.used, lb.carry_forward,
               lt.annual_entitlement_days, lt.carry_forward_allowed, lt.max_carry_forward_days
          FROM leave_balances lb
-         JOIN leave_types lt
-           ON LOWER(TRIM(lt.name)) = LOWER(TRIM(lb.leave_type)) AND lt.is_active = true
+         LEFT JOIN leave_types lt
+           ON LOWER(TRIM(lt.name)) = LOWER(TRIM(lb.leave_type))
         WHERE lb.employee_id = $1 AND LOWER(TRIM(lb.leave_type)) = LOWER(TRIM($2)) AND lb.year = $3`,
       [employeeId, leaveType, y],
     );
     if (!rows.length) continue; // no source-year balance → nothing to carry forward
     const r = rows[0];
-    const carryAllowed = r.carry_forward_allowed !== false;
+    const typeExists = r.annual_entitlement_days != null;
+    const carryAllowed = r.carry_forward_allowed !== false; // null → true (permissive)
     const remaining = Math.max(0, (r.total_allocated + r.carry_forward) - r.used);
-    const cap = Math.max(0, r.max_carry_forward_days || 0);
+    const cap = typeExists ? Math.max(0, r.max_carry_forward_days || 0) : remaining;
     const carry = carryAllowed ? Math.max(0, Math.min(remaining, cap)) : 0;
-    const annual = Math.max(0, r.annual_entitlement_days || 0);
+    const annual = typeExists
+      ? Math.max(0, r.annual_entitlement_days || 0)
+      : Math.max(0, r.total_allocated || 0);
     // Seed the next year's balance if absent, else just refresh its carry_forward (preserve used).
     await db.query(
       `INSERT INTO leave_balances (employee_id, leave_type, year, total_allocated, used, carry_forward)

@@ -91,11 +91,19 @@ class Task {
     const values = [];
     let idx = 1;
 
+    let dueDateUpdated = false;
     for (const [key, val] of Object.entries(data)) {
       if (['title', 'description', 'priority', 'status', 'due_date', 'assignee_id'].includes(key)) {
         fields.push(`${key} = $${idx++}`);
         values.push(val);
+        if (key === 'due_date') dueDateUpdated = true;
       }
+    }
+
+    // When due_date is rescheduled, re-arm all reminder flags so the cron fires again.
+    if (dueDateUpdated) {
+      fields.push(`reminded_24h = false`);
+      fields.push(`reminded_1h = false`);
     }
 
     if (fields.length === 0) return this.findById(pool, id);

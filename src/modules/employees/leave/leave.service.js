@@ -636,11 +636,18 @@ async function processLeave(user, auth, id, { action, reason }) {
         const balance = await repo.lockBalanceForUpdate(
           client, request.employee_id, request.leave_type, year, annualDays
         );
-        const remaining = (balance.total_allocated + balance.carry_forward) - balance.used;
+        // Subtract OTHER pending requests of the same type/year from the available balance,
+        // excluding the current request being approved (it is still 'Pending HR Approval' at
+        // this point so it would be counted by sumPendingDaysForType without the exclusion).
+        const pendingDays = await repo.sumPendingDaysForType(
+          client, request.employee_id, request.leave_type, year, request.id
+        );
+        const remaining = (balance.total_allocated + balance.carry_forward) - balance.used - pendingDays;
         if (remaining < request.total_days) {
           throw ApiError.badRequest(
             `Insufficient ${request.leave_type} balance to approve. ` +
-            `Requested: ${request.total_days} day(s), Available: ${remaining} day(s).`
+            `Requested: ${request.total_days} day(s), Available: ${remaining} day(s)` +
+            (pendingDays > 0 ? ` (${pendingDays} day(s) reserved by other pending requests).` : '.')
           );
         }
         await repo.incrementUsed(client, request.employee_id, request.leave_type, year, request.total_days);

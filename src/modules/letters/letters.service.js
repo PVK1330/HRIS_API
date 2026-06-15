@@ -78,7 +78,7 @@ async function dispatchLetter(user, { templateId, employeeId, sentBy }) {
   let employeeName = 'Unknown';
   if (employeeId) {
     const { rows } = await pool.query(
-      `SELECT CONCAT(first_name, ' ', last_name) AS full_name FROM employees WHERE id = $1`,
+      `SELECT CONCAT(first_name, ' ', last_name) AS full_name FROM employees WHERE id = $1 AND deleted_at IS NULL`,
       [employeeId]
     );
     if (rows[0]) employeeName = rows[0].full_name;

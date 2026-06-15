@@ -256,11 +256,25 @@ async function createAsset(tenant, data, actor = {}) {
 async function updateAsset(tenant, id, data, actor = {}) {
   const pool = await getTenantPool(tenant.dbName);
   const previous = await repo.findById(pool, id);
+
+  // Auto-flip status when employee assignment changes, unless caller explicitly set status.
+  const assignmentChanged = Object.prototype.hasOwnProperty.call(data, 'employeeId');
+  if (assignmentChanged && !Object.prototype.hasOwnProperty.call(data, 'status')) {
+    const newEmpId = data.employeeId ? Number(data.employeeId) : null;
+    const prevEmpId = previous?.employee_id ? Number(previous.employee_id) : null;
+    if (newEmpId && !prevEmpId) {
+      // Newly assigned — mark as Issued
+      data = { ...data, status: 'Issued' };
+    } else if (!newEmpId && prevEmpId) {
+      // Unassigned — return to Available
+      data = { ...data, status: 'Available' };
+    }
+  }
+
   const updated = await repo.update(pool, id, data);
   if (!updated) throw new ApiError(404, 'Asset not found');
 
   const prevEmp = previous?.employee_id ? Number(previous.employee_id) : null;
-  const assignmentChanged = Object.prototype.hasOwnProperty.call(data, 'employeeId');
   const newEmp = assignmentChanged
     ? (data.employeeId ? Number(data.employeeId) : null)
     : prevEmp;

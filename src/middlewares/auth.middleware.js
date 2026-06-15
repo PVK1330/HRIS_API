@@ -9,21 +9,28 @@ const { permissionSatisfied } = require('../constants/permissions');
 
 function authenticate(req, _res, next) {
   try {
-    const header = req.headers.authorization || req.headers.Authorization;
-    if (
-      !header ||
-      typeof header !== 'string' ||
-      !header.startsWith('Bearer ')
-    ) {
-      return next(
-        ApiError.unauthorized('Authorization Bearer token is required'),
-      );
+    let token = null;
+
+    // Temporary Debug Logs
+    console.log('[Auth Debug] Cookies:', req.cookies);
+    console.log('[Auth Debug] Auth Header:', req.headers.authorization || req.headers.Authorization);
+
+    // 1. Check HttpOnly cookie
+    if (req.cookies && (req.cookies.accessToken || req.cookies.token || req.cookies.access_token)) {
+      token = req.cookies.accessToken || req.cookies.token || req.cookies.access_token;
+    } 
+    // 2. Fallback to Authorization header
+    else {
+      const header = req.headers.authorization || req.headers.Authorization;
+      if (header && typeof header === 'string' && header.startsWith('Bearer ')) {
+        token = header.slice('Bearer '.length).trim();
+      }
     }
 
-    const token = header.slice('Bearer '.length).trim();
     if (!token) {
+      console.log('[Auth Debug] No token found in cookies or headers');
       return next(
-        ApiError.unauthorized('Authorization Bearer token is required'),
+        ApiError.unauthorized('Authentication required'),
       );
     }
 
@@ -74,12 +81,22 @@ function authenticate(req, _res, next) {
  */
 function authenticateUpload(req, _res, next) {
   try {
-    const header = req.headers.authorization || req.headers.Authorization;
     let token = null;
-    if (header && typeof header === 'string' && header.startsWith('Bearer ')) {
-      token = header.slice('Bearer '.length).trim();
-    } else if (req.query && typeof req.query.token === 'string') {
+
+    // 1. Check query param (for <img>/document requests)
+    if (req.query && typeof req.query.token === 'string') {
       token = req.query.token.trim();
+    }
+    // 2. Check HttpOnly cookie
+    else if (req.cookies && (req.cookies.accessToken || req.cookies.token || req.cookies.access_token)) {
+      token = req.cookies.accessToken || req.cookies.token || req.cookies.access_token;
+    }
+    // 3. Fallback to Authorization header
+    else {
+      const header = req.headers.authorization || req.headers.Authorization;
+      if (header && typeof header === 'string' && header.startsWith('Bearer ')) {
+        token = header.slice('Bearer '.length).trim();
+      }
     }
 
     if (!token) {

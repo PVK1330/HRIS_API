@@ -7,21 +7,35 @@ const ApiResponse = require('../../utils/ApiResponse');
 const env = require('../../config/env');
 
 const REFRESH_COOKIE_NAME = 'refresh_token';
+const ACCESS_COOKIE_NAME = 'access_token';
 const REFRESH_COOKIE_PATH = '/api/v1/auth';
 const REFRESH_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const ACCESS_COOKIE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 1 day
 
-function setRefreshCookie(res, token) {
-  res.cookie(REFRESH_COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: env.NODE_ENV === 'production',
-    sameSite: 'Strict',
-    path: REFRESH_COOKIE_PATH,
-    maxAge: REFRESH_COOKIE_MAX_AGE_MS,
-  });
+function setAuthCookies(res, refreshToken, accessToken) {
+  if (refreshToken) {
+    res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: 'Strict',
+      path: REFRESH_COOKIE_PATH,
+      maxAge: REFRESH_COOKIE_MAX_AGE_MS,
+    });
+  }
+  if (accessToken) {
+    res.cookie(ACCESS_COOKIE_NAME, accessToken, {
+      httpOnly: true,
+      secure: env.NODE_ENV === 'production',
+      sameSite: env.NODE_ENV === 'production' ? 'Strict' : 'Lax',
+      path: '/',
+      maxAge: ACCESS_COOKIE_MAX_AGE_MS,
+    });
+  }
 }
 
-function clearRefreshCookie(res) {
+function clearAuthCookies(res) {
   res.clearCookie(REFRESH_COOKIE_NAME, { path: REFRESH_COOKIE_PATH });
+  res.clearCookie(ACCESS_COOKIE_NAME, { path: '/' });
 }
 
 /**
@@ -88,10 +102,10 @@ const login = asyncHandler(async (req, res) => {
     return ApiResponse.ok(res, result, 'Login successful.');
   }
 
-  const { refreshToken, ...publicResult } = result;
-  if (refreshToken) setRefreshCookie(res, refreshToken);
+  const { refreshToken, token: accessToken, ...publicResult } = result;
+  setAuthCookies(res, refreshToken, accessToken);
 
-  return ApiResponse.ok(res, publicResult, 'Login successful.');
+  return ApiResponse.ok(res, { token: accessToken, ...publicResult }, 'Login successful.');
 });
 
 const getAccessProfile = asyncHandler(async (req, res) => {
@@ -107,9 +121,9 @@ const verifyTwoFactor = asyncHandler(async (req, res) => {
   const result = await authService.verifyMfaLogin(mfaToken, code);
 
   if (!result.mfaRequired) {
-    const { refreshToken, ...publicResult } = result;
-    if (refreshToken) setRefreshCookie(res, refreshToken);
-    return ApiResponse.ok(res, publicResult, 'Login successful.');
+    const { refreshToken, token: accessToken, ...publicResult } = result;
+    setAuthCookies(res, refreshToken, accessToken);
+    return ApiResponse.ok(res, { token: accessToken, ...publicResult }, 'Login successful.');
   }
 
   return ApiResponse.ok(res, result, 'Login successful.');
@@ -141,10 +155,10 @@ const exchangeImpersonationCode = asyncHandler(async (req, res) => {
   const { code } = req.body;
   const result = await authService.redeemImpersonationCode(code);
 
-  const { refreshToken, ...publicResult } = result;
-  if (refreshToken) setRefreshCookie(res, refreshToken);
+  const { refreshToken, token: accessToken, ...publicResult } = result;
+  setAuthCookies(res, refreshToken, accessToken);
 
-  return ApiResponse.ok(res, publicResult, 'Impersonation session established.');
+  return ApiResponse.ok(res, { token: accessToken, ...publicResult }, 'Impersonation session established.');
 });
 
 /**
@@ -154,7 +168,7 @@ const exchangeImpersonationCode = asyncHandler(async (req, res) => {
 const refresh = asyncHandler(async (req, res) => {
   const token = req.cookies?.[REFRESH_COOKIE_NAME];
   const { accessToken, refreshToken } = await authService.verifyAndRotateRefreshToken(token);
-  setRefreshCookie(res, refreshToken);
+  setAuthCookies(res, refreshToken, accessToken);
   return ApiResponse.ok(res, { token: accessToken }, 'Token refreshed.');
 });
 
@@ -165,7 +179,7 @@ const refresh = asyncHandler(async (req, res) => {
 const logout = asyncHandler(async (req, res) => {
   const token = req.cookies?.[REFRESH_COOKIE_NAME];
   await authService.revokeRefreshToken(token);
-  clearRefreshCookie(res);
+  clearAuthCookies(res);
   return ApiResponse.ok(res, null, 'Logged out successfully.');
 });
 

@@ -655,13 +655,13 @@ class EmployeePerformance {
       ORDER BY created_at DESC;
     `;
     const { rows } = await pool.query(query, [employeeId]);
-    
+
     const totalAssessments = rows.length;
     let averageRating = 0;
     let performanceRatio = 0;
     let currentCycleRating = 0;
     let latestStatus = 'N/A';
-    
+
     if (totalAssessments > 0) {
       const sumRatings = rows.reduce((acc, curr) => acc + Number(curr.overall_rating || 0), 0);
       averageRating = Math.round((sumRatings / totalAssessments) * 100) / 100;
@@ -708,9 +708,9 @@ class EmployeePerformance {
       WHERE id = $1 AND deleted_at IS NULL;
     `;
     const { rows } = await pool.query(query, [id]);
-    
+
     if (rows.length === 0) return null;
-    
+
     // Verify the logged-in manager is the assigned manager
     if (Number(rows[0].manager_id) !== Number(managerId)) {
       return null; // Manager mismatch - unauthorized
@@ -953,9 +953,9 @@ class EmployeePerformance {
       WHERE id = $1 AND deleted_at IS NULL;
     `;
     const { rows } = await pool.query(query, [id]);
-    
+
     if (rows.length === 0) return null;
-    
+
     if (Number(rows[0].employee_id) !== Number(employeeId)) {
       return null; // Employee mismatch - unauthorized
     }
@@ -989,7 +989,7 @@ class EmployeePerformance {
     }
 
     setClause.push(`employee_updated_at = NOW()`);
-    
+
     // Also audit updated_by and updated_at
     setClause.push(`updated_by = $${paramCount}`);
     values.push(userId);

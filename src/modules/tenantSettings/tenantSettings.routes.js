@@ -25,7 +25,7 @@ const rbacRoutes = require('../rbac/rbac.routes');
 
 router.use('/rbac', rbacRoutes);
 
-const TENANT_LOGO_VIEW_ROLES = new Set([
+const TENANT_STAFF_ROLES = new Set([
   'admin',
   'hr_admin',
   'hr_executive',
@@ -33,14 +33,15 @@ const TENANT_LOGO_VIEW_ROLES = new Set([
   'employee',
 ]);
 
-const tenantStaffMayViewLogo = (req, res, next) => {
-  if (!TENANT_LOGO_VIEW_ROLES.has(req.user.role)) {
+const tenantStaffMayView = (req, res, next) => {
+  if (!TENANT_STAFF_ROLES.has(req.user.role)) {
     return next(new ApiError(403, 'Access denied.'));
   }
   next();
 };
 
-router.get('/logo', tenantStaffMayViewLogo, controller.getLogo);
+router.get('/logo', tenantStaffMayView, controller.getLogo);
+router.get('/timezone', tenantStaffMayView, controller.getTimezone);
 
 const { loadAuthContext } = require('../../middlewares/auth.middleware');
 const { requireOrgSettingsAccess } = require('../../middlewares/orgSettingsAccess.middleware');

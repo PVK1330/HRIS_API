@@ -19,7 +19,8 @@ function ensureSchema() {
       ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN NOT NULL DEFAULT false,
       ADD COLUMN IF NOT EXISTS two_factor_secret TEXT,
-      ADD COLUMN IF NOT EXISTS two_factor_pending_secret TEXT;
+      ADD COLUMN IF NOT EXISTS two_factor_pending_secret TEXT,
+      ADD COLUMN IF NOT EXISTS profile_image_url TEXT;
     `).catch((err) => {
       schemaEnsurePromise = null;
       throw err;
@@ -137,7 +138,7 @@ function ensureRolesSchema() {
 async function findByEmail(email) {
   await ensureSchema();
   const sql = `
-    SELECT id, email, password_hash, name, role, status, last_login_at, two_factor_enabled, two_factor_secret, created_at
+    SELECT id, email, password_hash, name, role, status, last_login_at, two_factor_enabled, two_factor_secret, profile_image_url, created_at
     FROM public.superadmins
     WHERE email = $1
     LIMIT 1
@@ -149,7 +150,7 @@ async function findByEmail(email) {
 async function findById(id) {
   await ensureSchema();
   const sql = `
-    SELECT id, email, name, role, status, last_login_at, two_factor_enabled, two_factor_secret, created_at
+    SELECT id, email, name, role, status, last_login_at, two_factor_enabled, two_factor_secret, profile_image_url, created_at
     FROM public.superadmins
     WHERE id = $1
     LIMIT 1

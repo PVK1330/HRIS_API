@@ -91,6 +91,7 @@ async function login({ email, password }) {
       name: record.name,
       email: record.email,
       role,
+      profile_image_url: record.profile_image_url || null,
     },
   };
 }
@@ -155,6 +156,7 @@ async function verify2FA({ mfaToken, code }) {
       name: record.name,
       email: record.email,
       role,
+      profile_image_url: record.profile_image_url || null,
     },
   };
 }

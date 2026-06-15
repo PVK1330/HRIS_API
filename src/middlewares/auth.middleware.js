@@ -62,6 +62,8 @@ function authenticate(req, _res, next) {
       userType: decoded.userType || decoded.role,
     };
 
+    console.log('[Auth Debug] req.user set:', JSON.stringify(req.user));
+
     return next();
   } catch (err) {
     return next(err);
@@ -134,24 +136,42 @@ function authenticateUpload(req, _res, next) {
   }
 }
 
+/**
+ * Normalize a role string for comparison:
+ *   "Super Admin" → "superadmin"
+ *   "support_admin" → "supportadmin"
+ *   "billing-admin" → "billingadmin"
+ */
+function normalizeRole(r) {
+  return String(r || '').toLowerCase().replace(/[\s_-]/g, '');
+}
+
 function requireRole(...allowedRoles) {
   const allowed = allowedRoles.flat().filter(Boolean);
+  const allowedNorm = allowed.map(normalizeRole);
+
   return function roleGuard(req, _res, next) {
     if (!req.user || !req.user.role) {
       return next(ApiError.unauthorized('Authentication required'));
     }
-    const role = String(req.user.role);
-    if (allowed.includes(role)) {
+    const rawRole = String(req.user.role);
+    const roleNorm = normalizeRole(rawRole);
+
+    console.log('[RequireRole Debug] req.user:', JSON.stringify(req.user));
+    console.log(`[RequireRole Debug] role="${rawRole}" normalised="${roleNorm}" allowed=${JSON.stringify(allowedNorm)}`);
+
+    // Exact normalised match (handles "Super Admin", "superadmin", "SUPERADMIN" etc.)
+    if (allowedNorm.includes(roleNorm)) {
       return next();
     }
     /* Legacy route roles map to tenant admin JWT */
     if (
       allowed.some((r) => ['hr_admin', 'hr_executive', 'manager', 'hr'].includes(r)) &&
-      role === 'admin'
+      rawRole === 'admin'
     ) {
       return next();
     }
-    if (allowed.includes('employee') && role === 'employee') {
+    if (allowed.includes('employee') && rawRole === 'employee') {
       return next();
     }
     return next(
@@ -186,7 +206,7 @@ function requirePermission(permissionKey) {
       const { user } = req;
       if (!user) return next(ApiError.unauthorized('Authentication required'));
 
-      if (user.role === 'superadmin') {
+      if (normalizeRole(user.role) === 'superadmin') {
         return next();
       }
 
@@ -234,7 +254,7 @@ function requireAnyPermission(...permissionKeys) {
     try {
       const { user } = req;
       if (!user) return next(ApiError.unauthorized('Authentication required'));
-      if (user.role === 'superadmin') {
+      if (normalizeRole(user.role) === 'superadmin') {
         return next();
       }
 

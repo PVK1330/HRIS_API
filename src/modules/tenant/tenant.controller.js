@@ -3,6 +3,8 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const ApiResponse = require('../../utils/ApiResponse');
 const service = require('./tenant.service');
+const exportLib = require('../superadmin/superadmin.export');
+const tenantRepo = require('./tenant.repository');
 
 /**
  * POST /api/v1/tenants/create
@@ -108,6 +110,14 @@ const updateTenantFeature = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, { access }, 'Tenant feature updated successfully');
 });
 
+const exportTenants = asyncHandler(async (req, res) => {
+  const { search = '', plan = '', status = '' } = req.query;
+  const rows = await tenantRepo.findAll({ limit: 10000, offset: 0, search, plan, status });
+  const format = String(req.query.format || 'excel').toLowerCase();
+  if (format === 'pdf') return exportLib.buildTenantsPDF(res, rows, { search, plan, status });
+  return exportLib.buildTenantsExcel(res, rows, { search, plan, status });
+});
+
 module.exports = {
   createTenant,
   getTenants,
@@ -117,4 +127,5 @@ module.exports = {
   loginAsTenant,
   getTenantFeatures,
   updateTenantFeature,
+  exportTenants,
 };

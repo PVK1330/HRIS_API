@@ -100,6 +100,13 @@ router.get(
   controller.getAdminUsers
 );
 
+router.get(
+  '/admin-users/export',
+  authenticate,
+  requireRole('superadmin'),
+  controller.exportAdminUsers
+);
+
 router.post(
   '/admin-users',
   authenticate,
@@ -193,6 +200,13 @@ router.get(
   controller.getAnnouncements
 );
 
+router.get(
+  '/announcements/export',
+  authenticate,
+  requireRole('superadmin'),
+  controller.exportAnnouncements
+);
+
 router.post(
   '/announcements',
   authenticate,
@@ -235,6 +249,13 @@ router.get(
   controller.getSupportTickets
 );
 
+router.get(
+  '/support-tickets/export',
+  authenticate,
+  requireRole('superadmin'),
+  controller.exportSupportTickets
+);
+
 router.patch(
   '/support-tickets/:id',
   authenticate,
@@ -265,6 +286,13 @@ router.get(
   authenticate,
   requireRole('superadmin', 'support_admin'),
   controller.getAuditLogs
+);
+
+router.get(
+  '/audit-logs/export',
+  authenticate,
+  requireRole('superadmin', 'support_admin'),
+  controller.exportAuditLogs
 );
 
 /**

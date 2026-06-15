@@ -2,6 +2,7 @@
 const paymentsRepository = require('./payments.repository');
 const { ApiResponse } = require('../../utils/apiResponse');
 const { renderEmail } = require('../../utils/emailTemplate');
+const exportLib = require('./superadmin.export');
 
 const getPayments = async (req, res, next) => {
   try {
@@ -178,10 +179,23 @@ const getInvoiceHtml = async (req, res, next) => {
   }
 };
 
+const exportPayments = async (req, res, next) => {
+  try {
+    const { search = '', status = '' } = req.query;
+    const rows = await paymentsRepository.findAll({ limit: 10000, offset: 0, search, status });
+    const format = String(req.query.format || 'excel').toLowerCase();
+    if (format === 'pdf') return exportLib.buildPaymentsPDF(res, rows, { search, status });
+    return exportLib.buildPaymentsExcel(res, rows, { search, status });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getPayments,
   getPaymentStats,
   updatePaymentStatus,
   createManualInvoice,
-  getInvoiceHtml
+  getInvoiceHtml,
+  exportPayments,
 };

@@ -9,7 +9,7 @@ const settingsMeta = {
         items: [
           { label: 'General Settings', to: '/superadmin/settings/general' },
           { label: 'Company Details', to: '/superadmin/settings/company' },
-          { label: 'Domain Settings', to: '/superadmin/settings/domain' },
+          // { label: 'Domain Settings', to: '/superadmin/settings/domain' },
           { label: 'Logo', to: '/superadmin/settings/logo' },
         ],
       },
@@ -18,7 +18,7 @@ const settingsMeta = {
         label: 'Security',
         items: [
           { label: 'Account Settings', to: '/superadmin/settings/account-settings' },
-          { label: 'reCAPTCHA', to: '/superadmin/settings/recaptcha' },
+          // { label: 'reCAPTCHA', to: '/superadmin/settings/recaptcha' },
         ],
       },
       {
@@ -34,9 +34,8 @@ const settingsMeta = {
         key: 'integrations',
         label: 'Integrations',
         items: [
-          { label: 'Email Templates', to: '/superadmin/settings/email/templates' },
-          { label: 'Email Settings', to: '/superadmin/settings/email/settings' },
-          { label: 'SMTP Settings', to: '/superadmin/settings/email/settings?tab=smtp' },
+          // { label: 'Email Templates', to: '/superadmin/settings/email/templates' },
+          { label: 'SMTP Settings', to: '/superadmin/settings/email/settings' },
           { label: 'Email Log', to: '/superadmin/settings/email/log' },
         ],
       },

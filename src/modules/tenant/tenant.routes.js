@@ -61,6 +61,13 @@ router.get(
   controller.getTenants
 );
 
+router.get(
+  '/export',
+  authenticate,
+  requireRole('superadmin'),
+  controller.exportTenants
+);
+
 router.patch(
   '/:id',
   authenticate,

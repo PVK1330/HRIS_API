@@ -83,7 +83,8 @@ async function findHolidayForDate(pool, dateStr, region) {
 }
 
 async function getEmployeeShift(pool, employeeId, dateStr) {
-  const { rows } = await pool.query(
+  // 1. Date-specific assignment overrides everything (e.g. temporary shift change)
+  const { rows: esa } = await pool.query(
     `SELECT s.*
      FROM employee_shift_assignments esa
      JOIN shifts s ON s.id = esa.shift_id
@@ -94,7 +95,20 @@ async function getEmployeeShift(pool, employeeId, dateStr) {
      LIMIT 1`,
     [employeeId, dateStr],
   );
-  if (rows[0]) return rows[0];
+  if (esa[0]) return esa[0];
+
+  // 2. Employee's directly assigned shift (employees.shift_id)
+  const { rows: direct } = await pool.query(
+    `SELECT s.*
+     FROM employees e
+     JOIN shifts s ON s.id = e.shift_id
+     WHERE e.id = $1 AND e.deleted_at IS NULL AND s.is_active = true
+     LIMIT 1`,
+    [employeeId],
+  );
+  if (direct[0]) return direct[0];
+
+  // 3. System default: first active shift
   const { rows: def } = await pool.query(
     `SELECT * FROM shifts WHERE is_active = true ORDER BY id ASC LIMIT 1`,
   );
@@ -170,11 +184,18 @@ function computeFromPunch({
   const minPresent = Number(
     shift?.minimum_hours ?? settings?.min_hours_for_present ?? 6,
   );
-  // Half-day cutoff (General settings): worked hours below this count as a half
-  // day. Falls back to the presence threshold when not configured.
-  const halfDayThreshold = settings?.half_day_threshold_hours != null
-    ? Number(settings.half_day_threshold_hours)
-    : minPresent;
+  // Half-day lower bound: hours >= halfDayMin and < minPresent = half day
+  const halfDayMin = settings?.half_day_min_hours != null
+    ? Number(settings.half_day_min_hours)
+    : (settings?.half_day_threshold_hours != null ? Number(settings.half_day_threshold_hours) : minPresent / 2);
+  // Half-day threshold used for late-mark vs half-day decision
+  const halfDayThreshold = settings?.half_day_min_hours != null
+    ? Number(settings.half_day_min_hours)
+    : (settings?.half_day_threshold_hours != null ? Number(settings.half_day_threshold_hours) : minPresent);
+  // Absent threshold: worked hours below this = absent (even with a punch)
+  const absentBelowHours = settings?.absent_below_hours != null
+    ? Number(settings.absent_below_hours)
+    : 0;
   // Automated Quota Calculus: when enabled, derive the required daily hours from
   // the operational window (end − start − break) instead of the manual quota.
   // Falls back to the manual value if the window can't be resolved.
@@ -227,10 +248,16 @@ function computeFromPunch({
 
   let graceApplied = false;
   let isLate = false;
+  const lateMarkEnabled = settings?.enable_late_mark !== false && settings?.late_mark_auto_calculation !== false;
+  const autoMarkAbsent = settings?.auto_mark_absent !== false;
 
   if (!checkInTime && !checkOutTime) {
+    // No punch at all — absent only if auto_mark_absent is on
+    status = autoMarkAbsent ? 'Absent' : 'Present';
+  } else if (absentBelowHours > 0 && workedHours < absentBelowHours && workedHours > 0) {
+    // Punched but too few hours — treat as absent per policy
     status = 'Absent';
-  } else if (lateMinutes > 0 && settings?.late_mark_auto_calculation !== false) {
+  } else if (lateMinutes > 0 && lateMarkEnabled) {
     const rawLateStatus = workedHours < halfDayThreshold ? 'Half Day' : 'Late';
     const graceResult = graceEngine.applyGraceToLateStatus({
       settings,
@@ -243,9 +270,17 @@ function computeFromPunch({
     status = graceResult.status;
     isLate = graceResult.is_late;
     graceApplied = graceResult.grace_applied;
+
+    // Apply monthly late penalty tiers (e.g. 3 lates → Half Day, 6 lates → 1 Leave Deduction)
+    if (isLate) {
+      const penaltyResult = graceEngine.getPenaltyForLateCount(settings, monthlyLateCountBefore + 1);
+      if (penaltyResult && penaltyResult !== 'None') {
+        status = penaltyResult;
+      }
+    }
   }
 
-  if (workedHours > 0 && workedHours < halfDayThreshold && status !== 'Late') {
+  if (workedHours > 0 && workedHours < halfDayThreshold && status !== 'Late' && status !== 'Absent') {
     const rule = settings?.early_departure_rule || 'Mark half day';
     if (rule.toLowerCase().includes('half')) status = 'Half Day';
     else if (earlyDepartureMinutes > 0) status = 'Half Day';

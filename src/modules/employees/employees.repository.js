@@ -164,7 +164,7 @@ async function findAll(
        e.id, e.emp_id, e.full_name, e.first_name, e.last_name,
        e.work_email, e.personal_email, e.phone_number,
        e.job_title, e.department, e.department_id, e.employment_type, e.employment_status,
-       e.work_location, e.work_mode, e.join_date, e.profile_image_url,
+       e.work_location, e.work_location_id, e.shift_id, e.work_mode, e.join_date, e.profile_image_url,
        e.nationality, e.gender,
        e.onboarding_step, e.onboarding_approval_status, e.onboarding_workflow_status,
        e.rbac_role_id,
@@ -181,12 +181,16 @@ async function findAll(
        d.manager_id AS "managerId",
        mgr.full_name AS "managerName",
        TO_CHAR(e.created_at, 'DD/MM/YYYY') AS "createdAt",
-       TO_CHAR(e.updated_at, 'DD/MM/YYYY') AS "updatedAt"
+       TO_CHAR(e.updated_at, 'DD/MM/YYYY') AS "updatedAt",
+       loc.name AS work_location_name,
+       sh.name AS shift_name
      FROM employees e
      LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
      LEFT JOIN departments d ON d.id = e.department_id
      LEFT JOIN employees m ON m.id = e.reporting_manager_id AND m.deleted_at IS NULL
      LEFT JOIN employees mgr ON d.manager_id = mgr.id AND mgr.deleted_at IS NULL
+     LEFT JOIN locations loc ON loc.id = e.work_location_id
+     LEFT JOIN shifts sh ON sh.id = e.shift_id
      ${where}
      ORDER BY ${orderSql}
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -359,12 +363,16 @@ async function findById(pool, id) {
        TO_CHAR(e.emirates_id_expiry, 'YYYY-MM-DD') AS emirates_id_expiry,
        TO_CHAR(e.visa_expiry_date,   'YYYY-MM-DD') AS visa_expiry_date,
        TO_CHAR(e.created_at, 'DD/MM/YYYY') AS "createdAt",
-       TO_CHAR(e.updated_at, 'DD/MM/YYYY') AS "updatedAt"
+       TO_CHAR(e.updated_at, 'DD/MM/YYYY') AS "updatedAt",
+       loc.name AS work_location_name,
+       sh.name AS shift_name
      FROM employees e
      LEFT JOIN rbac_roles rr ON rr.id = e.rbac_role_id
      LEFT JOIN employees m ON m.id = e.reporting_manager_id AND m.deleted_at IS NULL
      LEFT JOIN departments d ON e.department_id = d.id
      LEFT JOIN employees mgr ON d.manager_id = mgr.id AND mgr.deleted_at IS NULL
+     LEFT JOIN locations loc ON loc.id = e.work_location_id
+     LEFT JOIN shifts sh ON sh.id = e.shift_id
      WHERE e.id = $1 AND e.deleted_at IS NULL`,
     [id],
   );
@@ -430,6 +438,8 @@ async function insert(pool, data) {
     departmentId,
     employmentType,
     workLocation,
+    workLocationId,
+    shiftId,
     workMode,
     reportingManagerId,
     joinDate,
@@ -492,7 +502,7 @@ async function insert(pool, data) {
     `INSERT INTO employees (
        emp_id, full_name, first_name, last_name, date_of_birth, gender, nationality,
        personal_email, phone_number, emergency_contact_name, emergency_contact_phone,
-       home_address, job_title, department, department_id, employment_type, work_location, work_mode,
+       home_address, job_title, department, department_id, employment_type, work_location, work_location_id, shift_id, work_mode,
        reporting_manager_id, join_date, probation_end_date, work_email, salary,
        employment_status, grade, cost_center, marital_status, dependents,
        passport_number, passport_expiry, emirates_id_number, emirates_id_expiry,
@@ -504,11 +514,11 @@ async function insert(pool, data) {
        family_members, secondary_contact, education, work_experience, is_currently_working
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-       $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,
-       $40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58
+       $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,
+       $42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60
      )
      RETURNING id, emp_id, full_name, job_title, department, employment_status,
-               work_email, work_location, work_mode,
+               work_email, work_location, work_location_id, shift_id, work_mode,
                rbac_role_id,
                TO_CHAR(join_date, 'YYYY-MM-DD') AS join_date,
                TO_CHAR(created_at, 'DD/MM/YYYY') AS "createdAt"`,
@@ -530,7 +540,9 @@ async function insert(pool, data) {
       departmentIdValue,
       employmentType, // $12–$16
       workLocation || null,
-      workMode || null, // $16–$17
+      workLocationId ? Number(workLocationId) : null,
+      shiftId ? Number(shiftId) : null,
+      workMode || null, // $18–$19
       reportingManagerId || null,
       joinDate,
       probationEndDate || null, // $18–$20
@@ -617,6 +629,8 @@ async function update(pool, id, data) {
     "department_id",
     "employment_type",
     "work_location",
+    "work_location_id",
+    "shift_id",
     "work_mode",
     "reporting_manager_id",
     "join_date",
@@ -676,6 +690,8 @@ async function update(pool, id, data) {
     departmentId: "department_id",
     employmentType: "employment_type",
     workLocation: "work_location",
+    workLocationId: "work_location_id",
+    shiftId: "shift_id",
     workMode: "work_mode",
     reportingManagerId: "reporting_manager_id",
     joinDate: "join_date",

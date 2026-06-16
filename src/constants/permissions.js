@@ -52,6 +52,19 @@ const P = {
   EXIT_VIEW: 'exit.view',
   EXIT_MANAGE: 'exit.manage',
   EXIT_TERMINATE: 'exit.terminate',
+  PAYROLL_MANAGE: 'payroll.manage',
+  SHIFT_VIEW: 'shift.view',
+  SHIFT_MANAGE: 'shift.manage',
+  SHIFT_APPROVE: 'shift.approve',
+  SHIFT_CHANGE_REQUEST: 'shift.change.request',
+  APPROVAL_VIEW: 'approval.view',
+  APPROVAL_MANAGE: 'approval.manage',
+  AUDIT_VIEW: 'audit.view',
+  AUDIT_MANAGE: 'audit.manage',
+  LEAVE_ENCASHMENT_REQUEST: 'leave.encashment.request',
+  LEAVE_ENCASHMENT_APPROVE: 'leave.encashment.approve',
+  DASHBOARD_VIEW: 'dashboard.view',
+  LOCATIONS_MANAGE: 'locations.manage',
 };
 
 /** Legacy rbac_permissions.key → action slug(s) that satisfy the check */
@@ -81,7 +94,7 @@ const LEGACY_KEY_TO_ACTIONS = {
     P.ATTENDANCE_CREATE,
     P.ATTENDANCE_REGULARIZATION_REQUEST,
   ],
-  'shift-management': [P.ATTENDANCE_VIEW_TEAM, P.ATTENDANCE_VIEW_OWN],
+  'shift-management': [P.SHIFT_VIEW, P.SHIFT_MANAGE, P.SHIFT_APPROVE, P.SHIFT_CHANGE_REQUEST],
   'overtime-management': [P.ATTENDANCE_VIEW_TEAM, P.ATTENDANCE_VIEW_ALL],
   'leave-absence': [P.LEAVE_VIEW, P.LEAVE_APPLY, P.LEAVE_APPROVE],
   'documents-approval': [P.DOCUMENT_VIEW, P.DOCUMENT_UPLOAD],
@@ -106,7 +119,7 @@ const LEGACY_KEY_TO_ACTIONS = {
   ],
   policies: [P.POLICIES_MANAGE, P.POLICIES_VIEW, P.POLICIES_ACKNOWLEDGE],
   expenses: ['expenses.view'],
-  'payroll-management': [P.PAYROLL_VIEW],
+  'payroll-management': [P.PAYROLL_VIEW, P.PAYROLL_MANAGE],
   departments: [P.DEPARTMENTS_MANAGE],
   designations: [P.DEPARTMENTS_MANAGE],
   messages: ['messages.view'],
@@ -115,6 +128,8 @@ const LEGACY_KEY_TO_ACTIONS = {
   'system-settings': ['system-settings'],
   'exit-management': [P.EXIT_VIEW, P.EXIT_MANAGE],
   tasks: [P.TASKS_MANAGE],
+  'audit-logs': [P.AUDIT_VIEW, P.AUDIT_MANAGE],
+  'approval-inbox': [P.APPROVAL_VIEW, P.APPROVAL_MANAGE],
 };
 
 /** Action slug → legacy keys (for login allowedModules / sidebar) */
@@ -165,6 +180,12 @@ const ACTION_TO_LEGACY_KEYS = {
   [P.TASKS_MANAGE]: ['tasks'],
   [P.EXIT_VIEW]: ['exit-management'],
   [P.EXIT_MANAGE]: ['exit-management'],
+  [P.PAYROLL_MANAGE]: ['payroll-management'],
+  [P.SHIFT_VIEW]: ['shift-management'],
+  [P.SHIFT_MANAGE]: ['shift-management'],
+  [P.SHIFT_APPROVE]: ['shift-management'],
+  [P.AUDIT_VIEW]: ['audit-logs'],
+  [P.APPROVAL_VIEW]: ['approval-inbox'],
 };
 
 const DATA_SCOPES = Object.freeze(['SELF', 'TEAM', 'DEPARTMENT', 'ALL']);

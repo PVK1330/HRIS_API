@@ -56,6 +56,13 @@ const supportRoutes = require('./routes/support.routes');
 const superadminSupportRoutes = require('./routes/superadminSupport.routes');
 const { getCyclesDropdown, getCompetenciesDropdown } = require('./controllers/employeePerformanceController');
 const { authenticate, authenticateUpload, loadAuthContext } = require('./middlewares/auth.middleware');
+const shiftsRoutes = require('./modules/shifts/shifts.routes');
+const payrollEngineRoutes = require('./modules/payroll/payrollEngine.routes');
+const auditRoutes = require('./modules/audit/audit.routes');
+const approvalEngineRoutes = require('./modules/approvalEngine/approvalEngine.routes');
+const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
+const emailSettingsRoutes = require('./modules/emailSettings/emailSettings.routes');
+const locationsRoutes = require('./modules/locations/locations.routes');
 
 const { generalLimiter } = require('./middlewares/rateLimit.middleware');
 
@@ -214,8 +221,10 @@ app.use('/api/v1/tasks', require('./modules/tasks/tasks.routes'));
 app.use('/api/v1/notifications', require('./modules/notifications/notifications.routes'));
 app.use('/api/v1/policies', require('./modules/policies/policies.routes'));
 app.use('/api/v1/expenses', require('./modules/expenses/expenses.routes'));
+app.use('/api/v1/approvals', approvalEngineRoutes);
 app.use('/api/v1/expense-categories', require('./modules/expenseCategories/expenseCategories.routes'));
 app.use('/api/v1/designations', designationsRoutes);
+app.use('/api/v1/locations', locationsRoutes);
 app.use('/api/v1/visa-types', visaTypesRoutes);
 app.use('/api/v1/visa-records', visaRecordsRoutes);
 app.use('/api/v1/admin/announcements', require('./modules/announcements/announcements.routes'));
@@ -226,6 +235,7 @@ app.use('/api/v1/admin/settings', tenantSettingsRoutes);
 app.use('/api/v1/admin/settings/onboarding', onboardingSettingsRoutes);
 app.use('/api/v1/admin/documents', adminDocumentsRoutes);
 app.use('/api/v1/admin/payroll', require('./modules/payroll/payroll.routes'));
+app.use('/api/v1/admin/payroll-engine', payrollEngineRoutes);
 app.use('/api/v1/public/onboarding', publicOnboardingRoutes);
 app.use('/api/v1/support', supportRoutes);
 app.use('/api/v1/admin/support', supportRoutes);
@@ -234,6 +244,11 @@ app.use(
   '/api/v1/public/candidate-onboarding',
   require('./routes/public/candidateOnboardingRoutes'),
 );
+
+app.use('/api/v1/shifts', shiftsRoutes);
+app.use('/api/v1/admin/audit', auditRoutes);
+app.use('/api/v1/dashboard', dashboardRoutes);
+app.use('/api/v1/admin/settings/email-config', emailSettingsRoutes);
 
 /* -------------------- 404 + Errors -------------------- */
 

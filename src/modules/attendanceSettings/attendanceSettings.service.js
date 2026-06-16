@@ -83,6 +83,18 @@ const COLUMN_KEYS = new Set([
   'wfh_marking_allowed',
   'overtime_custom_multiplier',
   'attendance_location_tracking',
+  'present_status_code',
+  'half_day_min_hours',
+  'half_day_max_hours',
+  'half_day_status_code',
+  'absent_below_hours',
+  'absent_status_code',
+  'auto_mark_absent',
+  'enable_late_mark',
+  'late_mark_status_code',
+  'penalty_3_lates_result',
+  'penalty_6_lates_result',
+  'late_mark_penalties',
 ]);
 
 function formatHm(v) {
@@ -96,6 +108,28 @@ function timeToMinutes(hm) {
   const [h, m] = s.split(':').map((x) => parseInt(x, 10));
   if (Number.isNaN(h) || Number.isNaN(m)) return NaN;
   return h * 60 + m;
+}
+
+const DEFAULT_PENALTIES = [
+  { count: 3, result: 'Half Day' },
+  { count: 6, result: '1 Leave Deduction' },
+];
+
+function parseLateMarkPenalties(row) {
+  // Prefer the new JSONB column
+  if (row.late_mark_penalties) {
+    try {
+      const parsed = typeof row.late_mark_penalties === 'string'
+        ? JSON.parse(row.late_mark_penalties)
+        : row.late_mark_penalties;
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    } catch { /* fall through */ }
+  }
+  // Fall back to legacy fixed columns
+  return [
+    { count: 3, result: row.penalty_3_lates_result || 'Half Day' },
+    { count: 6, result: row.penalty_6_lates_result || '1 Leave Deduction' },
+  ];
 }
 
 function mapToResponse(row) {
@@ -139,6 +173,30 @@ function mapToResponse(row) {
         : 4,
       biometricSyncEnabled: row.biometric_sync_enabled === true,
       wfhMarkingAllowed: row.wfh_marking_allowed !== false,
+    },
+    generalAttendance: {
+      workWeekDays: row.work_week_days || 'Mon,Tue,Wed,Thu,Fri',
+    },
+    presentRules: {
+      fullDayPresentHours: parseFloat(row.total_required_hours) || 8,
+      minHoursForPresent: parseFloat(row.min_hours_for_present) || 8,
+      presentStatusCode: row.present_status_code || 'P',
+    },
+    halfDayRules: {
+      halfDayMinHours: row.half_day_min_hours != null ? parseFloat(row.half_day_min_hours) : 4,
+      halfDayMaxHours: row.half_day_max_hours != null ? parseFloat(row.half_day_max_hours) : 7.98,
+      halfDayStatusCode: row.half_day_status_code || 'HD',
+    },
+    absentRules: {
+      absentBelowHours: row.absent_below_hours != null ? parseFloat(row.absent_below_hours) : 4,
+      absentStatusCode: row.absent_status_code || 'A',
+      autoMarkAbsent: row.auto_mark_absent !== false,
+    },
+    lateMarkRules: {
+      gracePeriodMinutes: row.grace_period_minutes ?? 10,
+      enableLateMark: row.enable_late_mark !== false,
+      lateMarkStatusCode: row.late_mark_status_code || 'L',
+      penalties: parseLateMarkPenalties(row),
     },
     weekendSettings: {
       weekendMode: row.weekend_mode,
@@ -255,6 +313,53 @@ function mergeFlatAttendanceFields(body) {
     }
     if (gs.biometricSyncEnabled !== undefined) patch.biometric_sync_enabled = gs.biometricSyncEnabled;
     if (gs.wfhMarkingAllowed !== undefined) patch.wfh_marking_allowed = gs.wfhMarkingAllowed;
+  }
+
+  // New section-based payload from the Attendance Settings UI
+  const ga = body.generalAttendance;
+  const pr = body.presentRules;
+  const hd = body.halfDayRules;
+  const ab = body.absentRules;
+  const lm = body.lateMarkRules;
+
+  if (ga && typeof ga === 'object') {
+    if (ga.workWeekDays !== undefined) patch.work_week_days = ga.workWeekDays;
+  }
+  if (pr && typeof pr === 'object') {
+    if (pr.fullDayPresentHours !== undefined) patch.total_required_hours = pr.fullDayPresentHours;
+    if (pr.minHoursForPresent !== undefined) patch.min_hours_for_present = pr.minHoursForPresent;
+    if (pr.presentStatusCode !== undefined) patch.present_status_code = pr.presentStatusCode;
+  }
+  if (hd && typeof hd === 'object') {
+    if (hd.halfDayMinHours !== undefined) {
+      patch.half_day_min_hours = hd.halfDayMinHours;
+      patch.half_day_threshold_hours = hd.halfDayMinHours; // keep legacy column in sync
+    }
+    if (hd.halfDayMaxHours !== undefined) patch.half_day_max_hours = hd.halfDayMaxHours;
+    if (hd.halfDayStatusCode !== undefined) patch.half_day_status_code = hd.halfDayStatusCode;
+  }
+  if (ab && typeof ab === 'object') {
+    if (ab.absentBelowHours !== undefined) patch.absent_below_hours = ab.absentBelowHours;
+    if (ab.absentStatusCode !== undefined) patch.absent_status_code = ab.absentStatusCode;
+    if (ab.autoMarkAbsent !== undefined) patch.auto_mark_absent = ab.autoMarkAbsent;
+  }
+  if (lm && typeof lm === 'object') {
+    if (lm.gracePeriodMinutes !== undefined) patch.grace_period_minutes = lm.gracePeriodMinutes;
+    if (lm.enableLateMark !== undefined) {
+      patch.enable_late_mark = lm.enableLateMark;
+      patch.late_mark_auto_calculation = lm.enableLateMark; // keep legacy column in sync
+    }
+    if (lm.lateMarkStatusCode !== undefined) patch.late_mark_status_code = lm.lateMarkStatusCode;
+    if (lm.penalties !== undefined && Array.isArray(lm.penalties)) {
+      patch.late_mark_penalties = lm.penalties;
+      // keep legacy columns in sync with first two tiers
+      const t1 = lm.penalties.find((p) => p.count === 3);
+      const t2 = lm.penalties.find((p) => p.count === 6);
+      if (t1) patch.penalty_3_lates_result = t1.result;
+      if (t2) patch.penalty_6_lates_result = t2.result;
+    }
+    if (lm.penalty3LatesResult !== undefined) patch.penalty_3_lates_result = lm.penalty3LatesResult;
+    if (lm.penalty6LatesResult !== undefined) patch.penalty_6_lates_result = lm.penalty6LatesResult;
   }
 
   for (const [camel, snake] of Object.entries(CAMEL_TO_SNAKE)) {
@@ -415,6 +520,9 @@ function validateTimesAndRanges(patch) {
   intRange('regularization_auto_approve_after_days', 0, 30);
   intRange('grace_period_minutes', 0, 120);
   floatRange('half_day_threshold_hours', 0, 24);
+  floatRange('half_day_min_hours', 0, 24);
+  floatRange('half_day_max_hours', 0, 24);
+  floatRange('absent_below_hours', 0, 24);
   floatRange('overtime_custom_multiplier', 1, 10);
 }
 

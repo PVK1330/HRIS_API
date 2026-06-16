@@ -39,15 +39,31 @@ const COLUMN_KEYS = new Set([
   'wfh_marking_allowed',
   'overtime_custom_multiplier',
   'attendance_location_tracking',
+  'present_status_code',
+  'half_day_min_hours',
+  'half_day_max_hours',
+  'half_day_status_code',
+  'absent_below_hours',
+  'absent_status_code',
+  'auto_mark_absent',
+  'enable_late_mark',
+  'late_mark_status_code',
+  'penalty_3_lates_result',
+  'penalty_6_lates_result',
+  'late_mark_penalties',
 ]);
 
 const TIME_KEYS = new Set(['work_start_time', 'work_end_time']);
+const JSONB_KEYS = new Set(['late_mark_penalties']);
 const NUMERIC_KEYS = new Set([
   'total_required_hours',
   'min_hours_for_present',
   'overtime_custom_multiplier',
   'overtime_max_per_month_hours',
   'half_day_threshold_hours',
+  'half_day_min_hours',
+  'half_day_max_hours',
+  'absent_below_hours',
 ]);
 
 async function getSettings(pool) {
@@ -82,6 +98,9 @@ async function updateSettings(pool, fields) {
     } else if (NUMERIC_KEYS.has(k)) {
       fragments.push(`${k} = $${i}::numeric`);
       values.push(fields[k]);
+    } else if (JSONB_KEYS.has(k)) {
+      fragments.push(`${k} = $${i}::jsonb`);
+      values.push(typeof fields[k] === 'string' ? fields[k] : JSON.stringify(fields[k]));
     } else {
       fragments.push(`${k} = $${i}`);
       values.push(fields[k]);

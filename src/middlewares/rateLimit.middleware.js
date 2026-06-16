@@ -165,6 +165,56 @@ const candidateOnboardingLimiter = rateLimit({
       : `onboarding:${ipKey}`;
   },
 });
+/**
+ * Performance-module limiter.
+ * GET requests are read-heavy but still bounded: 300 / 15 min.
+ * Mutating requests (POST / PUT / PATCH / DELETE) are tighter: 100 / 15 min.
+ * Key = tenant db_name + user id + client IP so a shared NAT doesn't throttle
+ * an entire office, and one user can't starve another on the same tenant.
+ */
+const perfGetLimiter = rateLimit({
+  windowMs,
+  max: parseInt(process.env.PERF_GET_RATE_LIMIT_MAX, 10) || 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: makeStore('perf-get'),
+  message: { success: false, message: 'Too many requests, please try again later.' },
+  keyGenerator: (req) => {
+    const tenant = req.user?.db_name ? String(req.user.db_name).slice(0, 80) : 'anon';
+    const userId = req.user?.id ? String(req.user.id) : 'guest';
+    const ipKey = ipKeyGenerator(req.ip);
+    return `perf-get:${tenant}:${userId}:${ipKey}`;
+  },
+  skip: () => isRateLimitDisabled,
+});
+
+const perfWriteLimiter = rateLimit({
+  windowMs,
+  max: parseInt(process.env.PERF_WRITE_RATE_LIMIT_MAX, 10) || 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: makeStore('perf-write'),
+  message: { success: false, message: 'Too many requests, please try again later.' },
+  keyGenerator: (req) => {
+    const tenant = req.user?.db_name ? String(req.user.db_name).slice(0, 80) : 'anon';
+    const userId = req.user?.id ? String(req.user.id) : 'guest';
+    const ipKey = ipKeyGenerator(req.ip);
+    return `perf-write:${tenant}:${userId}:${ipKey}`;
+  },
+  skip: () => isRateLimitDisabled,
+});
+
+/**
+ * Single middleware that delegates to the correct limiter based on HTTP method.
+ * Attach this to any performance router before business handlers.
+ */
+function performanceLimiter(req, res, next) {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+    return perfGetLimiter(req, res, next);
+  }
+  return perfWriteLimiter(req, res, next);
+}
+
 module.exports = {
   generalLimiter,
   authLimiter,
@@ -172,4 +222,5 @@ module.exports = {
   refreshLimiter,
   registrationLimiter,
   candidateOnboardingLimiter,
+  performanceLimiter,
 };

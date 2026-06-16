@@ -155,7 +155,7 @@ const createAssessment = asyncHandler(async (req, res) => {
 const getAllAssessments = asyncHandler(async (req, res) => {
   const {
     search = '',
-    limit = 100,
+    limit = 20,
     page = 1,
     sortBy = 'created_at',
     sortOrder = 'DESC'
@@ -163,8 +163,8 @@ const getAllAssessments = asyncHandler(async (req, res) => {
 
   const pool = getTenantDbPool(req.user);
 
-  const parsedLimit = parseInt(limit, 10) || 100;
-  const parsedPage = parseInt(page, 10) || 1;
+  const parsedLimit = Math.min(Math.max(1, parseInt(limit, 10) || 20), 100);
+  const parsedPage = Math.max(1, parseInt(page, 10) || 1);
   const offset = (parsedPage - 1) * parsedLimit;
 
   const result = await EmployeePerformance.findAll(pool, {
@@ -177,10 +177,12 @@ const getAllAssessments = asyncHandler(async (req, res) => {
 
   return ApiResponse.ok(res, {
     assessments: result.assessments,
-    total: result.total,
-    page: parsedPage,
-    limit: parsedLimit,
-    totalPages: Math.ceil(result.total / parsedLimit)
+    pagination: {
+      total: result.total,
+      page: parsedPage,
+      limit: parsedLimit,
+      totalPages: Math.ceil(result.total / parsedLimit)
+    }
   }, 'Employee performance assessments retrieved successfully');
 });
 
@@ -192,15 +194,15 @@ const getAllAssessments = asyncHandler(async (req, res) => {
 const getManagerReviewList = asyncHandler(async (req, res) => {
   const {
     search = '',
-    limit = 100,
+    limit = 20,
     page = 1,
     sortBy = 'created_at',
     sortOrder = 'DESC'
   } = req.query;
 
   const pool = getTenantDbPool(req.user);
-  const parsedLimit = parseInt(limit, 10) || 100;
-  const parsedPage = parseInt(page, 10) || 1;
+  const parsedLimit = Math.min(Math.max(1, parseInt(limit, 10) || 20), 100);
+  const parsedPage = Math.max(1, parseInt(page, 10) || 1);
   const offset = (parsedPage - 1) * parsedLimit;
 
   const managerEmployeeId = req.user.employeeId || req.user.employee_id || req.user.id;
@@ -217,10 +219,12 @@ const getManagerReviewList = asyncHandler(async (req, res) => {
 
   return ApiResponse.ok(res, {
     assessments: result.assessments,
-    total: result.total,
-    page: parsedPage,
-    limit: parsedLimit,
-    totalPages: Math.ceil(result.total / parsedLimit)
+    pagination: {
+      total: result.total,
+      page: parsedPage,
+      limit: parsedLimit,
+      totalPages: Math.ceil(result.total / parsedLimit)
+    }
   }, 'Manager performance reviews retrieved successfully');
 });
 
@@ -264,44 +268,65 @@ const getSummaryMetrics = asyncHandler(async (req, res) => {
 const getPerformanceAnalytics = asyncHandler(async (req, res) => {
   const pool = getTenantDbPool(req.user);
 
+  // Optional filters to scope the analytics for large tenants
+  const { cycleId, departmentId } = req.query;
+  const parsedCycleId = cycleId ? parseInt(cycleId, 10) : null;
+  const parsedDeptId = departmentId ? parseInt(departmentId, 10) : null;
+
+  // Build reusable WHERE fragment
+  const baseWhere = [];
+  const baseParams = [];
+  if (parsedCycleId) {
+    baseParams.push(parsedCycleId);
+    baseWhere.push(`ep.performance_cycle_id = $${baseParams.length}`);
+  }
+  if (parsedDeptId) {
+    baseParams.push(parsedDeptId);
+    baseWhere.push(`ep.department_id = $${baseParams.length}`);
+  }
+
+  const baseFilter = baseWhere.length
+    ? `AND ${baseWhere.join(' AND ')}`
+    : '';
+
   const [byDeptRes, bandRes, statusRes, cycleRatingRes, summaryRes] = await Promise.all([
-    // Assessments per department
+    // Assessments per department (cap at 15)
     pool.query(`
       SELECT COALESCE(d.name, 'Unassigned') AS name, COUNT(ep.id)::int AS value
       FROM employee_performance ep
       LEFT JOIN departments d ON d.id = ep.department_id AND d.deleted_at IS NULL
-      WHERE ep.deleted_at IS NULL
+      WHERE ep.deleted_at IS NULL ${baseFilter}
       GROUP BY COALESCE(d.name, 'Unassigned')
       ORDER BY value DESC
-      LIMIT 8;
-    `),
+      LIMIT 15;
+    `, baseParams),
     // Distribution by performance band
     pool.query(`
       SELECT COALESCE(performance_band, 'Unrated') AS name, COUNT(*)::int AS count
-      FROM employee_performance
-      WHERE deleted_at IS NULL
+      FROM employee_performance ep
+      WHERE ep.deleted_at IS NULL ${baseFilter}
       GROUP BY COALESCE(performance_band, 'Unrated')
       ORDER BY count DESC;
-    `),
+    `, baseParams),
     // Distribution by employee execution status
     pool.query(`
       SELECT COALESCE(employee_status, 'Not Started') AS name, COUNT(*)::int AS count
-      FROM employee_performance
-      WHERE deleted_at IS NULL
+      FROM employee_performance ep
+      WHERE ep.deleted_at IS NULL ${baseFilter}
       GROUP BY COALESCE(employee_status, 'Not Started')
       ORDER BY count DESC;
-    `),
-    // Average overall rating per recent cycle
+    `, baseParams),
+    // Average overall rating per recent cycle (last 6)
     pool.query(`
       SELECT pc.cycle_name AS cycle,
              ROUND(AVG(ep.overall_rating)::numeric, 2)::float AS rate
       FROM employee_performance ep
       JOIN performance_cycles pc ON pc.id = ep.performance_cycle_id
-      WHERE ep.deleted_at IS NULL AND ep.overall_rating IS NOT NULL
+      WHERE ep.deleted_at IS NULL AND ep.overall_rating IS NOT NULL ${baseFilter}
       GROUP BY pc.id, pc.cycle_name, pc.start_date
       ORDER BY pc.start_date DESC NULLS LAST
       LIMIT 6;
-    `),
+    `, baseParams),
     // Headline metrics
     pool.query(`
       SELECT
@@ -309,9 +334,9 @@ const getPerformanceAnalytics = asyncHandler(async (req, res) => {
         ROUND(AVG(overall_rating)::numeric, 2)::float AS avg_rating,
         COUNT(*) FILTER (WHERE employee_status = 'Completed')::int AS completed,
         COUNT(*) FILTER (WHERE employee_status = 'Approved')::int AS approved
-      FROM employee_performance
-      WHERE deleted_at IS NULL;
-    `),
+      FROM employee_performance ep
+      WHERE ep.deleted_at IS NULL ${baseFilter};
+    `, baseParams),
   ]);
 
   const summaryRow = summaryRes.rows[0] || {};
@@ -590,15 +615,15 @@ const updateManagerGoals = asyncHandler(async (req, res) => {
 const getManagerAssignedAssessments = asyncHandler(async (req, res) => {
   const {
     search = '',
-    limit = 100,
+    limit = 20,
     page = 1,
     sortBy = 'created_at',
     sortOrder = 'DESC'
   } = req.query;
 
   const pool = getTenantDbPool(req.user);
-  const parsedLimit = parseInt(limit, 10) || 100;
-  const parsedPage = parseInt(page, 10) || 1;
+  const parsedLimit = Math.min(Math.max(1, parseInt(limit, 10) || 20), 100);
+  const parsedPage = Math.max(1, parseInt(page, 10) || 1);
   const offset = (parsedPage - 1) * parsedLimit;
 
   const managerEmployeeId = req.user.employeeId || req.user.employee_id || req.user.id;
@@ -615,10 +640,12 @@ const getManagerAssignedAssessments = asyncHandler(async (req, res) => {
 
   return ApiResponse.ok(res, {
     assessments: result.assessments,
-    total: result.total,
-    page: parsedPage,
-    limit: parsedLimit,
-    totalPages: Math.ceil(result.total / parsedLimit)
+    pagination: {
+      total: result.total,
+      page: parsedPage,
+      limit: parsedLimit,
+      totalPages: Math.ceil(result.total / parsedLimit)
+    }
   }, 'Manager assigned assessments retrieved successfully');
 });
 

@@ -64,7 +64,7 @@ const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
 const emailSettingsRoutes = require('./modules/emailSettings/emailSettings.routes');
 const locationsRoutes = require('./modules/locations/locations.routes');
 
-const { generalLimiter } = require('./middlewares/rateLimit.middleware');
+const { generalLimiter, performanceLimiter } = require('./middlewares/rateLimit.middleware');
 
 const app = express();
 
@@ -99,6 +99,11 @@ app.post(
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use(cookieParser());
+
+// TODO: CSRF Protection
+// Since authentication tokens are now stored in HttpOnly cookies, CSRF protection is required for mutating APIs (POST, PUT, DELETE).
+// Recommendation: Implement a double-submit cookie pattern or use a library like 'csurf' / '@dr.pogodin/csurf'.
+// The frontend will need to read a non-HttpOnly CSRF token cookie and send it back as an X-CSRF-Token header.
 
 /* -------------------- Static uploads -------------------- */
 
@@ -195,17 +200,17 @@ app.use('/api/v1/leave', leaveAdminRoutes);
 app.get('/api/v1/performance-cycles/dropdown', authenticate, loadAuthContext, getCyclesDropdown);
 app.get('/api/v1/competencies/dropdown', authenticate, loadAuthContext, getCompetenciesDropdown);
 
-app.use('/api/v1/performance-cycles', performanceCyclesRoutes);
+app.use('/api/v1/performance-cycles', performanceLimiter, performanceCyclesRoutes);
 app.use('/api/v1/competencies', competencyRoutes);
 
 // Employee Performance Assessment endpoints
-app.use('/api/v1/employee-performance', employeePerformanceRoutes);
+app.use('/api/v1/employee-performance', performanceLimiter, employeePerformanceRoutes);
 
 // Performance Export endpoints
-app.use('/api/v1/performance', performanceExportRoutes);
+app.use('/api/v1/performance', performanceLimiter, performanceExportRoutes);
 
 // Manager Performance Review endpoints
-app.use('/api/v1/manager/performance', managerPerformanceRoutes);
+app.use('/api/v1/manager/performance', performanceLimiter, managerPerformanceRoutes);
 
 app.use('/api/v1/messages', messagesRoutes);
 app.use('/api/v1/admin/settings/assets', assetSettingsRoutes);

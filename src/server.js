@@ -131,6 +131,13 @@ async function bootstrap() {
       logger.error('Failed to start policy acknowledgement reminder cron', e);
     }
 
+    try {
+      const { startPerformanceCycleReminderCron } = require('./jobs/performanceCycleReminder.job');
+      startPerformanceCycleReminderCron();
+    } catch (e) {
+      logger.error('Failed to start performance cycle reminder cron', e);
+    }
+
     logger.info(`Socket.io attached on /socket.io`);
   });
 

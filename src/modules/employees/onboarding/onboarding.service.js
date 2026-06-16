@@ -536,39 +536,36 @@ async function sendOfferLetter(
     { filename: pdf.fileName, path: pdf.filePath },
   ];
 
-  try {
-    await mailer.sendOfferLetterToCandidate({
-      to: personalEmail,
-      candidateName: emp.full_name || 'Candidate',
-      companyName,
-      jobTitle: emp.job_title,
-      department: emp.department,
-      joinDate: emp.join_date,
-      currency: currency || null,
-      annualCtc: annualCtc ?? emp.salary ?? null,
-      dateOfOffer: offerDate,
-      offerExpiryDate: offerExpiryDate || null,
-      acceptUrl: urls.acceptUrl,
-      rejectUrl: urls.rejectUrl,
-      requiredDocuments,
-      attachments,
-      dbName: user.db_name,
-    });
-  } catch (err) {
-    logger.warn(`Offer letter email failed: ${err.message}`);
-    throw ApiError.internal('Could not send offer letter email');
-  }
-
   const tenant = {
     dbName: user.db_name,
     db_name: user.db_name,
     id: user.tenant_id,
     companyName,
   };
-  await onboardingEvents.notifyOfferSent(tenant, pool, emp, {
+
+  // Fire email and notification in background — DB is already updated, no need to block the response.
+  mailer.sendOfferLetterToCandidate({
+    to: personalEmail,
+    candidateName: emp.full_name || 'Candidate',
+    companyName,
+    jobTitle: emp.job_title,
+    department: emp.department,
+    joinDate: emp.join_date,
+    currency: currency || null,
+    annualCtc: annualCtc ?? emp.salary ?? null,
+    dateOfOffer: offerDate,
+    offerExpiryDate: offerExpiryDate || null,
+    acceptUrl: urls.acceptUrl,
+    rejectUrl: urls.rejectUrl,
+    requiredDocuments,
+    attachments,
+    dbName: user.db_name,
+  }).catch((err) => logger.warn(`Offer letter email failed: ${err.message}`));
+
+  onboardingEvents.notifyOfferSent(tenant, pool, emp, {
     employeeId: user.employeeId || auth?.employeeId || null,
     actorName: user.full_name || user.name || 'HR',
-  });
+  }).catch((err) => logger.warn(`Offer sent notification failed: ${err.message}`));
 
   return {
     emailSent: true,

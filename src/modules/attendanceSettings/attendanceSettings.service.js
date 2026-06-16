@@ -268,7 +268,22 @@ function mergeFlatAttendanceFields(body) {
   }
   if (rs && typeof rs === 'object') {
     if (rs.whoCanSubmitRequest !== undefined) patch.who_can_submit_request = rs.whoCanSubmitRequest;
-    if (rs.approver !== undefined) patch.approver = rs.approver;
+    if (rs.approver !== undefined) {
+      patch.approver = rs.approver;
+      // Derive the workflow type from the human-readable approver string so
+      // buildStageChain() (which reads approval_workflow_type) stays in sync.
+      const a = String(rs.approver);
+      if (a === 'Reporting Manager → Dept Head → HR') {
+        patch.approval_workflow_type = 'Three Level';
+      } else if (a === 'Reporting Manager → HR') {
+        patch.approval_workflow_type = 'Two Level';
+      } else if (a === 'HR Only') {
+        patch.approval_workflow_type = 'Single Level';
+      } else if (a === 'Auto Approve') {
+        patch.approval_workflow_type = 'Single Level';
+        patch.regularization_auto_approve_enabled = true;
+      }
+    }
     if (rs.autoRejectionAfterDays !== undefined) {
       patch.auto_rejection_after_days = rs.autoRejectionAfterDays;
     }

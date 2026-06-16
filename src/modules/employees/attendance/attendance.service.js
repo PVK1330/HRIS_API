@@ -601,7 +601,7 @@ async function submitRegularization(auth, user, body, req) {
     if (who === 'HR only' && !authz.hasHrApprovalScope(auth)) {
       throw ApiError.forbidden('Only HR can submit attendance regularization requests.');
     }
-    if (who === 'Manager only') {
+    if (who === 'Manager only' || who === 'Manager + above') {
       const isManager = await hasDirectReports(pool, actorId);
       if (!isManager && !authz.hasHrApprovalScope(auth)) {
         throw ApiError.forbidden('Only managers or HR can submit attendance regularization requests.');
@@ -629,7 +629,7 @@ async function submitRegularization(auth, user, body, req) {
     const { rows: cntRows } = await pool.query(
       `SELECT COUNT(*)::int AS cnt FROM attendance
        WHERE employee_id = $1
-         AND COALESCE(regularization_status, 'None') NOT IN ('None', 'Rejected')
+         AND COALESCE(regularization_status, 'None') NOT IN ('None', 'N/A', 'Rejected')
          AND EXTRACT(YEAR FROM date) = $2 AND EXTRACT(MONTH FROM date) = $3`,
       [Number(employeeId), yy, mm],
     );

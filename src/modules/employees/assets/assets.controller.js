@@ -6,7 +6,7 @@ const service      = require('./assets.service');
 
 // GET /api/v1/employees/:employeeId/assets
 const list = asyncHandler(async (req, res) => {
-  const data = await service.getAssets(req.user, req.params.employeeId);
+  const data = await service.getAssets(req.user, req.params.employeeId, req.auth);
   return ApiResponse.ok(res, data, 'Assets retrieved successfully');
 });
 

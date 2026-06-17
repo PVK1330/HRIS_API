@@ -13,6 +13,9 @@ const { MIN_ONBOARDING_STEP, MAX_ONBOARDING_STEP } = require('./onboarding.workf
 
 const router = Router({ mergeParams: true });
 
+// ── Bulk export (no :id param — must come before /:id routes) ─────────────────
+router.get('/onboarding/export', requirePermission(P.ONBOARDING_VIEW), ctrl.exportOnboarding);
+
 function handleMulter(req, res, next) {
   uploadEmployeeDocument(req, res, (err) => {
     if (!err) return next();

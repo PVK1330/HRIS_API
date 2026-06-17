@@ -100,7 +100,11 @@ async function getEmployeeDetails(pool, employeeId) {
 
 async function getHrAuditGroup(pool) {
   const { rows } = await pool.query(
-    `SELECT id FROM employees WHERE role IN ('admin', 'hr_admin', 'superadmin') AND deleted_at IS NULL`
+    `SELECT e.id
+     FROM employees e
+     JOIN rbac_roles rr ON rr.id = e.rbac_role_id
+     WHERE rr.name IN ('Organisation Admin', 'HR Manager')
+       AND e.deleted_at IS NULL`
   );
   return rows.map(r => r.id);
 }

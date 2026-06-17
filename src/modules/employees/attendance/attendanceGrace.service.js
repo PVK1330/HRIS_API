@@ -61,8 +61,43 @@ function applyGraceToLateStatus({
   return { status, is_late: true, grace_applied: false };
 }
 
+/**
+ * Resolve the penalty action for a given monthly late count.
+ * Reads settings.late_mark_penalties (JSONB array of {count, result}),
+ * sorted descending so the highest matching threshold wins.
+ *
+ * @param {object} settings  - row from attendance_settings
+ * @param {number} lateCount - total late arrivals so far this month (inclusive)
+ * @returns {string|null}    - penalty label e.g. 'Half Day', '1 Leave Deduction', or null
+ */
+function getPenaltyForLateCount(settings, lateCount) {
+  let tiers = null;
+
+  if (settings?.late_mark_penalties) {
+    try {
+      tiers = typeof settings.late_mark_penalties === 'string'
+        ? JSON.parse(settings.late_mark_penalties)
+        : settings.late_mark_penalties;
+    } catch { tiers = null; }
+  }
+
+  if (!Array.isArray(tiers) || tiers.length === 0) {
+    // Legacy fallback
+    tiers = [
+      { count: 3, result: settings?.penalty_3_lates_result || 'Half Day' },
+      { count: 6, result: settings?.penalty_6_lates_result || '1 Leave Deduction' },
+    ];
+  }
+
+  // Sort descending by count — highest threshold that lateCount has reached wins
+  const sorted = [...tiers].sort((a, b) => b.count - a.count);
+  const match = sorted.find((t) => Number(t.count) > 0 && lateCount >= Number(t.count));
+  return match ? match.result : null;
+}
+
 module.exports = {
   countMonthlyLateArrivalsBeforeDate,
   applyGraceToLateStatus,
+  getPenaltyForLateCount,
   monthYearFromDate,
 };

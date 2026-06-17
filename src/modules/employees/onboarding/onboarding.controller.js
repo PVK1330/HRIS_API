@@ -94,6 +94,27 @@ const remindDocuments = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, result, result.message);
 });
 
+const exportOnboarding = asyncHandler(async (req, res) => {
+  const { getBranding } = require('../../../utils/exportBranding');
+  const exportLib = require('./onboarding.export');
+  const type = (req.query.type || 'excel').toLowerCase();
+  const today = new Date().toISOString().slice(0, 10);
+
+  const [rows, branding] = await Promise.all([
+    service.listAllForExport(req.user, req.query),
+    getBranding({ db_name: req.user.db_name }),
+  ]);
+
+  if (type === 'pdf') {
+    res.setHeader('Content-Disposition', `attachment; filename="onboarding_${today}.pdf"`);
+    exportLib.buildPDF(res, rows, branding);
+    return undefined;
+  }
+  res.setHeader('Content-Disposition', `attachment; filename="onboarding_${today}.xlsx"`);
+  await exportLib.buildExcel(res, rows, branding);
+  res.end();
+});
+
 module.exports = {
   notifyStep,
   approval,
@@ -103,4 +124,5 @@ module.exports = {
   completeWorkflow,
   uploadSignedOffer,
   remindDocuments,
+  exportOnboarding,
 };

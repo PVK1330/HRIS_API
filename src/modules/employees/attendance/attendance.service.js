@@ -601,7 +601,7 @@ async function submitRegularization(auth, user, body, req) {
     if (who === 'HR only' && !authz.hasHrApprovalScope(auth)) {
       throw ApiError.forbidden('Only HR can submit attendance regularization requests.');
     }
-    if (who === 'Manager only') {
+    if (who === 'Manager only' || who === 'Manager + above') {
       const isManager = await hasDirectReports(pool, actorId);
       if (!isManager && !authz.hasHrApprovalScope(auth)) {
         throw ApiError.forbidden('Only managers or HR can submit attendance regularization requests.');
@@ -629,7 +629,7 @@ async function submitRegularization(auth, user, body, req) {
     const { rows: cntRows } = await pool.query(
       `SELECT COUNT(*)::int AS cnt FROM attendance
        WHERE employee_id = $1
-         AND COALESCE(regularization_status, 'None') NOT IN ('None', 'Rejected')
+         AND COALESCE(regularization_status, 'None') NOT IN ('None', 'N/A', 'Rejected')
          AND EXTRACT(YEAR FROM date) = $2 AND EXTRACT(MONTH FROM date) = $3`,
       [Number(employeeId), yy, mm],
     );
@@ -1254,6 +1254,7 @@ async function getMyToday(auth, user) {
 
   const mapped = record ? integrity.mapRecordForResponse(record) : null;
   const settings = await calc.loadSettings(pool);
+  const shift = await calc.getEmployeeShift(pool, employeeId, dateStr);
   const { rows: empRows } = await pool.query(
     `SELECT full_name, profile_image_url FROM employees WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
     [employeeId],
@@ -1263,12 +1264,22 @@ async function getMyToday(auth, user) {
     punchStatus,
     record: mapped,
     isLate: mapped?.is_late || false,
+    lateMinutes: mapped?.late_minutes || 0,
     overtimeHours: mapped?.overtime_hours || 0,
     workedHours: mapped?.worked_hours || mapped?.total_hours || 0,
     status: mapped?.display_status || mapped?.status || null,
     locationTrackingEnabled: settings?.attendance_location_tracking === true,
     employeeName: empRows[0]?.full_name || null,
     profileImageUrl: empRows[0]?.profile_image_url || null,
+    shift: shift ? {
+      id: shift.id,
+      name: shift.name,
+      shift_type: null,
+      start_time: shift.start_time,
+      end_time: shift.end_time,
+      grace_minutes: shift.grace_minutes ?? 0,
+      is_night_shift: shift.is_night_shift ?? false,
+    } : null,
   };
 }
 

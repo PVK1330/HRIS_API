@@ -4,6 +4,7 @@ const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 
 const COMPANY = process.env.COMPANY_NAME || 'Platform';
+const BRAND_ARGB = 'FF0F766E';
 
 function fmt(d) {
   if (!d) return '';
@@ -24,37 +25,60 @@ function trunc(s, max) {
   return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
 }
 
+const THIN_BORDER = {
+  top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+};
+const HEADER_BORDER = {
+  top: { style: 'thin', color: { argb: BRAND_ARGB } },
+  left: { style: 'thin', color: { argb: BRAND_ARGB } },
+  bottom: { style: 'medium', color: { argb: 'FF064E3B' } },
+  right: { style: 'thin', color: { argb: BRAND_ARGB } },
+};
+
 /* ─── shared Excel builder helpers ─────────────────────────────────────────── */
 
 function makeWorkbook(title, filterLine, colCount) {
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet(title, { views: [{ state: 'frozen', ySplit: 4 }] });
+  wb.creator = COMPANY;
+  wb.created = new Date();
+  const ws = wb.addWorksheet(title, {
+    views: [{ state: 'frozen', ySplit: 4 }],
+    pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+  });
 
-  const lastCol = String.fromCharCode(64 + colCount);
+  const lastCol = String.fromCharCode(64 + Math.min(colCount, 26));
   ws.mergeCells(`A1:${lastCol}1`);
   const t = ws.getCell('A1');
   t.value = `${COMPANY} — ${title}`;
-  t.font = { size: 14, bold: true };
+  t.font = { size: 14, bold: true, color: { argb: 'FF0F172A' } };
   t.alignment = { vertical: 'middle', horizontal: 'center' };
+  t.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0FDF4' } };
+  ws.getRow(1).height = 28;
 
   ws.mergeCells(`A2:${lastCol}2`);
   const sub = ws.getCell('A2');
   sub.value = `Generated: ${fmt(new Date())}  |  Filters: ${filterLine || 'none'}`;
-  sub.font = { size: 11 };
-  sub.alignment = { horizontal: 'left' };
+  sub.font = { size: 9, italic: true, color: { argb: 'FF475569' } };
+  sub.alignment = { horizontal: 'center', vertical: 'middle' };
+  ws.getRow(2).height = 18;
+  ws.getRow(3).height = 6;
 
-  ws.getRow(3).values = [];
   return { wb, ws };
 }
 
 function addHeaders(ws, headers) {
   const row = ws.getRow(4);
+  row.height = 22;
   headers.forEach((h, i) => {
     const c = row.getCell(i + 1);
     c.value = h;
-    c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F766E' } };
-    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BRAND_ARGB } };
+    c.alignment = { vertical: 'middle', horizontal: 'center', wrapText: false };
+    c.border = HEADER_BORDER;
   });
   ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: headers.length } };
 }
@@ -62,16 +86,22 @@ function addHeaders(ws, headers) {
 function addRows(ws, rows, valFn) {
   rows.forEach((r, idx) => {
     const row = ws.getRow(5 + idx);
+    row.height = 16;
     const bg = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF8FAFC';
     valFn(r, idx).forEach((v, i) => {
       const c = row.getCell(i + 1);
       c.value = v;
       c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+      c.alignment = { vertical: 'middle', horizontal: i === 0 ? 'center' : 'left', wrapText: false };
+      c.border = THIN_BORDER;
     });
   });
-  const total = ws.getRow(5 + rows.length);
-  total.getCell(1).value = `Total records: ${rows.length}`;
-  total.font = { bold: true };
+  const totalRow = ws.getRow(5 + rows.length);
+  totalRow.height = 18;
+  const totalCell = totalRow.getCell(1);
+  totalCell.value = `Total records: ${rows.length}`;
+  totalCell.font = { bold: true };
+  totalCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
 }
 
 function autoWidth(ws) {
@@ -93,8 +123,10 @@ async function sendExcel(res, wb, filename) {
 
 /* ─── shared PDF builder helpers ───────────────────────────────────────────── */
 
+const PDF_MARGIN = 30;
+
 function makePDF(res, filename) {
-  const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 30, bufferPages: true });
+  const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: PDF_MARGIN, bufferPages: true });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   doc.pipe(res);
@@ -102,31 +134,34 @@ function makePDF(res, filename) {
 }
 
 function drawPDFHeader(doc, title, filterLine) {
-  doc.rect(30, 30, 50, 18).stroke('#cbd5e1');
-  doc.fontSize(7).fillColor('#64748b').text('LOGO', 42, 36);
-  doc.fontSize(13).fillColor('#0f172a').text(`${COMPANY} — ${title}`, 90, 31, {
-    align: 'right', width: doc.page.width - 120,
-  });
-  doc.fontSize(8).fillColor('#475569').text(
-    `Generated: ${fmt(new Date())}  |  Filters: ${filterLine || 'none'}`, 30, 54,
-    { width: doc.page.width - 60 },
-  );
-  doc.moveTo(30, 70).lineTo(doc.page.width - 30, 70).stroke('#e2e8f0');
+  const CONTENT_W = doc.page.width - PDF_MARGIN * 2;
+  doc.save();
+  doc.rect(PDF_MARGIN, PDF_MARGIN, CONTENT_W, 36).fill('#0F766E');
+  doc.fontSize(13).fillColor('#ffffff').font('Helvetica-Bold')
+    .text(`${COMPANY} — ${title}`, PDF_MARGIN + 12, PDF_MARGIN + 11, { width: CONTENT_W - 24, align: 'center' });
+  doc.restore();
+  doc.fontSize(8).fillColor('#475569').font('Helvetica')
+    .text(
+      `Generated: ${fmt(new Date())}  |  Filters: ${filterLine || 'none'}`,
+      PDF_MARGIN, PDF_MARGIN + 42, { width: CONTENT_W },
+    );
+  doc.moveTo(PDF_MARGIN, PDF_MARGIN + 56).lineTo(PDF_MARGIN + CONTENT_W, PDF_MARGIN + 56).lineWidth(0.5).stroke('#CBD5E1');
 }
 
-function drawPDFTable(doc, cols, rows, valFn) {
-  const tableLeft = 30;
+function drawPDFTable(doc, cols, rows, valFn, title, filterLine) {
+  const tableLeft = PDF_MARGIN;
   const tableWidth = cols.reduce((s, c) => s + c.w, 0);
   const rowH = 17;
-  let y = 80;
+  const BANNER_BOTTOM = PDF_MARGIN + 66;
+  let y = BANNER_BOTTOM;
 
   function drawHeader() {
     let x = tableLeft;
     doc.save();
     doc.rect(tableLeft, y, tableWidth, rowH).fill('#0F766E');
-    doc.fontSize(7).fillColor('#ffffff');
+    doc.fontSize(7).fillColor('#ffffff').font('Helvetica-Bold');
     cols.forEach((c) => {
-      doc.text(c.t, x + 2, y + 5, { width: c.w - 4 });
+      doc.text(c.t, x + 3, y + 5, { width: c.w - 6, ellipsis: true });
       x += c.w;
     });
     doc.restore();
@@ -136,32 +171,34 @@ function drawPDFTable(doc, cols, rows, valFn) {
   drawHeader();
 
   rows.forEach((r, idx) => {
-    if (y + rowH > doc.page.height - 40) {
+    if (y + rowH > doc.page.height - 36) {
       doc.addPage();
-      y = 40;
+      drawPDFHeader(doc, title, filterLine);
+      y = BANNER_BOTTOM;
       drawHeader();
     }
-    const bg = idx % 2 === 0 ? '#ffffff' : '#F5F5F5';
+    const bg = idx % 2 === 0 ? '#ffffff' : '#F8FAFC';
     let x = tableLeft;
     doc.save();
-    cols.forEach((c) => { doc.rect(x, y, c.w, rowH).fillAndStroke(bg, '#e5e7eb'); x += c.w; });
+    cols.forEach((c) => { doc.rect(x, y, c.w, rowH).fillAndStroke(bg, '#E2E8F0'); x += c.w; });
     doc.restore();
     x = tableLeft;
-    doc.fontSize(7).fillColor('#111827');
+    doc.fontSize(7).fillColor('#1E293B').font('Helvetica');
     valFn(r, idx).forEach((v, i) => {
-      doc.text(String(v ?? ''), x + 2, y + 5, { width: cols[i].w - 4, ellipsis: true });
+      doc.text(String(v ?? ''), x + 3, y + 5, { width: cols[i].w - 6, ellipsis: true });
       x += cols[i].w;
     });
     y += rowH;
   });
 
   const range = doc.bufferedPageRange();
-  for (let i = 0; i < range.count; i++) {
+  for (let i = 0; i < range.count; i += 1) {
     doc.switchToPage(range.start + i);
-    doc.fontSize(7).fillColor('#94a3b8').text(
-      `Page ${i + 1} of ${range.count}`, 30, doc.page.height - 25,
-      { width: doc.page.width - 60, align: 'center' },
-    );
+    doc.fontSize(7).fillColor('#94A3B8').font('Helvetica')
+      .text(
+        `${COMPANY}  |  Page ${i + 1} of ${range.count}  |  ${new Date().toUTCString()}`,
+        PDF_MARGIN, doc.page.height - 22, { width: doc.page.width - PDF_MARGIN * 2, align: 'center' },
+      );
   }
   doc.end();
 }
@@ -298,471 +335,10 @@ function insightCircleBg(fg) {
 
 /** Draw the professional tenant PDF report */
 function buildTenantsPDF(res, rows, filters = {}) {
-  const doc = new (require('pdfkit'))({
-    size: 'A4',
-    layout: 'portrait',
-    margin: 0,
-    bufferPages: true,
-    info: {
-      Title: 'Organisation Management Report',
-      Author: COMPANY,
-      Subject: 'Super Admin Dashboard Report',
-    },
-  });
-
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `attachment; filename="organisation_report_${fmt(new Date())}.pdf"`);
-  doc.pipe(res);
-
-  const PW = doc.page.width;   // 595
-  const PH = doc.page.height;  // 842
-  const ML = 36; // margin left
-  const MR = 36; // margin right
-  const CW = PW - ML - MR;     // content width
-
-  // ── Colour palette ──────────────────────────────────────────────
-  const C = {
-    teal:       '#0F766E',
-    tealDark:   '#0c6b64',
-    tealLight:  '#CCFBF1',
-    green:      '#10B981',
-    greenLight: '#D1FAE5',
-    blue:       '#3B82F6',
-    blueLight:  '#DBEAFE',
-    red:        '#EF4444',
-    redLight:   '#FEE2E2',
-    orange:     '#F59E0B',
-    dark:       '#0F172A',
-    slate800:   '#1E293B',
-    slate600:   '#475569',
-    slate400:   '#94A3B8',
-    slate200:   '#E2E8F0',
-    slate100:   '#F1F5F9',
-    white:      '#FFFFFF',
-    headerBg:   '#0F172A',
-  };
-
-  // ── Compute stats ────────────────────────────────────────────────
-  const total     = rows.length;
-  const active    = rows.filter(r => String(r.status).toLowerCase() === 'active').length;
-  const trial     = rows.filter(r => String(r.status).toLowerCase() === 'trial').length;
-  const suspended = rows.filter(r => String(r.status).toLowerCase() === 'suspended').length;
-
-  // Tier distribution
-  const tierMap = {};
-  rows.forEach(r => {
-    const t = r.plan || 'Unknown';
-    tierMap[t] = (tierMap[t] || 0) + 1;
-  });
-  const tierEntries = Object.entries(tierMap).sort((a, b) => b[1] - a[1]);
-  const mostPopularTier = tierEntries.length > 0 ? tierEntries[0][0] : 'N/A';
-  const totalEmployees = rows.reduce((s, r) => s + (Number(r.employee_count) || 0), 0);
-
-  // Recently registered (last 5)
-  const recentRows = [...rows]
-    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-    .slice(0, 5);
-
-  const generatedAt = fmtDateTime(new Date());
-  const generatedBy = 'Super Admin';
-
-  // ════════════════════════════════════════════════════════════════
-  // PAGE 1 — COVER + EXECUTIVE SUMMARY + CHARTS
-  // ════════════════════════════════════════════════════════════════
-
-  // ── Cover header block ───────────────────────────────────────────
-  doc.rect(0, 0, PW, 110).fill(C.headerBg);
-
-  // Decorative accent strip
-  doc.rect(0, 0, 6, 110).fill(C.teal);
-
-  // Logo placeholder box
-  drawRoundedRect(doc, ML, 20, 52, 38, 4, C.teal, null);
-  doc.fontSize(7).fillColor(C.white).text('LOGO', ML + 14, 36, { width: 24, align: 'center' });
-
-  // Title
-  doc.fontSize(18).font('Helvetica-Bold').fillColor(C.white)
-    .text('Organisation Management Report', ML + 62, 22, { width: CW - 62 });
-  doc.fontSize(9).font('Helvetica').fillColor('#94A3B8')
-    .text('Super Admin Dashboard Report  •  Confidential', ML + 62, 46, { width: CW - 62 });
-
-  // Meta row
-  doc.fontSize(8).fillColor('#CBD5E1')
-    .text(`Generated: ${generatedAt}   |   By: ${generatedBy}   |   Total Records: ${total}`, ML + 62, 62, { width: CW - 62 });
-
-  // Filter chips
-  const fl = [
-    filters.search && `Search: ${filters.search}`,
-    filters.plan   && `Plan: ${filters.plan}`,
-    filters.status && `Status: ${filters.status}`,
-  ].filter(Boolean).join('  •  ');
-  if (fl) {
-    doc.fontSize(7).fillColor('#64748B').text(`Filters applied: ${fl}`, ML + 62, 78, { width: CW - 62 });
-  }
-
-  // Accent underline
-  doc.rect(0, 110, PW, 3).fill(C.teal);
-
-  // ── Executive Summary — Stat Cards ───────────────────────────────
-  let cy = 128;
-  doc.fontSize(11).font('Helvetica-Bold').fillColor(C.dark)
-    .text('Executive Summary', ML, cy);
-  doc.fontSize(7).font('Helvetica').fillColor(C.slate600)
-    .text('Key performance indicators across all registered organisations', ML, cy + 14);
-  cy += 32;
-
-  const cards = [
-    { label: 'TOTAL ORGANIZATIONS', value: total,     bg: C.dark,    fg: C.white,      accent: C.teal  },
-    { label: 'ACTIVE',              value: active,    bg: C.teal,    fg: C.white,      accent: C.green },
-    { label: 'TRIAL',               value: trial,     bg: C.blue,    fg: C.white,      accent: '#60A5FA' },
-    { label: 'SUSPENDED',           value: suspended, bg: C.red,     fg: C.white,      accent: '#FCA5A5' },
-  ];
-  const cardW = Math.floor(CW / 4) - 4;
-  const cardH = 64;
-  cards.forEach((card, i) => {
-    const cx2 = ML + i * (cardW + 5);
-    // shadow
-    doc.save();
-    doc.rect(cx2 + 2, cy + 2, cardW, cardH).fill('#00000015');
-    doc.restore();
-    // card bg
-    drawRoundedRect(doc, cx2, cy, cardW, cardH, 5, card.bg, null);
-    // top accent strip
-    doc.save();
-    doc.roundedRect(cx2, cy, cardW, 4, 2).fill(card.accent);
-    doc.restore();
-    // label
-    doc.fontSize(6.5).font('Helvetica-Bold').fillColor(card.fg)
-      .text(card.label, cx2 + 8, cy + 12, { width: cardW - 16, align: 'left', characterSpacing: 0.5 });
-    // value
-    doc.fontSize(24).font('Helvetica-Bold').fillColor(card.fg)
-      .text(String(card.value), cx2 + 8, cy + 28, { width: cardW - 16, align: 'left' });
-  });
-  cy += cardH + 24;
-
-  // ── Charts ───────────────────────────────────────────────────────
-  doc.fontSize(11).font('Helvetica-Bold').fillColor(C.dark)
-    .text('Analytics Overview', ML, cy);
-  doc.fontSize(7).font('Helvetica').fillColor(C.slate600)
-    .text('Visual breakdown of organisation status distribution and tier allocation', ML, cy + 14);
-  cy += 30;
-
-  const chartAreaH = 170;
-  const halfW = Math.floor(CW / 2) - 8;
-
-  // Left chart panel
-  drawRoundedRect(doc, ML, cy, halfW, chartAreaH, 6, C.white, C.slate200);
-  doc.fontSize(8.5).font('Helvetica-Bold').fillColor(C.dark)
-    .text('Organisation Status Overview', ML + 10, cy + 10);
-  doc.fontSize(6.5).font('Helvetica').fillColor(C.slate600)
-    .text('Doughnut Chart — Active / Trial / Suspended', ML + 10, cy + 22);
-
-  // Draw doughnut
-  const doughnutSegs = [
-    { label: 'Active',    value: active,    color: C.green },
-    { label: 'Trial',     value: trial,     color: C.blue  },
-    { label: 'Suspended', value: suspended, color: C.red   },
-  ].filter(s => s.value > 0);
-
-  const dcx = ML + halfW / 2;
-  const dcy = cy + chartAreaH / 2 + 8;
-  const dR  = 52;
-  const dInR = 28;
-
-  if (doughnutSegs.length > 0) {
-    drawDoughnutChart(doc, dcx, dcy, dR, dInR, doughnutSegs);
-    // Center label
-    doc.fontSize(8).font('Helvetica-Bold').fillColor(C.dark)
-      .text(String(total), dcx - 14, dcy - 7, { width: 28, align: 'center' });
-    doc.fontSize(5.5).font('Helvetica').fillColor(C.slate600)
-      .text('Total', dcx - 14, dcy + 4, { width: 28, align: 'center' });
-  } else {
-    doc.fontSize(9).fillColor(C.slate400).text('No data', dcx - 20, dcy - 5);
-  }
-
-  // Legend
-  let legendY = cy + chartAreaH - 48;
-  const legendX = ML + halfW / 2 + dR + 8;
-  doughnutSegs.forEach((seg, i) => {
-    const lx = ML + 10 + (i % 2 === 0 ? 0 : halfW / 2 - 10);
-    const ly = cy + chartAreaH - 38 + Math.floor(i / 2) * 14;
-    doc.save();
-    doc.rect(lx, ly + 2, 8, 8).fill(seg.color);
-    doc.restore();
-    doc.fontSize(6.5).font('Helvetica').fillColor(C.dark)
-      .text(`${seg.label}: ${seg.value}`, lx + 11, ly + 1, { width: 60 });
-  });
-  // suppress unused variable warning
-  void legendY; void legendX;
-
-  // Right chart panel
-  const rightChartX = ML + halfW + 16;
-  drawRoundedRect(doc, rightChartX, cy, halfW, chartAreaH, 6, C.white, C.slate200);
-  doc.fontSize(8.5).font('Helvetica-Bold').fillColor(C.dark)
-    .text('Tier Distribution', rightChartX + 10, cy + 10);
-  doc.fontSize(6.5).font('Helvetica').fillColor(C.slate600)
-    .text('Bar Chart — Subscription Plan Breakdown', rightChartX + 10, cy + 22);
-
-  const tierColors = ['#0F766E', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#10B981', '#EC4899'];
-  const barItems = tierEntries.slice(0, 6).map((e, i) => ({
-    label: e[0].length > 8 ? e[0].slice(0, 7) + '…' : e[0],
-    value: e[1],
-    color: tierColors[i % tierColors.length],
-  }));
-  const maxBarVal = barItems.length > 0 ? Math.max(...barItems.map(b => b.value)) : 1;
-
-  const bChartX = rightChartX + 16;
-  const bChartY = cy + 40;
-  const bChartW = halfW - 32;
-  const bChartH = chartAreaH - 64;
-
-  if (barItems.length > 0) {
-    drawBarChart(doc, bChartX, bChartY, bChartW, bChartH, barItems, maxBarVal);
-  } else {
-    doc.fontSize(9).fillColor(C.slate400).text('No data', bChartX + 20, bChartY + 30);
-  }
-
-  cy += chartAreaH + 14;
-
-  // ── Section divider ──────────────────────────────────────────────
-  doc.rect(ML, cy, CW, 1).fill(C.slate200);
-  cy += 10;
-
-  // Recently Registered preview (compact, 3 rows)
-  doc.fontSize(10).font('Helvetica-Bold').fillColor(C.dark)
-    .text('Recently Registered Organisations', ML, cy);
-  doc.fontSize(6.5).font('Helvetica').fillColor(C.slate600)
-    .text('Latest 5 onboarded organisations (see detailed table on next page)', ML, cy + 12);
-  cy += 24;
-
-  const rcCols = [
-    { label: 'Organisation Name', w: Math.round(CW * 0.30) },
-    { label: 'Tier / Plan',       w: Math.round(CW * 0.18) },
-    { label: 'Status',            w: Math.round(CW * 0.14) },
-    { label: 'Registration Date', w: Math.round(CW * 0.20) },
-    { label: 'Admin Email',       w: Math.round(CW * 0.18) },
-  ];
-
-  // Header row
-  let rx = ML;
-  doc.rect(ML, cy, CW, 16).fill(C.teal);
-  rcCols.forEach(col => {
-    doc.fontSize(6.5).font('Helvetica-Bold').fillColor(C.white)
-      .text(col.label, rx + 4, cy + 4, { width: col.w - 8 });
-    rx += col.w;
-  });
-  cy += 16;
-
-  recentRows.forEach((row, idx) => {
-    const rowBg = idx % 2 === 0 ? C.white : C.slate100;
-    doc.rect(ML, cy, CW, 15).fill(rowBg);
-    rx = ML;
-    const cells = [
-      trunc(row.name || '', 28),
-      trunc(row.plan || 'None', 16),
-      cap(row.status),
-      fmt(row.created_at),
-      trunc(row.admin_email || '', 22),
-    ];
-    // Status badge color
-    const statusColor = {
-      active:    C.green,
-      trial:     C.blue,
-      suspended: C.red,
-    }[String(row.status).toLowerCase()] || C.slate600;
-
-    rcCols.forEach((col, ci) => {
-      const cellVal = cells[ci] || '';
-      if (ci === 2) {
-        // Status badge
-        const badgeW = 36;
-        const badgeX = rx + 4;
-        const badgeY = cy + 2;
-        drawRoundedRect(doc, badgeX, badgeY, badgeW, 11, 3, statusBadgeBg(row.status), null);
-        doc.fontSize(6).font('Helvetica-Bold').fillColor(statusColor)
-          .text(cellVal.toUpperCase(), badgeX + 2, badgeY + 2, { width: badgeW - 4, align: 'center' });
-      } else {
-        doc.fontSize(6.5).font('Helvetica').fillColor(C.dark)
-          .text(cellVal, rx + 4, cy + 4, { width: col.w - 8, ellipsis: true });
-      }
-      rx += col.w;
-    });
-    cy += 15;
-  });
-
-  // bottom border for recent table
-  doc.rect(ML, cy, CW, 1).fill(C.slate200);
-  cy += 1;
-
-  // ════════════════════════════════════════════════════════════════
-  // PAGE 2+ — FULL ORGANISATION TABLE
-  // ════════════════════════════════════════════════════════════════
-  doc.addPage({ size: 'A4', layout: 'portrait', margin: 0 });
-
-  const tableCols = [
-    { label: '#',                 w: Math.round(CW * 0.04), key: '_idx'       },
-    { label: 'Organisation Name', w: Math.round(CW * 0.18), key: 'name'       },
-    { label: 'Domain / DB',       w: Math.round(CW * 0.16), key: 'db_name'    },
-    { label: 'Tier / Plan',       w: Math.round(CW * 0.11), key: 'plan'       },
-    { label: 'Status',            w: Math.round(CW * 0.10), key: 'status'     },
-    { label: 'Admin Email',       w: Math.round(CW * 0.18), key: 'admin_email'},
-    { label: 'Root Admin',        w: Math.round(CW * 0.13), key: 'admin_name' },
-    { label: 'Registered',        w: Math.round(CW * 0.10), key: 'created_at' },
-  ];
-  // clamp last col to fill
-  const usedW = tableCols.reduce((s, c) => s + c.w, 0);
-  tableCols[tableCols.length - 1].w += CW - usedW;
-
-  function drawTablePageHeader(pageY) {
-    // Page banner
-    doc.rect(0, 0, PW, 34).fill(C.headerBg);
-    doc.rect(0, 0, 6, 34).fill(C.teal);
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(C.white)
-      .text('Organisation Details  —  Full Registry', ML, 8);
-    doc.fontSize(7).font('Helvetica').fillColor('#94A3B8')
-      .text(`${COMPANY}  •  Super Admin Report  •  ${generatedAt}`, ML, 20);
-
-    let headerY = 44;
-    doc.fontSize(10).font('Helvetica-Bold').fillColor(C.dark)
-      .text('Organisation Details Table', ML, headerY);
-    doc.fontSize(6.5).font('Helvetica').fillColor(C.slate600)
-      .text(`Showing ${rows.length} registered organisations — All available data exported`, ML, headerY + 12);
-    headerY += 26;
-
-    // Table header
-    let hx = ML;
-    doc.rect(ML, headerY, CW, 17).fill(C.teal);
-    tableCols.forEach(col => {
-      doc.fontSize(6.5).font('Helvetica-Bold').fillColor(C.white)
-        .text(col.label, hx + 4, headerY + 4, { width: col.w - 8 });
-      hx += col.w;
-    });
-    return headerY + 17;
-  }
-
-  let tableRowY = drawTablePageHeader(0);
-  const ROW_H = 16;
-
-  rows.forEach((row, idx) => {
-    if (tableRowY + ROW_H > PH - 36) {
-      doc.addPage({ size: 'A4', layout: 'portrait', margin: 0 });
-      tableRowY = drawTablePageHeader(0);
-    }
-
-    const rowBg = idx % 2 === 0 ? C.white : C.slate100;
-    doc.rect(ML, tableRowY, CW, ROW_H).fill(rowBg);
-
-    // cell separator lines
-    doc.save();
-    doc.rect(ML, tableRowY, CW, ROW_H).stroke(C.slate200);
-    doc.restore();
-
-    let tx = ML;
-    const statusColor = {
-      active:    C.green,
-      trial:     C.blue,
-      suspended: C.red,
-    }[String(row.status).toLowerCase()] || C.slate600;
-
-    tableCols.forEach(col => {
-      let cellVal = '';
-      if (col.key === '_idx')       cellVal = String(idx + 1);
-      else if (col.key === 'status') cellVal = cap(row.status);
-      else if (col.key === 'created_at') cellVal = fmt(row.created_at);
-      else cellVal = trunc(String(row[col.key] || ''), 24);
-
-      if (col.key === 'status') {
-        const bW = col.w - 10;
-        drawRoundedRect(doc, tx + 4, tableRowY + 3, bW, 10, 3, statusBadgeBg(row.status), null);
-        doc.fontSize(5.5).font('Helvetica-Bold').fillColor(statusColor)
-          .text(cellVal.toUpperCase(), tx + 4, tableRowY + 5, { width: bW, align: 'center' });
-      } else if (col.key === '_idx') {
-        doc.fontSize(6.5).font('Helvetica-Bold').fillColor(C.slate600)
-          .text(cellVal, tx + 2, tableRowY + 4, { width: col.w - 4, align: 'center' });
-      } else {
-        doc.fontSize(6.5).font('Helvetica').fillColor(C.dark)
-          .text(cellVal, tx + 4, tableRowY + 4, { width: col.w - 8, ellipsis: true });
-      }
-      tx += col.w;
-    });
-
-    tableRowY += ROW_H;
-  });
-
-  // After table — total row
-  if (tableRowY + 14 > PH - 36) {
-    doc.addPage({ size: 'A4', layout: 'portrait', margin: 0 });
-    tableRowY = 36;
-  }
-  doc.rect(ML, tableRowY, CW, 14).fill(C.teal + '22');
-  doc.fontSize(7).font('Helvetica-Bold').fillColor(C.tealDark)
-    .text(`Total organisations exported: ${rows.length}`, ML + 6, tableRowY + 3, { width: CW - 12 });
-  tableRowY += 20;
-
-  // ── Report Insights Section ──────────────────────────────────────
-  if (tableRowY + 140 > PH - 40) {
-    doc.addPage({ size: 'A4', layout: 'portrait', margin: 0 });
-    tableRowY = 36;
-  }
-
-  doc.rect(ML, tableRowY, CW, 1).fill(C.slate200);
-  tableRowY += 14;
-
-  doc.fontSize(11).font('Helvetica-Bold').fillColor(C.dark)
-    .text('Report Insights', ML, tableRowY);
-  doc.fontSize(6.5).font('Helvetica').fillColor(C.slate600)
-    .text('Aggregated analytics and key takeaways from the exported dataset', ML, tableRowY + 13);
-  tableRowY += 30;
-
-  const insightCards = [
-    { label: 'Active Organisations',   value: String(active),          bg: C.greenLight, fg: C.green  },
-    { label: 'Trial Organisations',    value: String(trial),           bg: C.blueLight,  fg: C.blue   },
-    { label: 'Suspended Organisations',value: String(suspended),       bg: C.redLight,   fg: C.red    },
-    { label: 'Most Popular Tier',      value: mostPopularTier,         bg: C.tealLight,  fg: C.teal   },
-    { label: 'Total Employees',        value: totalEmployees > 0 ? String(totalEmployees) : 'N/A',
-      bg: '#F3E8FF', fg: '#7C3AED' },
-  ];
-  const icW  = Math.floor(CW / insightCards.length) - 5;
-  const icH  = 58;
-  insightCards.forEach((ic, i) => {
-    const icX = ML + i * (icW + 6);
-    drawRoundedRect(doc, icX, tableRowY, icW, icH, 6, ic.bg, null);
-    // icon placeholder circle
-    doc.save();
-    doc.circle(icX + 14, tableRowY + 14, 9).fill(insightCircleBg(ic.fg));
-    doc.restore();
-    doc.fontSize(10).font('Helvetica-Bold').fillColor(ic.fg)
-      .text('✦', icX + 9, tableRowY + 7, { width: 12, align: 'center' });
-    doc.fontSize(7).font('Helvetica-Bold').fillColor(ic.fg)
-      .text(ic.label, icX + 6, tableRowY + 28, { width: icW - 12 });
-    doc.fontSize(13).font('Helvetica-Bold').fillColor(ic.fg)
-      .text(ic.value, icX + 6, tableRowY + 38, { width: icW - 12, ellipsis: true });
-  });
-  tableRowY += icH + 10;
-
-  // ════════════════════════════════════════════════════════════════
-  // PER-PAGE FOOTER
-  // ════════════════════════════════════════════════════════════════
-  const pageRange = doc.bufferedPageRange();
-  for (let pi = 0; pi < pageRange.count; pi++) {
-    doc.switchToPage(pageRange.start + pi);
-    const footerY = PH - 28;
-
-    doc.rect(0, footerY - 4, PW, 32).fill(C.headerBg);
-    doc.rect(0, footerY - 4, PW, 1).fill(C.teal);
-
-    // Left — report info
-    doc.fontSize(6.5).font('Helvetica').fillColor('#64748B')
-      .text(`Organisation Management Report  •  Generated on: ${generatedAt}  •  Confidential – Super Admin Access Only`,
-        ML, footerY + 2, { width: CW - 80 });
-
-    // Right — page number
-    doc.fontSize(6.5).font('Helvetica-Bold').fillColor('#94A3B8')
-      .text(`Page ${pi + 1} of ${pageRange.count}`,
-        PW - MR - 70, footerY + 2, { width: 70, align: 'right' });
-  }
-
-  doc.end();
+  const fl = [filters.search && `search=${filters.search}`, filters.plan && `plan=${filters.plan}`, filters.status && `status=${filters.status}`].filter(Boolean).join(' | ') || 'none';
+  const doc = makePDF(res, `tenants_${fmt(new Date())}.pdf`);
+  drawPDFHeader(doc, 'Tenants', fl);
+  drawPDFTable(doc, TENANT_COLS, rows, tenantVals, 'Tenants', fl);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -771,8 +347,8 @@ function buildTenantsPDF(res, rows, filters = {}) {
 
 const ADMIN_HEADERS = ['#', 'Name', 'Email', 'Role', 'Status', 'Last Login', 'Created'];
 const ADMIN_COLS = [
-  { w: 28, t: '#' }, { w: 100, t: 'Name' }, { w: 130, t: 'Email' },
-  { w: 80, t: 'Role' }, { w: 60, t: 'Status' }, { w: 80, t: 'Last Login' }, { w: 70, t: 'Created' },
+  { w: 28, t: '#' }, { w: 110, t: 'Name' }, { w: 140, t: 'Email' },
+  { w: 90, t: 'Role' }, { w: 65, t: 'Status' }, { w: 85, t: 'Last Login' }, { w: 75, t: 'Created' },
 ];
 const adminVals = (r, i) => [
   i + 1, r.name || '', r.email || '', cap(r.role || 'superadmin'),
@@ -790,7 +366,7 @@ async function buildAdminUsersExcel(res, rows) {
 function buildAdminUsersPDF(res, rows) {
   const doc = makePDF(res, `admin_users_${fmt(new Date())}.pdf`);
   drawPDFHeader(doc, 'Admin Users', 'none');
-  drawPDFTable(doc, ADMIN_COLS, rows, adminVals);
+  drawPDFTable(doc, ADMIN_COLS, rows, adminVals, 'Admin Users', 'none');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -799,9 +375,9 @@ function buildAdminUsersPDF(res, rows) {
 
 const PAY_HEADERS = ['#', 'Tenant', 'Plan', 'Amount', 'Currency', 'Method', 'Status', 'Date'];
 const PAY_COLS = [
-  { w: 28, t: '#' }, { w: 100, t: 'Tenant' }, { w: 90, t: 'Plan' },
-  { w: 70, t: 'Amount' }, { w: 55, t: 'Currency' }, { w: 80, t: 'Method' },
-  { w: 65, t: 'Status' }, { w: 75, t: 'Date' },
+  { w: 28, t: '#' }, { w: 110, t: 'Tenant' }, { w: 100, t: 'Plan' },
+  { w: 75, t: 'Amount' }, { w: 60, t: 'Currency' }, { w: 90, t: 'Method' },
+  { w: 65, t: 'Status' }, { w: 80, t: 'Date' },
 ];
 const payVals = (r, i) => [
   i + 1, r.tenant_name || '', r.plan_name || '',
@@ -822,7 +398,7 @@ function buildPaymentsPDF(res, rows, filters = {}) {
   const fl = [filters.search && `search=${filters.search}`, filters.status && `status=${filters.status}`].filter(Boolean).join(' | ') || 'none';
   const doc = makePDF(res, `payments_${fmt(new Date())}.pdf`);
   drawPDFHeader(doc, 'Billing & Payments', fl);
-  drawPDFTable(doc, PAY_COLS, rows, payVals);
+  drawPDFTable(doc, PAY_COLS, rows, payVals, 'Billing & Payments', fl);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -831,8 +407,8 @@ function buildPaymentsPDF(res, rows, filters = {}) {
 
 const AUDIT_HEADERS = ['#', 'Actor', 'Action', 'Target', 'IP Address', 'Result', 'Date'];
 const AUDIT_COLS = [
-  { w: 28, t: '#' }, { w: 110, t: 'Actor' }, { w: 120, t: 'Action' },
-  { w: 120, t: 'Target' }, { w: 90, t: 'IP Address' }, { w: 60, t: 'Result' }, { w: 80, t: 'Date' },
+  { w: 28, t: '#' }, { w: 120, t: 'Actor' }, { w: 130, t: 'Action' },
+  { w: 130, t: 'Target' }, { w: 95, t: 'IP Address' }, { w: 65, t: 'Result' }, { w: 80, t: 'Date' },
 ];
 const auditVals = (r, i) => [
   i + 1, r.actor_name || '', r.action || '',
@@ -850,7 +426,7 @@ async function buildAuditLogsExcel(res, rows) {
 function buildAuditLogsPDF(res, rows) {
   const doc = makePDF(res, `audit_logs_${fmt(new Date())}.pdf`);
   drawPDFHeader(doc, 'Audit Logs', 'none');
-  drawPDFTable(doc, AUDIT_COLS, rows, auditVals);
+  drawPDFTable(doc, AUDIT_COLS, rows, auditVals, 'Audit Logs', 'none');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -859,9 +435,9 @@ function buildAuditLogsPDF(res, rows) {
 
 const TKT_HEADERS = ['#', 'Ticket', 'Organisation', 'Subject', 'Priority', 'Assigned To', 'Status', 'Created'];
 const TKT_COLS = [
-  { w: 28, t: '#' }, { w: 65, t: 'Ticket' }, { w: 100, t: 'Organisation' },
-  { w: 130, t: 'Subject' }, { w: 60, t: 'Priority' }, { w: 90, t: 'Assigned To' },
-  { w: 55, t: 'Status' }, { w: 70, t: 'Created' },
+  { w: 28, t: '#' }, { w: 65, t: 'Ticket' }, { w: 110, t: 'Organisation' },
+  { w: 140, t: 'Subject' }, { w: 65, t: 'Priority' }, { w: 95, t: 'Assigned To' },
+  { w: 60, t: 'Status' }, { w: 75, t: 'Created' },
 ];
 const tktVals = (r, i) => [
   i + 1, r.ticket_code || '', r.org_name || '',
@@ -880,7 +456,7 @@ async function buildSupportTicketsExcel(res, rows) {
 function buildSupportTicketsPDF(res, rows) {
   const doc = makePDF(res, `support_tickets_${fmt(new Date())}.pdf`);
   drawPDFHeader(doc, 'Support Tickets', 'none');
-  drawPDFTable(doc, TKT_COLS, rows, tktVals);
+  drawPDFTable(doc, TKT_COLS, rows, tktVals, 'Support Tickets', 'none');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -889,8 +465,8 @@ function buildSupportTicketsPDF(res, rows) {
 
 const ANN_HEADERS = ['#', 'Title', 'Audience', 'Type', 'Recipients', 'Date'];
 const ANN_COLS = [
-  { w: 28, t: '#' }, { w: 160, t: 'Title' }, { w: 100, t: 'Audience' },
-  { w: 70, t: 'Type' }, { w: 70, t: 'Recipients' }, { w: 80, t: 'Date' },
+  { w: 28, t: '#' }, { w: 200, t: 'Title' }, { w: 120, t: 'Audience' },
+  { w: 80, t: 'Type' }, { w: 80, t: 'Recipients' }, { w: 90, t: 'Date' },
 ];
 const annVals = (r, i) => [
   i + 1, r.title || '', r.audience || 'All',
@@ -908,7 +484,7 @@ async function buildAnnouncementsExcel(res, rows) {
 function buildAnnouncementsPDF(res, rows) {
   const doc = makePDF(res, `announcements_${fmt(new Date())}.pdf`);
   drawPDFHeader(doc, 'Announcements', 'none');
-  drawPDFTable(doc, ANN_COLS, rows, annVals);
+  drawPDFTable(doc, ANN_COLS, rows, annVals, 'Announcements', 'none');
 }
 
 module.exports = {

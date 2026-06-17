@@ -619,7 +619,7 @@ async function processLeave(user, auth, id, { action, reason }) {
     updated = await repo.updateRequestStatus(client, id, {
       status:          newStatus,
       stage,
-      actorId:         user.id,
+      actorId:         user.employeeId || user.id,
       rejectionReason: reason || null,
       remarks:         reason || null,
     });

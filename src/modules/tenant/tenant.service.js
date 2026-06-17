@@ -399,11 +399,11 @@ async function createTenant({
       upsertIndexEntry(normalizedEmail, tenantRow.id, "admin"),
       tenantSlug
         ? db.superAdminPool.query(
-            "UPDATE public.tenants SET slug = $1 WHERE id = $2 AND slug IS NULL",
-            [tenantSlug, tenantRow.id],
-          ).catch(() => {})
+          "UPDATE public.tenants SET slug = $1 WHERE id = $2 AND slug IS NULL",
+          [tenantSlug, tenantRow.id],
+        ).catch(() => { })
         : Promise.resolve(),
-    ]).catch(() => {});
+    ]).catch(() => { });
 
     logger.info(`Tenant created: ${tenantRow.name} (db=${tenantRow.db_name})`);
 
@@ -599,7 +599,60 @@ async function getAllTenants({
     repo.findAll({ limit, offset, search, plan, status }),
     repo.countAll({ search, plan, status }),
   ]);
-  return { tenants, total, page, limit };
+
+  const enrichedTenants = await Promise.all(
+    tenants.map(async (t) => {
+      let totalEmployees = 0;
+      let totalAdmins = 0;
+      let totalManagers = 0;
+      let lastActivity = null;
+
+      try {
+        const tenantPool = db.getTenantPool(t.db_name);
+        const countsQuery = await tenantPool.query(`
+          SELECT 
+            (SELECT COUNT(*) FROM employees WHERE employment_status != 'Terminated') as total_employees,
+            (SELECT COUNT(*) FROM admin_users WHERE status = 'active') as total_admins,
+            (SELECT COUNT(DISTINCT reporting_manager_id) FROM employees WHERE reporting_manager_id IS NOT NULL) as total_managers,
+            (SELECT MAX(created_at) FROM (
+              (SELECT created_at FROM employees ORDER BY created_at DESC LIMIT 1)
+              UNION ALL
+              (SELECT created_at FROM admin_users ORDER BY created_at DESC LIMIT 1)
+            ) as combined) as last_activity
+        `);
+
+        if (countsQuery.rows.length > 0) {
+          totalEmployees = parseInt(countsQuery.rows[0].total_employees, 10);
+          totalAdmins = parseInt(countsQuery.rows[0].total_admins, 10);
+          totalManagers = parseInt(countsQuery.rows[0].total_managers, 10);
+          lastActivity = countsQuery.rows[0].last_activity;
+        }
+      } catch (err) {
+        console.log(`Failed to fetch metrics for tenant db ${t.db_name}: ${err.message}`);
+      }
+
+      const totalUsers = totalEmployees;
+      const tenant = t;
+      console.log("Tenant:", tenant.id, tenant.name, "Total Users:", totalUsers);
+
+      return {
+        ...t,
+        slug: t.slug,
+        totalEmployees,
+        totalAdmins,
+        totalManagers,
+        totalUsers,
+        lastActivity,
+        // Frontend-friendly aliases requested by requirement
+        organizationName: t.name,
+        tenantSlug: t.slug,
+        planName: t.plan,
+        createdAt: t.created_at,
+      };
+    })
+  );
+
+  return { tenants: enrichedTenants, total, page, limit };
 }
 
 async function resetTenantPassword(id, manualPassword = null) {
@@ -627,7 +680,7 @@ async function resetTenantPassword(id, manualPassword = null) {
     await sendMail({
       to: tenant.admin_email,
       subject: "HRIS - Password Reset Notification",
-      text: `Your password for organization "${tenant.name}" has been reset.\nLogin URL: ${loginUrl}\nNew Password: ${passwordToUse}`,
+      text: `Your password for organization "${tenant.name}" has been reset.Login URL: ${loginUrl}New Password: ${passwordToUse}`,
       html,
       attachments,
     });

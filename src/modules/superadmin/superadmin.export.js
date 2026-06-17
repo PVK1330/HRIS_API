@@ -226,6 +226,114 @@ async function buildTenantsExcel(res, rows, filters = {}) {
   await sendExcel(res, wb, `tenants_${fmt(new Date())}.xlsx`);
 }
 
+/* ─── Professional Tenants PDF (SaaS Super Admin Report) ────────────────────── */
+
+function fmtDateTime(d) {
+  if (!d) return '';
+  const dt = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(dt.getTime())) return String(d);
+  const dd = String(dt.getDate()).padStart(2, '0');
+  const mon = dt.toLocaleString('en-GB', { month: 'short' });
+  const yyyy = dt.getFullYear();
+  const hh = String(dt.getHours()).padStart(2, '0');
+  const mm = String(dt.getMinutes()).padStart(2, '0');
+  return `${dd} ${mon} ${yyyy} ${hh}:${mm}`;
+}
+
+function drawRoundedRect(doc, x, y, w, h, r, fillColor, strokeColor) {
+  doc.save();
+  doc.roundedRect(x, y, w, h, r);
+  if (fillColor && strokeColor) doc.fillAndStroke(fillColor, strokeColor);
+  else if (fillColor) doc.fill(fillColor);
+  else if (strokeColor) doc.stroke(strokeColor);
+  doc.restore();
+}
+
+/** Draw a filled arc segment for pie/doughnut charts */
+function drawPieSlice(doc, cx, cy, r, startAngle, endAngle, color) {
+  if (Math.abs(endAngle - startAngle) < 0.001) return;
+  doc.save();
+  doc.moveTo(cx, cy);
+  doc.arc(cx, cy, r, startAngle, endAngle);
+  doc.lineTo(cx, cy);
+  doc.closePath();
+  doc.fill(color);
+  doc.restore();
+}
+
+/** Draw doughnut chart */
+function drawDoughnutChart(doc, cx, cy, outerR, innerR, segments) {
+  // Draw outer slices
+  let angle = -Math.PI / 2;
+  segments.forEach(seg => {
+    const sweep = (seg.value / Math.max(1, segments.reduce((s, x) => s + x.value, 0))) * 2 * Math.PI;
+    drawPieSlice(doc, cx, cy, outerR, angle, angle + sweep, seg.color);
+    angle += sweep;
+  });
+  // Draw inner white circle (doughnut hole)
+  doc.save();
+  doc.circle(cx, cy, innerR).fill('#ffffff');
+  doc.restore();
+}
+
+/** Draw bar chart */
+function drawBarChart(doc, x, y, w, h, bars, maxVal) {
+  const barCount = bars.length;
+  const gap = 6;
+  const barW = Math.floor((w - (barCount - 1) * gap) / barCount);
+  const scaleH = h - 20; // leave 20pt for labels below
+
+  bars.forEach((bar, i) => {
+    const bh = maxVal > 0 ? Math.round((bar.value / maxVal) * scaleH) : 0;
+    const bx = x + i * (barW + gap);
+    const by = y + scaleH - bh;
+
+    // Shadow
+    doc.save();
+    doc.rect(bx + 1, by + 1, barW, bh).fill('#e0e0e0');
+    doc.restore();
+
+    // Bar
+    drawRoundedRect(doc, bx, by, barW, bh, 2, bar.color, null);
+
+    // Value label on top
+    doc.fontSize(6).fillColor('#374151')
+      .text(String(bar.value), bx, by - 8, { width: barW, align: 'center' });
+
+    // Label below
+    doc.fontSize(6).fillColor('#6b7280')
+      .text(bar.label, bx, y + scaleH + 4, { width: barW, align: 'center' });
+  });
+
+  // Baseline
+  doc.save();
+  doc.moveTo(x - 2, y + scaleH).lineTo(x + w, y + scaleH).stroke('#d1d5db');
+  doc.restore();
+}
+
+/** Returns a light pastel background colour for a given status string */
+function statusBadgeBg(status) {
+  switch (String(status).toLowerCase()) {
+    case 'active':    return '#D1FAE5'; // green-100
+    case 'trial':     return '#DBEAFE'; // blue-100
+    case 'suspended': return '#FEE2E2'; // red-100
+    default:          return '#F1F5F9'; // slate-100
+  }
+}
+
+/** Returns an icon circle background for insight cards */
+function insightCircleBg(fg) {
+  const map = {
+    '#10B981': '#D1FAE5',
+    '#3B82F6': '#DBEAFE',
+    '#EF4444': '#FEE2E2',
+    '#0F766E': '#CCFBF1',
+    '#7C3AED': '#EDE9FE',
+  };
+  return map[fg] || '#F1F5F9';
+}
+
+/** Draw the professional tenant PDF report */
 function buildTenantsPDF(res, rows, filters = {}) {
   const fl = [filters.search && `search=${filters.search}`, filters.plan && `plan=${filters.plan}`, filters.status && `status=${filters.status}`].filter(Boolean).join(' | ') || 'none';
   const doc = makePDF(res, `tenants_${fmt(new Date())}.pdf`);

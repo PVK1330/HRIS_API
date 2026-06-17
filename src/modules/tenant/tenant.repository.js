@@ -202,7 +202,7 @@ async function insertAccessControl(tenantId, planId, featureId, client = db) {
 
 async function findAll({ limit = 10, offset = 0, search = '', plan = '', status = '' } = {}, client = db) {
   let query = `
-    SELECT t.id, t.name, t.db_name, t.admin_email, t.status, t.created_by, t.created_at,
+    SELECT t.id, t.name, t.db_name, t.admin_email, t.status, t.created_by, t.created_at, t.slug,
            sp.plan_name as plan
     FROM public.tenants t
     LEFT JOIN public.tenant_subscriptions ts ON t.id = ts.tenant_id AND ts.status IN ('active', 'trial')

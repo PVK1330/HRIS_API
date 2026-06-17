@@ -31,9 +31,13 @@ router.get('/pay-periods',  requirePermission(P.PAYROLL_VIEW),   ctrl.listPayPer
 router.post('/pay-periods', requirePermission(P.PAYROLL_MANAGE), ctrl.createPayPeriod);
 
 // ── Payroll Runs ──────────────────────────────────────────────────────────────
+// NOTE: /runs/export must be declared before /runs/:id so Express does not match
+//       the literal "export" as an :id parameter value.
 router.get('/runs',              requirePermission(P.PAYROLL_VIEW),   ctrl.listPayrollRuns);
 router.post('/runs',             requirePermission(P.PAYROLL_MANAGE), ctrl.initPayrollRun);
+router.get('/runs/export',       requirePermission(P.PAYROLL_VIEW),   ctrl.exportRunsList);
 router.get('/runs/:id',          requirePermission(P.PAYROLL_VIEW),   ctrl.getPayrollRun);
+router.get('/runs/:id/export',   requirePermission(P.PAYROLL_VIEW),   ctrl.exportRunDetail);
 router.put('/runs/:id/approve',  requirePermission(P.PAYROLL_MANAGE), ctrl.approvePayrollRun);
 router.post('/runs/:id/payslips',requirePermission(P.PAYROLL_MANAGE), ctrl.generatePayslips);
 

@@ -1014,6 +1014,45 @@ async function replaceApprovalLevels(tenant, levels) {
   return listApprovalLevels(tenant);
 }
 
+// ── Export helpers ───────────────────────────────────────────────────────────
+const PDFDocument = require("pdfkit");
+
+const EXPORT_COMPANY = process.env.COMPANY_NAME || "Company";
+const EXPORT_BRAND_ARGB = "FF0F766E";
+
+const THIN_BORDER = {
+  top: { style: "thin", color: { argb: "FFE2E8F0" } },
+  left: { style: "thin", color: { argb: "FFE2E8F0" } },
+  bottom: { style: "thin", color: { argb: "FFE2E8F0" } },
+  right: { style: "thin", color: { argb: "FFE2E8F0" } },
+};
+
+const HEADER_BORDER = {
+  top: { style: "thin", color: { argb: EXPORT_BRAND_ARGB } },
+  left: { style: "thin", color: { argb: EXPORT_BRAND_ARGB } },
+  bottom: { style: "medium", color: { argb: "FF064E3B" } },
+  right: { style: "thin", color: { argb: EXPORT_BRAND_ARGB } },
+};
+
+function expFormatDate(d) {
+  if (!d) return "";
+  const dt = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(dt.getTime())) return String(d).slice(0, 10);
+  const dd = String(dt.getDate()).padStart(2, "0");
+  const mon = dt.toLocaleString("en-GB", { month: "short" });
+  return `${dd}-${mon}-${dt.getFullYear()}`;
+}
+
+function expStatusColor(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "approved") return "FF059669";
+  if (s === "paid" || s === "reimbursed" || s === "processed") return "FF2563EB";
+  if (s === "pending") return "FFD97706";
+  if (s === "rejected" || s === "declined") return "FFDC2626";
+  if (s === "draft") return "FF64748B";
+  return "FF0F172A";
+}
+
 // ── Excel export (EXP-10) ────────────────────────────────────────────────────
 async function exportExpenses(tenant, query) {
   const result = await listExpenses(tenant, {
@@ -1021,56 +1060,226 @@ async function exportExpenses(tenant, query) {
     limit: 5000,
     page: 1,
   });
+  const rows = result.data;
+
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "HRIS";
-  const sheet = workbook.addWorksheet("Expenses");
+  workbook.creator = EXPORT_COMPANY;
+  workbook.created = new Date();
 
-  sheet.columns = [
-    { header: "ID", key: "id", width: 8 },
-    { header: "Employee", key: "employee_name", width: 25 },
-    { header: "Title", key: "claim_title", width: 35 },
-    { header: "Category", key: "expense_category", width: 20 },
-    { header: "Department", key: "department", width: 18 },
-    { header: "Date", key: "expense_date", width: 14 },
-    { header: "Amount", key: "amount", width: 14 },
-    { header: "VAT", key: "vat_amount", width: 10 },
-    { header: "Currency", key: "currency", width: 10 },
-    { header: "Payment Method", key: "payment_method", width: 18 },
-    { header: "Vendor", key: "vendor", width: 22 },
-    { header: "Status", key: "status", width: 14 },
-    { header: "Payment Ref", key: "payment_reference", width: 22 },
-    { header: "Submitted At", key: "created_at", width: 22 },
-  ];
+  const sheet = workbook.addWorksheet("Expenses", {
+    views: [{ state: "frozen", ySplit: 4 }],
+    pageSetup: { paperSize: 9, orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+  });
 
-  const headerRow = sheet.getRow(1);
-  headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
-  headerRow.fill = {
-    type: "pattern",
-    pattern: "solid",
-    fgColor: { argb: "FF0F766E" },
-  };
-  headerRow.height = 18;
+  // ── Row 1: Title ──
+  sheet.mergeCells("A1:N1");
+  const titleCell = sheet.getCell("A1");
+  titleCell.value = `${EXPORT_COMPANY} — Expense Claims Export`;
+  titleCell.font = { size: 15, bold: true, color: { argb: "FF0F172A" } };
+  titleCell.alignment = { vertical: "middle", horizontal: "center" };
+  titleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF0FDF4" } };
+  sheet.getRow(1).height = 28;
 
-  for (const r of result.data) {
-    sheet.addRow({
-      id: r.id,
-      employee_name: r.employee_name || "",
-      claim_title: r.claim_title || "",
-      expense_category: r.expense_category || "",
-      department: r.department || "",
-      expense_date: r.expense_date || "",
-      amount: parseFloat(r.amount) || 0,
-      vat_amount: r.vat_amount != null ? parseFloat(r.vat_amount) : "",
-      currency: r.currency || "AED",
-      payment_method: r.payment_method || "",
-      vendor: r.vendor || "",
-      status: r.status || "",
-      payment_reference: r.payment_reference || "",
-      created_at: r.created_at ? new Date(r.created_at).toLocaleString() : "",
+  // ── Row 2: Meta ──
+  sheet.mergeCells("A2:N2");
+  const metaCell = sheet.getCell("A2");
+  metaCell.value = `Generated: ${expFormatDate(new Date())}   |   Total Records: ${rows.length}`;
+  metaCell.font = { size: 9, italic: true, color: { argb: "FF475569" } };
+  metaCell.alignment = { vertical: "middle", horizontal: "center" };
+  sheet.getRow(2).height = 18;
+
+  sheet.getRow(3).height = 6;
+
+  // ── Row 4: Headers ──
+  const headers = ["#", "Employee", "Claim Title", "Category", "Department", "Date", "Amount", "VAT", "Currency", "Payment Method", "Vendor", "Status", "Payment Ref", "Submitted At"];
+  const headerRow = sheet.getRow(4);
+  headerRow.height = 22;
+  headers.forEach((h, i) => {
+    const c = headerRow.getCell(i + 1);
+    c.value = h;
+    c.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 10 };
+    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EXPORT_BRAND_ARGB } };
+    c.alignment = { vertical: "middle", horizontal: "center", wrapText: false };
+    c.border = HEADER_BORDER;
+  });
+  sheet.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: headers.length } };
+
+  // ── Data rows ──
+  rows.forEach((r, idx) => {
+    const row = sheet.getRow(5 + idx);
+    row.height = 16;
+    const bg = idx % 2 === 0 ? "FFFFFFFF" : "FFF8FAFC";
+    const vals = [
+      idx + 1,
+      r.employee_name || "",
+      r.claim_title || "",
+      r.expense_category || "",
+      r.department || "",
+      expFormatDate(r.expense_date),
+      parseFloat(r.amount) || 0,
+      r.vat_amount != null ? parseFloat(r.vat_amount) : "",
+      r.currency || "AED",
+      r.payment_method || "",
+      r.vendor || "",
+      r.status || "",
+      r.payment_reference || "",
+      r.created_at ? expFormatDate(r.created_at) : "",
+    ];
+    vals.forEach((v, i) => {
+      const c = row.getCell(i + 1);
+      c.value = v;
+      c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
+      c.alignment = { vertical: "middle", horizontal: i === 0 || i === 6 || i === 7 ? "center" : "left", wrapText: false };
+      c.border = THIN_BORDER;
+      if (i === 6 || i === 7) c.numFmt = "#,##0.00";
+      if (i === 11) {
+        c.font = { bold: true, color: { argb: expStatusColor(v) } };
+      }
     });
-  }
+  });
+
+  // ── Total row ──
+  const totalRow = sheet.getRow(5 + rows.length);
+  totalRow.height = 18;
+  totalRow.getCell(1).value = `Total: ${rows.length} record${rows.length !== 1 ? "s" : ""}`;
+  totalRow.getCell(1).font = { bold: true };
+  totalRow.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF1F5F9" } };
+
+  // ── Column widths ──
+  const minWidths = [5, 22, 30, 18, 16, 14, 12, 10, 10, 18, 20, 14, 20, 18];
+  sheet.columns.forEach((col, i) => {
+    let max = minWidths[i] || 12;
+    col.eachCell({ includeEmpty: false }, (cell) => {
+      const len = cell.value != null ? String(cell.value).length : 0;
+      if (len > max) max = len;
+    });
+    col.width = Math.min(max + 2, 45);
+  });
 
   return workbook;
+}
+
+// ── PDF export (EXP-10b) ─────────────────────────────────────────────────────
+async function exportExpensesPdf(tenant, query, res) {
+  const result = await listExpenses(tenant, { ...(query || {}), limit: 5000, page: 1 });
+  const rows = result.data;
+  const generatedAt = new Date();
+
+  const doc = new PDFDocument({ size: "A4", layout: "landscape", margin: 28, bufferPages: true });
+  res.setHeader("Content-Type", "application/pdf");
+  doc.pipe(res);
+
+  const PAGE_W = doc.page.width;
+  const MARGIN = 28;
+  const CONTENT_W = PAGE_W - MARGIN * 2;
+
+  function drawPageHeader() {
+    doc.save();
+    doc.rect(MARGIN, MARGIN, CONTENT_W, 28).fill("#0F766E");
+    doc.fontSize(12).fillColor("#ffffff").font("Helvetica-Bold")
+      .text(`${EXPORT_COMPANY} — Expense Claims Report`, MARGIN + 10, MARGIN + 8, { width: CONTENT_W - 20 });
+    doc.restore();
+    doc.fontSize(7.5).fillColor("#475569").font("Helvetica")
+      .text(
+        `Generated: ${expFormatDate(generatedAt)}   |   Total Records: ${rows.length}`,
+        MARGIN, MARGIN + 34, { width: CONTENT_W },
+      );
+    doc.moveTo(MARGIN, MARGIN + 48).lineTo(MARGIN + CONTENT_W, MARGIN + 48).lineWidth(0.5).stroke("#CBD5E1");
+  }
+
+  function drawFooter(pageIdx, total) {
+    doc.fontSize(6.5).fillColor("#94A3B8").font("Helvetica")
+      .text(
+        `${EXPORT_COMPANY} Confidential  |  Page ${pageIdx + 1} of ${total}  |  ${generatedAt.toUTCString()}`,
+        MARGIN, doc.page.height - 20, { width: CONTENT_W, align: "center" },
+      );
+  }
+
+  const cols = [
+    { w: 20, title: "#", key: (r, i) => String(i + 1), align: "center" },
+    { w: 75, title: "Employee", key: (r) => r.employee_name || "" },
+    { w: 100, title: "Claim Title", key: (r) => r.claim_title || "" },
+    { w: 65, title: "Category", key: (r) => r.expense_category || "" },
+    { w: 55, title: "Dept", key: (r) => r.department || "" },
+    { w: 55, title: "Date", key: (r) => expFormatDate(r.expense_date) },
+    { w: 52, title: "Amount", key: (r) => `${r.currency || "AED"} ${parseFloat(r.amount || 0).toFixed(2)}`, align: "right" },
+    { w: 55, title: "Payment Method", key: (r) => r.payment_method || "" },
+    { w: 50, title: "Vendor", key: (r) => r.vendor || "" },
+    { w: 52, title: "Status", key: (r) => r.status || "", align: "center" },
+    { w: 70, title: "Payment Ref", key: (r) => r.payment_reference || "" },
+  ];
+
+  const TABLE_TOP = MARGIN + 58;
+  const ROW_H = 14;
+  const HEADER_H = 17;
+  const TABLE_W = cols.reduce((a, c) => a + c.w, 0);
+
+  function truncate(s, max) {
+    const t = String(s ?? "");
+    return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
+  }
+
+  const STATUS_PDF_COLORS = {
+    approved: "#059669", paid: "#2563EB", reimbursed: "#2563EB", processed: "#2563EB",
+    pending: "#D97706", rejected: "#DC2626", declined: "#DC2626", draft: "#64748B",
+  };
+
+  function drawTableHeader(y) {
+    let x = MARGIN;
+    doc.save();
+    doc.rect(MARGIN, y, TABLE_W, HEADER_H).fill("#0F766E");
+    doc.fontSize(7).fillColor("#ffffff").font("Helvetica-Bold");
+    cols.forEach((c) => {
+      doc.text(c.title, x + 3, y + 5, { width: c.w - 6, align: c.align || "left", ellipsis: true });
+      x += c.w;
+    });
+    doc.restore();
+    return y + HEADER_H;
+  }
+
+  drawPageHeader();
+  let y = TABLE_TOP;
+  y = drawTableHeader(y);
+
+  rows.forEach((r, idx) => {
+    if (y + ROW_H > doc.page.height - 32) {
+      doc.addPage();
+      drawPageHeader();
+      y = TABLE_TOP;
+      y = drawTableHeader(y);
+    }
+    const bg = idx % 2 === 0 ? "#FFFFFF" : "#F8FAFC";
+    let x = MARGIN;
+    doc.save();
+    cols.forEach((c) => {
+      doc.rect(x, y, c.w, ROW_H).fillAndStroke(bg, "#E2E8F0");
+      x += c.w;
+    });
+    doc.restore();
+    x = MARGIN;
+    doc.fontSize(6.5).font("Helvetica");
+    cols.forEach((c, ci) => {
+      const raw = c.key(r, idx);
+      const maxChars = Math.floor(c.w / 3.8);
+      const val = truncate(raw, maxChars);
+      if (ci === 9) {
+        const color = STATUS_PDF_COLORS[String(raw).toLowerCase()] || "#1E293B";
+        doc.fillColor(color).font("Helvetica-Bold");
+      } else {
+        doc.fillColor("#1E293B").font("Helvetica");
+      }
+      doc.text(val, x + 3, y + 4, { width: c.w - 6, align: c.align || "left", ellipsis: true });
+      x += c.w;
+    });
+    y += ROW_H;
+  });
+
+  const range = doc.bufferedPageRange();
+  for (let i = 0; i < range.count; i += 1) {
+    doc.switchToPage(range.start + i);
+    drawFooter(i, range.count);
+  }
+  doc.end();
 }
 
 // ── Excel bulk import (EXP-30) ───────────────────────────────────────────────
@@ -1263,6 +1472,7 @@ module.exports = {
   listApprovalLevels,
   replaceApprovalLevels,
   exportExpenses,
+  exportExpensesPdf,
   importExpenses,
   generateImportTemplate,
 };

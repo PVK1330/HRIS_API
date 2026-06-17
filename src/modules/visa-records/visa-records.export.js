@@ -3,16 +3,17 @@
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 
+const BRAND = { color: 'FF0F766E', hex: '#0F766E' };
 const COMPANY = process.env.COMPANY_NAME || 'Company';
 
 function formatFilterSummary(q) {
   const parts = [];
-  if (q.search) parts.push(`search=${q.search}`);
-  if (q.department) parts.push(`dept=${q.department}`);
-  if (q.location) parts.push(`loc=${q.location}`);
-  if (q.visaType) parts.push(`visaType=${q.visaType}`);
-  if (q.expiryWindow && q.expiryWindow !== 'all') parts.push(`window=${q.expiryWindow}`);
-  return parts.length ? parts.join(' | ') : 'none';
+  if (q.search) parts.push(`Search: "${q.search}"`);
+  if (q.department) parts.push(`Dept: ${q.department}`);
+  if (q.location) parts.push(`Location: ${q.location}`);
+  if (q.visaType) parts.push(`Visa Type: ${q.visaType}`);
+  if (q.expiryWindow && q.expiryWindow !== 'all') parts.push(`Window: ${q.expiryWindow}`);
+  return parts.length ? parts.join('  |  ') : 'All records';
 }
 
 function formatDateDDMMMYYYY(d) {
@@ -21,56 +22,74 @@ function formatDateDDMMMYYYY(d) {
   if (Number.isNaN(dt.getTime())) return String(d).slice(0, 10);
   const dd = String(dt.getDate()).padStart(2, '0');
   const mon = dt.toLocaleString('en-GB', { month: 'short' });
-  const yy = dt.getFullYear();
-  return `${dd}-${mon}-${yy}`;
+  return `${dd}-${mon}-${dt.getFullYear()}`;
 }
+
+const THIN_BORDER = {
+  top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+};
+
+const HEADER_BORDER = {
+  top: { style: 'thin', color: { argb: BRAND.color } },
+  left: { style: 'thin', color: { argb: BRAND.color } },
+  bottom: { style: 'medium', color: { argb: 'FF064E3B' } },
+  right: { style: 'thin', color: { argb: BRAND.color } },
+};
 
 async function buildExcel(res, rows, appliedFilters) {
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet('Visa Records', { views: [{ state: 'frozen', ySplit: 4 }] });
+  wb.creator = COMPANY;
+  wb.created = new Date();
 
-  const lastCol = 'O';
+  const ws = wb.addWorksheet('Visa Records', {
+    views: [{ state: 'frozen', ySplit: 4 }],
+    pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+  });
+
+  const COL_COUNT = 15;
+  const lastCol = String.fromCharCode(64 + COL_COUNT);
+
   ws.mergeCells(`A1:${lastCol}1`);
-  ws.getCell('A1').value = `${COMPANY} — Visa & Nationality Compliance`;
-  ws.getCell('A1').font = { size: 14, bold: true };
-  ws.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
+  const titleCell = ws.getCell('A1');
+  titleCell.value = `${COMPANY} — Visa & Nationality Compliance`;
+  titleCell.font = { size: 15, bold: true, color: { argb: 'FF0F172A' } };
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0FDF4' } };
+  ws.getRow(1).height = 28;
 
   ws.mergeCells(`A2:${lastCol}2`);
-  ws.getCell('A2').value = `Generated: ${formatDateDDMMMYYYY(new Date())} | Filters: ${formatFilterSummary(appliedFilters)}`;
-  ws.getRow(3).values = [];
+  const metaCell = ws.getCell('A2');
+  metaCell.value = `Generated: ${formatDateDDMMMYYYY(new Date())}   |   Filters: ${formatFilterSummary(appliedFilters)}   |   Total: ${rows.length}`;
+  metaCell.font = { size: 9, italic: true, color: { argb: 'FF475569' } };
+  metaCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  ws.getRow(2).height = 18;
+  ws.getRow(3).height = 6;
 
-  const headers = [
-    '#',
-    'Employee Name',
-    'Emp ID',
-    'Department',
-    'Nationality',
-    'Passport No',
-    'Passport Expiry',
-    'Visa Type',
-    'Visa Number',
-    'Visa Expiry',
-    'Sponsoring Entity',
-    'Emirates ID No',
-    'Emirates ID Expiry',
-    'Status',
-    'Created At',
-  ];
-  const hr = ws.getRow(4);
+  const headers = ['#', 'Employee Name', 'Emp ID', 'Department', 'Nationality', 'Passport No', 'Passport Expiry', 'Visa Type', 'Visa Number', 'Visa Expiry', 'Sponsoring Entity', 'Emirates ID No', 'Emirates ID Expiry', 'Status', 'Created'];
+  const headerRow = ws.getRow(4);
+  headerRow.height = 22;
   headers.forEach((h, i) => {
-    const c = hr.getCell(i + 1);
+    const c = headerRow.getCell(i + 1);
     c.value = h;
-    c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F766E' } };
+    c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BRAND.color } };
+    c.alignment = { vertical: 'middle', horizontal: 'center', wrapText: false };
+    c.border = HEADER_BORDER;
   });
   ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: headers.length } };
 
   rows.forEach((r, idx) => {
     const row = ws.getRow(5 + idx);
+    row.height = 16;
     const st = r.compliance_status || 'Valid';
-    let bg = 'FFFFFFFF';
+    let bg;
     if (st === 'Expired') bg = 'FFFCEBEB';
     else if (st === 'Expiring Soon') bg = 'FFFAEEDA';
+    else bg = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF8FAFC';
+
     const vals = [
       idx + 1,
       r.full_name || '',
@@ -92,143 +111,152 @@ async function buildExcel(res, rows, appliedFilters) {
       const c = row.getCell(i + 1);
       c.value = v;
       c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+      c.alignment = { vertical: 'middle', horizontal: i === 0 ? 'center' : 'left', wrapText: false };
+      c.border = THIN_BORDER;
+      if (i === 13) {
+        const color = st === 'Expired' ? 'FFDC2626' : st === 'Expiring Soon' ? 'FFD97706' : 'FF059669';
+        c.font = { bold: true, color: { argb: color } };
+      }
     });
   });
 
   const summaryRow = ws.getRow(5 + rows.length);
-  summaryRow.getCell(1).value = `Total: ${rows.length}`;
-  summaryRow.font = { bold: true };
+  summaryRow.height = 18;
+  summaryRow.getCell(1).value = `Total: ${rows.length} record${rows.length !== 1 ? 's' : ''}`;
+  summaryRow.getCell(1).font = { bold: true };
+  summaryRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
 
   ws.columns.forEach((col) => {
     let max = 10;
-    col.eachCell({ includeEmpty: true }, (cell) => {
+    col.eachCell({ includeEmpty: false }, (cell) => {
       const len = cell.value != null ? String(cell.value).length : 0;
       if (len > max) max = len;
     });
-    col.width = Math.min(Math.max(max + 1, 10), 40);
+    col.width = Math.min(max + 2, 40);
   });
 
-  res.setHeader(
-    'Content-Type',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  );
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   await wb.xlsx.write(res);
 }
 
 function buildPDF(res, rows, appliedFilters) {
-  const doc = new PDFDocument({
-    size: 'A4',
-    layout: 'landscape',
-    margin: 24,
-    bufferPages: true,
-  });
+  const generatedAt = new Date();
+  const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 24, bufferPages: true });
   res.setHeader('Content-Type', 'application/pdf');
   doc.pipe(res);
 
+  const PAGE_W = doc.page.width;
+  const MARGIN = 24;
+  const CONTENT_W = PAGE_W - MARGIN * 2;
+
+  function drawPageHeader() {
+    doc.save();
+    doc.rect(MARGIN, MARGIN, CONTENT_W, 28).fill('#0F766E');
+    doc.fontSize(12).fillColor('#ffffff').font('Helvetica-Bold')
+      .text(`${COMPANY} — Visa & Nationality Compliance`, MARGIN + 10, MARGIN + 8, { width: CONTENT_W - 20 });
+    doc.restore();
+    doc.fontSize(7.5).fillColor('#475569').font('Helvetica')
+      .text(
+        `Generated: ${formatDateDDMMMYYYY(generatedAt)}   |   ${formatFilterSummary(appliedFilters)}   |   Total: ${rows.length}`,
+        MARGIN, MARGIN + 34, { width: CONTENT_W },
+      );
+    doc.moveTo(MARGIN, MARGIN + 48).lineTo(MARGIN + CONTENT_W, MARGIN + 48).lineWidth(0.5).stroke('#CBD5E1');
+  }
+
+  function drawFooter(pageIdx, total) {
+    doc.fontSize(6.5).fillColor('#94A3B8').font('Helvetica')
+      .text(
+        `${COMPANY} Confidential  |  Page ${pageIdx + 1} of ${total}  |  ${generatedAt.toUTCString()}`,
+        MARGIN, doc.page.height - 18, { width: CONTENT_W, align: 'center' },
+      );
+  }
+
   const cols = [
-    { w: 18, t: '#' },
-    { w: 72, t: 'Name' },
-    { w: 44, t: 'Emp' },
-    { w: 52, t: 'Dept' },
-    { w: 48, t: 'Nat' },
-    { w: 52, t: 'PPT#' },
-    { w: 52, t: 'PPT exp' },
-    { w: 50, t: 'Visa T' },
-    { w: 48, t: 'Visa #' },
-    { w: 52, t: 'Visa exp' },
-    { w: 56, t: 'Sponsor' },
-    { w: 44, t: 'EID' },
-    { w: 48, t: 'EID exp' },
-    { w: 44, t: 'Status' },
-    { w: 48, t: 'Created' },
+    { w: 18, title: '#', key: (r, i) => String(i + 1), align: 'center' },
+    { w: 70, title: 'Name', key: (r) => r.full_name || '' },
+    { w: 44, title: 'Emp ID', key: (r) => r.emp_id || '' },
+    { w: 52, title: 'Dept', key: (r) => r.department || '' },
+    { w: 48, title: 'Nationality', key: (r) => r.nationality || '' },
+    { w: 52, title: 'Passport No', key: (r) => r.passport_number || '' },
+    { w: 52, title: 'PPT Expiry', key: (r) => formatDateDDMMMYYYY(r.passport_expiry_date) },
+    { w: 50, title: 'Visa Type', key: (r) => r.visa_type_display || r.visa_type_name || '' },
+    { w: 48, title: 'Visa No', key: (r) => r.visa_number || '' },
+    { w: 52, title: 'Visa Expiry', key: (r) => formatDateDDMMMYYYY(r.visa_expiry_date) },
+    { w: 56, title: 'Sponsor', key: (r) => r.sponsoring_entity || '' },
+    { w: 44, title: 'Emirates ID', key: (r) => r.emirates_id_number || '' },
+    { w: 50, title: 'EID Expiry', key: (r) => formatDateDDMMMYYYY(r.emirates_id_expiry) },
+    { w: 46, title: 'Status', key: (r) => r.compliance_status || 'Valid', align: 'center' },
   ];
 
-  function trunc(s, n) {
+  const TABLE_TOP = MARGIN + 58;
+  const ROW_H = 14;
+  const HEADER_H = 17;
+  const TABLE_W = cols.reduce((a, c) => a + c.w, 0);
+
+  function truncate(s, max) {
     const t = String(s ?? '');
-    return t.length <= n ? t : `${t.slice(0, n - 1)}…`;
+    return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
   }
 
-  doc.fontSize(11).fillColor('#0f172a').text(`${COMPANY} — Visa Compliance`, 24, 20, {
-    width: doc.page.width - 48,
-    align: 'center',
-  });
-  doc.fontSize(8).fillColor('#64748b').text(formatFilterSummary(appliedFilters), 24, 38, {
-    width: doc.page.width - 48,
-  });
-
-  let y = 54;
-  const rowH = 14;
-  const left = 24;
-  const tw = cols.reduce((a, c) => a + c.w, 0);
-
-  function drawHead() {
-    let x = left;
+  function drawTableHeader(y) {
+    let x = MARGIN;
     doc.save();
-    doc.rect(left, y, tw, rowH).fill('#0F766E');
-    doc.fontSize(6.5).fillColor('#ffffff');
+    doc.rect(MARGIN, y, TABLE_W, HEADER_H).fill('#0F766E');
+    doc.fontSize(7).fillColor('#ffffff').font('Helvetica-Bold');
     cols.forEach((c) => {
-      doc.text(c.t, x + 2, y + 3, { width: c.w - 4 });
+      doc.text(c.title, x + 3, y + 5, { width: c.w - 6, align: c.align || 'left', ellipsis: true });
       x += c.w;
     });
     doc.restore();
-    y += rowH;
+    return y + HEADER_H;
   }
 
-  drawHead();
+  drawPageHeader();
+  let y = TABLE_TOP;
+  y = drawTableHeader(y);
 
   rows.forEach((r, idx) => {
-    if (y + rowH > doc.page.height - 40) {
+    if (y + ROW_H > doc.page.height - 30) {
       doc.addPage();
-      y = 30;
-      drawHead();
+      drawPageHeader();
+      y = TABLE_TOP;
+      y = drawTableHeader(y);
     }
     const st = r.compliance_status || 'Valid';
-    let bg = '#ffffff';
+    let bg;
     if (st === 'Expired') bg = '#FCEBEB';
     else if (st === 'Expiring Soon') bg = '#FAEEDA';
-    let x = left;
+    else bg = idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
+
+    let x = MARGIN;
     doc.save();
     cols.forEach((c) => {
-      doc.rect(x, y, c.w, rowH).fillAndStroke(bg, '#e5e7eb');
+      doc.rect(x, y, c.w, ROW_H).fillAndStroke(bg, '#E2E8F0');
       x += c.w;
     });
     doc.restore();
-    x = left;
-    doc.fontSize(5.5).fillColor('#111');
-    const cells = [
-      String(idx + 1),
-      trunc(r.full_name, 22),
-      trunc(r.emp_id, 10),
-      trunc(r.department, 12),
-      trunc(r.nationality, 10),
-      trunc(r.passport_number, 12),
-      formatDateDDMMMYYYY(r.passport_expiry_date),
-      trunc(r.visa_type_display || r.visa_type_name, 12),
-      trunc(r.visa_number, 12),
-      formatDateDDMMMYYYY(r.visa_expiry_date),
-      trunc(r.sponsoring_entity, 14),
-      trunc(r.emirates_id_number, 10),
-      formatDateDDMMMYYYY(r.emirates_id_expiry),
-      trunc(st, 10),
-      formatDateDDMMMYYYY(r.created_at),
-    ];
-    cells.forEach((val, i) => {
-      doc.text(String(val), x + 2, y + 3, { width: cols[i].w - 4, ellipsis: true });
-      x += cols[i].w;
+    x = MARGIN;
+    doc.fontSize(6.5).font('Helvetica');
+    cols.forEach((c, ci) => {
+      const raw = c.key(r, idx);
+      const maxChars = Math.floor(c.w / 3.8);
+      const val = truncate(raw, maxChars);
+      if (ci === 13) {
+        const color = st === 'Expired' ? '#DC2626' : st === 'Expiring Soon' ? '#D97706' : '#059669';
+        doc.fillColor(color).font('Helvetica-Bold');
+      } else {
+        doc.fillColor('#1E293B').font('Helvetica');
+      }
+      doc.text(val, x + 3, y + 4, { width: c.w - 6, align: c.align || 'left', ellipsis: true });
+      x += c.w;
     });
-    y += rowH;
+    y += ROW_H;
   });
 
   const range = doc.bufferedPageRange();
-  const tot = range.count;
-  for (let p = 0; p < tot; p += 1) {
+  for (let p = 0; p < range.count; p += 1) {
     doc.switchToPage(range.start + p);
-    doc.fontSize(7).fillColor('#64748b').text(
-      `Page ${p + 1} of ${tot}`,
-      24,
-      doc.page.height - 22,
-      { width: doc.page.width - 48, align: 'center' },
-    );
+    drawFooter(p, range.count);
   }
   doc.end();
 }

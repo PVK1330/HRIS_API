@@ -58,6 +58,35 @@ class PayrollController {
             next(error);
         }
     }
+
+    async exportSalaries(req, res, next) {
+        try {
+            const { getBranding } = require('../../utils/exportBranding');
+            const exportLib = require('./payroll.export');
+            const { db_name } = req.user;
+            const type = (req.query.type || 'excel').toLowerCase();
+            const today = new Date().toISOString().slice(0, 10);
+
+            const [rows, branding] = await Promise.all([
+                payrollService.getAllSalaries(db_name, {
+                    search: req.query.search || '',
+                    departmentId: req.query.departmentId || null,
+                }),
+                getBranding({ db_name }),
+            ]);
+
+            if (type === 'pdf') {
+                res.setHeader('Content-Disposition', `attachment; filename="salary_registry_${today}.pdf"`);
+                exportLib.buildSalaryPDF(res, rows, branding);
+                return;
+            }
+            res.setHeader('Content-Disposition', `attachment; filename="salary_registry_${today}.xlsx"`);
+            await exportLib.buildSalaryExcel(res, rows, branding);
+            res.end();
+        } catch (error) {
+            next(error);
+        }
+    }
 }
 
 module.exports = new PayrollController();

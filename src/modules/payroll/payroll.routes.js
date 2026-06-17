@@ -12,6 +12,7 @@ const { P } = require('../../constants/permissions');
 
 router.use(authenticate, loadAuthContext);
 
+router.get('/salaries/export', requirePermission(P.PAYROLL_VIEW), payrollController.exportSalaries);
 router.get('/salaries', requirePermission(P.PAYROLL_VIEW), payrollController.getSalaries);
 router.post('/salaries', requirePermission(P.PAYROLL_MANAGE), payrollController.upsertSalary);
 

@@ -855,6 +855,50 @@ async function sendPendingDocumentReminder(user, employeeId, auth = null) {
   };
 }
 
+async function listAllForExport(user, filters = {}) {
+  const pool = resolvePool(user);
+  const params = [];
+  const conds = [];
+
+  if (filters.status) {
+    params.push(filters.status);
+    conds.push(`e.onboarding_workflow_status = $${params.length}`);
+  }
+  if (filters.department_id) {
+    params.push(filters.department_id);
+    conds.push(`e.department_id = $${params.length}`);
+  }
+
+  const where = conds.length ? `AND ${conds.join(' AND ')}` : '';
+
+  const { rows } = await pool.query(
+    `SELECT
+       e.emp_id,
+       TRIM(COALESCE(e.first_name, '') || ' ' || COALESCE(e.last_name, '')) AS full_name,
+       e.work_email,
+       e.phone_number,
+       d.name AS department_name,
+       e.job_title,
+       e.employment_type,
+       e.work_location,
+       e.join_date,
+       e.onboarding_step,
+       e.onboarding_approval_status,
+       e.onboarding_workflow_status,
+       TRIM(COALESCE(m.first_name, '') || ' ' || COALESCE(m.last_name, '')) AS manager_name
+     FROM employees e
+     LEFT JOIN departments d ON d.id = e.department_id
+     LEFT JOIN employees m ON m.id = e.reporting_manager_id
+     WHERE e.onboarding_workflow_status IS NOT NULL
+       AND (e.deleted_at IS NULL OR e.deleted_at > NOW())
+       ${where}
+     ORDER BY e.id DESC
+     LIMIT 5000`,
+    params,
+  );
+  return rows;
+}
+
 module.exports = {
   notifyStepCompleted,
   setApprovalStatus,
@@ -864,6 +908,7 @@ module.exports = {
   completeOnboardingWorkflow,
   uploadSignedOfferByHr,
   sendPendingDocumentReminder,
+  listAllForExport,
   WORKFLOW_STATUS,
   WORKFLOW_STATUS_LABELS,
 };

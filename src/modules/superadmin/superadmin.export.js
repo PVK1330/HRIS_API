@@ -4,6 +4,7 @@ const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 
 const COMPANY = process.env.COMPANY_NAME || 'Platform';
+const BRAND_ARGB = 'FF0F766E';
 
 function fmt(d) {
   if (!d) return '';
@@ -24,37 +25,60 @@ function trunc(s, max) {
   return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
 }
 
+const THIN_BORDER = {
+  top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+};
+const HEADER_BORDER = {
+  top: { style: 'thin', color: { argb: BRAND_ARGB } },
+  left: { style: 'thin', color: { argb: BRAND_ARGB } },
+  bottom: { style: 'medium', color: { argb: 'FF064E3B' } },
+  right: { style: 'thin', color: { argb: BRAND_ARGB } },
+};
+
 /* ─── shared Excel builder helpers ─────────────────────────────────────────── */
 
 function makeWorkbook(title, filterLine, colCount) {
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet(title, { views: [{ state: 'frozen', ySplit: 4 }] });
+  wb.creator = COMPANY;
+  wb.created = new Date();
+  const ws = wb.addWorksheet(title, {
+    views: [{ state: 'frozen', ySplit: 4 }],
+    pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+  });
 
-  const lastCol = String.fromCharCode(64 + colCount);
+  const lastCol = String.fromCharCode(64 + Math.min(colCount, 26));
   ws.mergeCells(`A1:${lastCol}1`);
   const t = ws.getCell('A1');
   t.value = `${COMPANY} — ${title}`;
-  t.font = { size: 14, bold: true };
+  t.font = { size: 14, bold: true, color: { argb: 'FF0F172A' } };
   t.alignment = { vertical: 'middle', horizontal: 'center' };
+  t.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0FDF4' } };
+  ws.getRow(1).height = 28;
 
   ws.mergeCells(`A2:${lastCol}2`);
   const sub = ws.getCell('A2');
   sub.value = `Generated: ${fmt(new Date())}  |  Filters: ${filterLine || 'none'}`;
-  sub.font = { size: 11 };
-  sub.alignment = { horizontal: 'left' };
+  sub.font = { size: 9, italic: true, color: { argb: 'FF475569' } };
+  sub.alignment = { horizontal: 'center', vertical: 'middle' };
+  ws.getRow(2).height = 18;
+  ws.getRow(3).height = 6;
 
-  ws.getRow(3).values = [];
   return { wb, ws };
 }
 
 function addHeaders(ws, headers) {
   const row = ws.getRow(4);
+  row.height = 22;
   headers.forEach((h, i) => {
     const c = row.getCell(i + 1);
     c.value = h;
-    c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F766E' } };
-    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BRAND_ARGB } };
+    c.alignment = { vertical: 'middle', horizontal: 'center', wrapText: false };
+    c.border = HEADER_BORDER;
   });
   ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: headers.length } };
 }
@@ -62,16 +86,22 @@ function addHeaders(ws, headers) {
 function addRows(ws, rows, valFn) {
   rows.forEach((r, idx) => {
     const row = ws.getRow(5 + idx);
+    row.height = 16;
     const bg = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF8FAFC';
     valFn(r, idx).forEach((v, i) => {
       const c = row.getCell(i + 1);
       c.value = v;
       c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+      c.alignment = { vertical: 'middle', horizontal: i === 0 ? 'center' : 'left', wrapText: false };
+      c.border = THIN_BORDER;
     });
   });
-  const total = ws.getRow(5 + rows.length);
-  total.getCell(1).value = `Total records: ${rows.length}`;
-  total.font = { bold: true };
+  const totalRow = ws.getRow(5 + rows.length);
+  totalRow.height = 18;
+  const totalCell = totalRow.getCell(1);
+  totalCell.value = `Total records: ${rows.length}`;
+  totalCell.font = { bold: true };
+  totalCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
 }
 
 function autoWidth(ws) {
@@ -93,8 +123,10 @@ async function sendExcel(res, wb, filename) {
 
 /* ─── shared PDF builder helpers ───────────────────────────────────────────── */
 
+const PDF_MARGIN = 30;
+
 function makePDF(res, filename) {
-  const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 30, bufferPages: true });
+  const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: PDF_MARGIN, bufferPages: true });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   doc.pipe(res);
@@ -102,31 +134,34 @@ function makePDF(res, filename) {
 }
 
 function drawPDFHeader(doc, title, filterLine) {
-  doc.rect(30, 30, 50, 18).stroke('#cbd5e1');
-  doc.fontSize(7).fillColor('#64748b').text('LOGO', 42, 36);
-  doc.fontSize(13).fillColor('#0f172a').text(`${COMPANY} — ${title}`, 90, 31, {
-    align: 'right', width: doc.page.width - 120,
-  });
-  doc.fontSize(8).fillColor('#475569').text(
-    `Generated: ${fmt(new Date())}  |  Filters: ${filterLine || 'none'}`, 30, 54,
-    { width: doc.page.width - 60 },
-  );
-  doc.moveTo(30, 70).lineTo(doc.page.width - 30, 70).stroke('#e2e8f0');
+  const CONTENT_W = doc.page.width - PDF_MARGIN * 2;
+  doc.save();
+  doc.rect(PDF_MARGIN, PDF_MARGIN, CONTENT_W, 36).fill('#0F766E');
+  doc.fontSize(13).fillColor('#ffffff').font('Helvetica-Bold')
+    .text(`${COMPANY} — ${title}`, PDF_MARGIN + 12, PDF_MARGIN + 11, { width: CONTENT_W - 24, align: 'center' });
+  doc.restore();
+  doc.fontSize(8).fillColor('#475569').font('Helvetica')
+    .text(
+      `Generated: ${fmt(new Date())}  |  Filters: ${filterLine || 'none'}`,
+      PDF_MARGIN, PDF_MARGIN + 42, { width: CONTENT_W },
+    );
+  doc.moveTo(PDF_MARGIN, PDF_MARGIN + 56).lineTo(PDF_MARGIN + CONTENT_W, PDF_MARGIN + 56).lineWidth(0.5).stroke('#CBD5E1');
 }
 
-function drawPDFTable(doc, cols, rows, valFn) {
-  const tableLeft = 30;
+function drawPDFTable(doc, cols, rows, valFn, title, filterLine) {
+  const tableLeft = PDF_MARGIN;
   const tableWidth = cols.reduce((s, c) => s + c.w, 0);
   const rowH = 17;
-  let y = 80;
+  const BANNER_BOTTOM = PDF_MARGIN + 66;
+  let y = BANNER_BOTTOM;
 
   function drawHeader() {
     let x = tableLeft;
     doc.save();
     doc.rect(tableLeft, y, tableWidth, rowH).fill('#0F766E');
-    doc.fontSize(7).fillColor('#ffffff');
+    doc.fontSize(7).fillColor('#ffffff').font('Helvetica-Bold');
     cols.forEach((c) => {
-      doc.text(c.t, x + 2, y + 5, { width: c.w - 4 });
+      doc.text(c.t, x + 3, y + 5, { width: c.w - 6, ellipsis: true });
       x += c.w;
     });
     doc.restore();
@@ -136,32 +171,34 @@ function drawPDFTable(doc, cols, rows, valFn) {
   drawHeader();
 
   rows.forEach((r, idx) => {
-    if (y + rowH > doc.page.height - 40) {
+    if (y + rowH > doc.page.height - 36) {
       doc.addPage();
-      y = 40;
+      drawPDFHeader(doc, title, filterLine);
+      y = BANNER_BOTTOM;
       drawHeader();
     }
-    const bg = idx % 2 === 0 ? '#ffffff' : '#F5F5F5';
+    const bg = idx % 2 === 0 ? '#ffffff' : '#F8FAFC';
     let x = tableLeft;
     doc.save();
-    cols.forEach((c) => { doc.rect(x, y, c.w, rowH).fillAndStroke(bg, '#e5e7eb'); x += c.w; });
+    cols.forEach((c) => { doc.rect(x, y, c.w, rowH).fillAndStroke(bg, '#E2E8F0'); x += c.w; });
     doc.restore();
     x = tableLeft;
-    doc.fontSize(7).fillColor('#111827');
+    doc.fontSize(7).fillColor('#1E293B').font('Helvetica');
     valFn(r, idx).forEach((v, i) => {
-      doc.text(String(v ?? ''), x + 2, y + 5, { width: cols[i].w - 4, ellipsis: true });
+      doc.text(String(v ?? ''), x + 3, y + 5, { width: cols[i].w - 6, ellipsis: true });
       x += cols[i].w;
     });
     y += rowH;
   });
 
   const range = doc.bufferedPageRange();
-  for (let i = 0; i < range.count; i++) {
+  for (let i = 0; i < range.count; i += 1) {
     doc.switchToPage(range.start + i);
-    doc.fontSize(7).fillColor('#94a3b8').text(
-      `Page ${i + 1} of ${range.count}`, 30, doc.page.height - 25,
-      { width: doc.page.width - 60, align: 'center' },
-    );
+    doc.fontSize(7).fillColor('#94A3B8').font('Helvetica')
+      .text(
+        `${COMPANY}  |  Page ${i + 1} of ${range.count}  |  ${new Date().toUTCString()}`,
+        PDF_MARGIN, doc.page.height - 22, { width: doc.page.width - PDF_MARGIN * 2, align: 'center' },
+      );
   }
   doc.end();
 }
@@ -193,7 +230,7 @@ function buildTenantsPDF(res, rows, filters = {}) {
   const fl = [filters.search && `search=${filters.search}`, filters.plan && `plan=${filters.plan}`, filters.status && `status=${filters.status}`].filter(Boolean).join(' | ') || 'none';
   const doc = makePDF(res, `tenants_${fmt(new Date())}.pdf`);
   drawPDFHeader(doc, 'Tenants', fl);
-  drawPDFTable(doc, TENANT_COLS, rows, tenantVals);
+  drawPDFTable(doc, TENANT_COLS, rows, tenantVals, 'Tenants', fl);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -202,8 +239,8 @@ function buildTenantsPDF(res, rows, filters = {}) {
 
 const ADMIN_HEADERS = ['#', 'Name', 'Email', 'Role', 'Status', 'Last Login', 'Created'];
 const ADMIN_COLS = [
-  { w: 28, t: '#' }, { w: 100, t: 'Name' }, { w: 130, t: 'Email' },
-  { w: 80, t: 'Role' }, { w: 60, t: 'Status' }, { w: 80, t: 'Last Login' }, { w: 70, t: 'Created' },
+  { w: 28, t: '#' }, { w: 110, t: 'Name' }, { w: 140, t: 'Email' },
+  { w: 90, t: 'Role' }, { w: 65, t: 'Status' }, { w: 85, t: 'Last Login' }, { w: 75, t: 'Created' },
 ];
 const adminVals = (r, i) => [
   i + 1, r.name || '', r.email || '', cap(r.role || 'superadmin'),
@@ -221,7 +258,7 @@ async function buildAdminUsersExcel(res, rows) {
 function buildAdminUsersPDF(res, rows) {
   const doc = makePDF(res, `admin_users_${fmt(new Date())}.pdf`);
   drawPDFHeader(doc, 'Admin Users', 'none');
-  drawPDFTable(doc, ADMIN_COLS, rows, adminVals);
+  drawPDFTable(doc, ADMIN_COLS, rows, adminVals, 'Admin Users', 'none');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -230,9 +267,9 @@ function buildAdminUsersPDF(res, rows) {
 
 const PAY_HEADERS = ['#', 'Tenant', 'Plan', 'Amount', 'Currency', 'Method', 'Status', 'Date'];
 const PAY_COLS = [
-  { w: 28, t: '#' }, { w: 100, t: 'Tenant' }, { w: 90, t: 'Plan' },
-  { w: 70, t: 'Amount' }, { w: 55, t: 'Currency' }, { w: 80, t: 'Method' },
-  { w: 65, t: 'Status' }, { w: 75, t: 'Date' },
+  { w: 28, t: '#' }, { w: 110, t: 'Tenant' }, { w: 100, t: 'Plan' },
+  { w: 75, t: 'Amount' }, { w: 60, t: 'Currency' }, { w: 90, t: 'Method' },
+  { w: 65, t: 'Status' }, { w: 80, t: 'Date' },
 ];
 const payVals = (r, i) => [
   i + 1, r.tenant_name || '', r.plan_name || '',
@@ -253,7 +290,7 @@ function buildPaymentsPDF(res, rows, filters = {}) {
   const fl = [filters.search && `search=${filters.search}`, filters.status && `status=${filters.status}`].filter(Boolean).join(' | ') || 'none';
   const doc = makePDF(res, `payments_${fmt(new Date())}.pdf`);
   drawPDFHeader(doc, 'Billing & Payments', fl);
-  drawPDFTable(doc, PAY_COLS, rows, payVals);
+  drawPDFTable(doc, PAY_COLS, rows, payVals, 'Billing & Payments', fl);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -262,8 +299,8 @@ function buildPaymentsPDF(res, rows, filters = {}) {
 
 const AUDIT_HEADERS = ['#', 'Actor', 'Action', 'Target', 'IP Address', 'Result', 'Date'];
 const AUDIT_COLS = [
-  { w: 28, t: '#' }, { w: 110, t: 'Actor' }, { w: 120, t: 'Action' },
-  { w: 120, t: 'Target' }, { w: 90, t: 'IP Address' }, { w: 60, t: 'Result' }, { w: 80, t: 'Date' },
+  { w: 28, t: '#' }, { w: 120, t: 'Actor' }, { w: 130, t: 'Action' },
+  { w: 130, t: 'Target' }, { w: 95, t: 'IP Address' }, { w: 65, t: 'Result' }, { w: 80, t: 'Date' },
 ];
 const auditVals = (r, i) => [
   i + 1, r.actor_name || '', r.action || '',
@@ -281,7 +318,7 @@ async function buildAuditLogsExcel(res, rows) {
 function buildAuditLogsPDF(res, rows) {
   const doc = makePDF(res, `audit_logs_${fmt(new Date())}.pdf`);
   drawPDFHeader(doc, 'Audit Logs', 'none');
-  drawPDFTable(doc, AUDIT_COLS, rows, auditVals);
+  drawPDFTable(doc, AUDIT_COLS, rows, auditVals, 'Audit Logs', 'none');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -290,9 +327,9 @@ function buildAuditLogsPDF(res, rows) {
 
 const TKT_HEADERS = ['#', 'Ticket', 'Organisation', 'Subject', 'Priority', 'Assigned To', 'Status', 'Created'];
 const TKT_COLS = [
-  { w: 28, t: '#' }, { w: 65, t: 'Ticket' }, { w: 100, t: 'Organisation' },
-  { w: 130, t: 'Subject' }, { w: 60, t: 'Priority' }, { w: 90, t: 'Assigned To' },
-  { w: 55, t: 'Status' }, { w: 70, t: 'Created' },
+  { w: 28, t: '#' }, { w: 65, t: 'Ticket' }, { w: 110, t: 'Organisation' },
+  { w: 140, t: 'Subject' }, { w: 65, t: 'Priority' }, { w: 95, t: 'Assigned To' },
+  { w: 60, t: 'Status' }, { w: 75, t: 'Created' },
 ];
 const tktVals = (r, i) => [
   i + 1, r.ticket_code || '', r.org_name || '',
@@ -311,7 +348,7 @@ async function buildSupportTicketsExcel(res, rows) {
 function buildSupportTicketsPDF(res, rows) {
   const doc = makePDF(res, `support_tickets_${fmt(new Date())}.pdf`);
   drawPDFHeader(doc, 'Support Tickets', 'none');
-  drawPDFTable(doc, TKT_COLS, rows, tktVals);
+  drawPDFTable(doc, TKT_COLS, rows, tktVals, 'Support Tickets', 'none');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -320,8 +357,8 @@ function buildSupportTicketsPDF(res, rows) {
 
 const ANN_HEADERS = ['#', 'Title', 'Audience', 'Type', 'Recipients', 'Date'];
 const ANN_COLS = [
-  { w: 28, t: '#' }, { w: 160, t: 'Title' }, { w: 100, t: 'Audience' },
-  { w: 70, t: 'Type' }, { w: 70, t: 'Recipients' }, { w: 80, t: 'Date' },
+  { w: 28, t: '#' }, { w: 200, t: 'Title' }, { w: 120, t: 'Audience' },
+  { w: 80, t: 'Type' }, { w: 80, t: 'Recipients' }, { w: 90, t: 'Date' },
 ];
 const annVals = (r, i) => [
   i + 1, r.title || '', r.audience || 'All',
@@ -339,7 +376,7 @@ async function buildAnnouncementsExcel(res, rows) {
 function buildAnnouncementsPDF(res, rows) {
   const doc = makePDF(res, `announcements_${fmt(new Date())}.pdf`);
   drawPDFHeader(doc, 'Announcements', 'none');
-  drawPDFTable(doc, ANN_COLS, rows, annVals);
+  drawPDFTable(doc, ANN_COLS, rows, annVals, 'Announcements', 'none');
 }
 
 module.exports = {

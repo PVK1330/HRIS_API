@@ -3,19 +3,18 @@
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 
+const BRAND = { color: 'FF0F766E', hex: '#0F766E' };
 const COMPANY = process.env.COMPANY_NAME || 'Company';
 
 function formatFilterSummary(q) {
   const parts = [];
-  if (q.search) parts.push(`search=${q.search}`);
-  if (q.status && String(q.status).toLowerCase() !== 'all') parts.push(`status=${q.status}`);
+  if (q.search) parts.push(`Search: "${q.search}"`);
+  if (q.status && String(q.status).toLowerCase() !== 'all') parts.push(`Status: ${q.status}`);
   const did = q.department_id ?? q.departmentId;
-  if (did) parts.push(`department_id=${did}`);
-  if (q.department_name || q.departmentName) {
-    parts.push(`department_name=${q.department_name || q.departmentName}`);
-  }
-  if (q.grade) parts.push(`grade=${q.grade}`);
-  return parts.length ? parts.join(' | ') : 'none';
+  if (did) parts.push(`Dept ID: ${did}`);
+  if (q.department_name || q.departmentName) parts.push(`Dept: ${q.department_name || q.departmentName}`);
+  if (q.grade) parts.push(`Grade: ${q.grade}`);
+  return parts.length ? parts.join('  |  ') : 'All records';
 }
 
 function formatDateDDMMMYYYY(d) {
@@ -24,53 +23,71 @@ function formatDateDDMMMYYYY(d) {
   if (Number.isNaN(dt.getTime())) return String(d);
   const dd = String(dt.getDate()).padStart(2, '0');
   const mon = dt.toLocaleString('en-GB', { month: 'short' });
-  const yy = dt.getFullYear();
-  return `${dd}-${mon}-${yy}`;
+  return `${dd}-${mon}-${dt.getFullYear()}`;
 }
 
 function rowStatus(r) {
-  if (r.status && typeof r.status === 'string') {
-    return String(r.status).toLowerCase() === 'active' ? 'Active' : 'Inactive';
-  }
+  if (r.status && typeof r.status === 'string') return String(r.status).toLowerCase() === 'active' ? 'Active' : 'Inactive';
   return r.is_active ? 'Active' : 'Inactive';
 }
 
+const THIN_BORDER = {
+  top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  right: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+};
+
+const HEADER_BORDER = {
+  top: { style: 'thin', color: { argb: BRAND.color } },
+  left: { style: 'thin', color: { argb: BRAND.color } },
+  bottom: { style: 'medium', color: { argb: 'FF064E3B' } },
+  right: { style: 'thin', color: { argb: BRAND.color } },
+};
+
 async function buildExcel(res, rows, appliedFilters) {
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet('Designations', { views: [{ state: 'frozen', ySplit: 4 }] });
+  wb.creator = COMPANY;
+  wb.created = new Date();
+
+  const ws = wb.addWorksheet('Designations', {
+    views: [{ state: 'frozen', ySplit: 4 }],
+    pageSetup: { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+  });
 
   ws.mergeCells('A1:H1');
-  const t1 = ws.getCell('A1');
-  t1.value = `${COMPANY} — Designations`;
-  t1.font = { size: 14, bold: true };
-  t1.alignment = { vertical: 'middle', horizontal: 'center' };
+  const titleCell = ws.getCell('A1');
+  titleCell.value = `${COMPANY} — Designations Report`;
+  titleCell.font = { size: 15, bold: true, color: { argb: 'FF0F172A' } };
+  titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0FDF4' } };
+  ws.getRow(1).height = 28;
 
   ws.mergeCells('A2:H2');
-  ws.getCell('A2').value = `Generated on: ${formatDateDDMMMYYYY(new Date())} | Filters: ${formatFilterSummary(appliedFilters)}`;
-  ws.getRow(3).values = [];
+  const metaCell = ws.getCell('A2');
+  metaCell.value = `Generated: ${formatDateDDMMMYYYY(new Date())}   |   Filters: ${formatFilterSummary(appliedFilters)}   |   Total: ${rows.length}`;
+  metaCell.font = { size: 9, italic: true, color: { argb: 'FF475569' } };
+  metaCell.alignment = { vertical: 'middle', horizontal: 'center' };
+  ws.getRow(2).height = 18;
 
-  const headers = [
-    '#',
-    'Designation Name',
-    'Department',
-    'Grade',
-    'Description',
-    'Employee Count',
-    'Status',
-    'Created At',
-  ];
+  ws.getRow(3).height = 6;
+
+  const headers = ['#', 'Designation Name', 'Department', 'Grade', 'Description', 'Employees', 'Status', 'Created'];
   const headerRow = ws.getRow(4);
+  headerRow.height = 22;
   headers.forEach((h, i) => {
     const c = headerRow.getCell(i + 1);
     c.value = h;
-    c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F766E' } };
-    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BRAND.color } };
+    c.alignment = { vertical: 'middle', horizontal: 'center', wrapText: false };
+    c.border = HEADER_BORDER;
   });
   ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: headers.length } };
 
   rows.forEach((r, idx) => {
     const row = ws.getRow(5 + idx);
+    row.height = 16;
     const bg = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF8FAFC';
     const dept = r.department_name || r.department || '';
     const vals = [
@@ -87,137 +104,140 @@ async function buildExcel(res, rows, appliedFilters) {
       const c = row.getCell(i + 1);
       c.value = v;
       c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+      c.alignment = { vertical: 'middle', horizontal: i === 0 || i === 5 ? 'center' : 'left', wrapText: false };
+      c.border = THIN_BORDER;
+      if (i === 6) {
+        c.font = { color: { argb: v === 'Active' ? 'FF059669' : 'FF64748B' }, bold: true };
+      }
     });
   });
 
-  ws.getRow(5 + rows.length).getCell(1).value = `Total records: ${rows.length}`;
-  ws.getRow(5 + rows.length).font = { bold: true };
+  const totalRow = ws.getRow(5 + rows.length);
+  totalRow.height = 18;
+  totalRow.getCell(1).value = `Total: ${rows.length} record${rows.length !== 1 ? 's' : ''}`;
+  totalRow.getCell(1).font = { bold: true };
+  totalRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
 
-  ws.columns.forEach((col) => {
-    let max = 10;
-    col.eachCell({ includeEmpty: true }, (cell) => {
+  const minWidths = [5, 28, 22, 10, 38, 12, 12, 14];
+  ws.columns.forEach((col, i) => {
+    let max = minWidths[i] || 12;
+    col.eachCell({ includeEmpty: false }, (cell) => {
       const len = cell.value != null ? String(cell.value).length : 0;
       if (len > max) max = len;
     });
-    col.width = Math.min(Math.max(max + 2, 12), 45);
+    col.width = Math.min(max + 2, 45);
   });
 
-  res.setHeader(
-    'Content-Type',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  );
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   await wb.xlsx.write(res);
 }
 
 function buildPDF(res, rows, appliedFilters) {
   const generatedAt = new Date();
-  const doc = new PDFDocument({
-    size: 'A4',
-    layout: 'portrait',
-    margin: 36,
-    bufferPages: true,
-  });
+  const doc = new PDFDocument({ size: 'A4', layout: 'portrait', margin: 36, bufferPages: true });
   res.setHeader('Content-Type', 'application/pdf');
   doc.pipe(res);
 
+  const PAGE_W = doc.page.width;
+  const MARGIN = 36;
+  const CONTENT_W = PAGE_W - MARGIN * 2;
+
+  function drawPageHeader() {
+    doc.save();
+    doc.rect(MARGIN, MARGIN, CONTENT_W, 32).fill('#0F766E');
+    doc.fontSize(13).fillColor('#ffffff').font('Helvetica-Bold')
+      .text(`${COMPANY} — Designations Report`, MARGIN + 12, MARGIN + 10, { width: CONTENT_W - 24 });
+    doc.restore();
+    doc.fontSize(8).fillColor('#475569').font('Helvetica')
+      .text(
+        `Generated: ${formatDateDDMMMYYYY(generatedAt)}   |   ${formatFilterSummary(appliedFilters)}   |   Total: ${rows.length}`,
+        MARGIN, MARGIN + 38, { width: CONTENT_W },
+      );
+    doc.moveTo(MARGIN, MARGIN + 52).lineTo(MARGIN + CONTENT_W, MARGIN + 52).lineWidth(0.5).stroke('#CBD5E1');
+  }
+
+  function drawFooter(pageIdx, total) {
+    doc.fontSize(7).fillColor('#94A3B8').font('Helvetica')
+      .text(
+        `${COMPANY} Confidential  |  Page ${pageIdx + 1} of ${total}  |  ${generatedAt.toUTCString()}`,
+        MARGIN, doc.page.height - 24, { width: CONTENT_W, align: 'center' },
+      );
+  }
+
   const cols = [
-    { w: 22, title: '#' },
-    { w: 110, title: 'Name' },
-    { w: 85, title: 'Dept' },
-    { w: 40, title: 'Grade' },
-    { w: 120, title: 'Description' },
-    { w: 38, title: 'Cnt' },
-    { w: 48, title: 'Status' },
-    { w: 68, title: 'Created' },
+    { w: 24, title: '#', key: (r, i) => String(i + 1), align: 'center' },
+    { w: 115, title: 'Designation Name', key: (r) => r.name || '' },
+    { w: 90, title: 'Department', key: (r) => r.department_name || r.department || '' },
+    { w: 42, title: 'Grade', key: (r) => r.grade || '', align: 'center' },
+    { w: 118, title: 'Description', key: (r) => r.description || '' },
+    { w: 40, title: 'Emps', key: (r) => String(r.employee_count ?? r.employeeCount ?? 0), align: 'center' },
+    { w: 50, title: 'Status', key: (r) => rowStatus(r), align: 'center' },
+    { w: 66, title: 'Created', key: (r) => formatDateDDMMMYYYY(r.created_at) },
   ];
+
+  const TABLE_TOP = MARGIN + 62;
+  const ROW_H = 16;
+  const HEADER_H = 18;
+  const TABLE_W = cols.reduce((s, c) => s + c.w, 0);
 
   function truncate(s, max) {
     const t = String(s ?? '');
     return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
   }
 
-  function drawFooter(pageIndex, totalPages) {
-    doc.fontSize(8).fillColor('#64748b');
-    doc.text(
-      `Page ${pageIndex + 1} of ${totalPages}  ·  ${generatedAt.toISOString()}`,
-      36,
-      doc.page.height - 32,
-      { width: doc.page.width - 72, align: 'center' },
-    );
-  }
-
-  doc.rect(36, 36, 50, 18).stroke('#cbd5e1');
-  doc.fontSize(7).fillColor('#64748b').text('LOGO', 48, 42);
-  doc.fontSize(13).fillColor('#0f172a').text('Designations Report', 95, 36, {
-    align: 'right',
-    width: doc.page.width - 130,
-  });
-  doc.fontSize(8)
-    .fillColor('#475569')
-    .text(`Generated: ${formatDateDDMMMYYYY(generatedAt)} | ${formatFilterSummary(appliedFilters)}`, 36, 58, {
-      width: doc.page.width - 72,
-    });
-  doc.moveTo(36, 74).lineTo(doc.page.width - 36, 74).stroke('#e2e8f0');
-
-  let y = 82;
-  const rowH = 16;
-  const tableLeft = 36;
-  const tableWidth = cols.reduce((s, c) => s + c.w, 0);
-
-  function drawHeader() {
-    let x = tableLeft;
+  function drawTableHeader(y) {
+    let x = MARGIN;
     doc.save();
-    doc.rect(tableLeft, y, tableWidth, rowH).fill('#0F766E');
-    doc.fontSize(7).fillColor('#ffffff');
+    doc.rect(MARGIN, y, TABLE_W, HEADER_H).fill('#0F766E');
+    doc.fontSize(7.5).fillColor('#ffffff').font('Helvetica-Bold');
     cols.forEach((c) => {
-      doc.text(c.title, x + 2, y + 4, { width: c.w - 4 });
+      doc.text(c.title, x + 4, y + 5, { width: c.w - 8, align: c.align || 'left', ellipsis: true });
       x += c.w;
     });
     doc.restore();
-    y += rowH;
+    return y + HEADER_H;
   }
 
-  drawHeader();
+  drawPageHeader();
+  let y = TABLE_TOP;
+  y = drawTableHeader(y);
 
   rows.forEach((r, idx) => {
-    if (y + rowH > doc.page.height - 44) {
+    if (y + ROW_H > doc.page.height - 40) {
       doc.addPage();
-      y = 44;
-      drawHeader();
+      drawPageHeader();
+      y = TABLE_TOP;
+      y = drawTableHeader(y);
     }
-    const bg = idx % 2 === 0 ? '#ffffff' : '#F5F5F5';
-    let x = tableLeft;
+    const bg = idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
+    let x = MARGIN;
     doc.save();
     cols.forEach((c) => {
-      doc.rect(x, y, c.w, rowH).fillAndStroke(bg, '#d1d5db');
+      doc.rect(x, y, c.w, ROW_H).fillAndStroke(bg, '#E2E8F0');
       x += c.w;
     });
     doc.restore();
-    const dept = r.department_name || r.department || '';
-    x = tableLeft;
-    doc.fontSize(6.5).fillColor('#111827');
-    const cells = [
-      String(idx + 1),
-      truncate(r.name, 48),
-      truncate(dept, 34),
-      truncate(r.grade, 10),
-      truncate(r.description, 70),
-      String(r.employee_count ?? r.employeeCount ?? 0),
-      truncate(rowStatus(r), 10),
-      formatDateDDMMMYYYY(r.created_at),
-    ];
-    cells.forEach((val, i) => {
-      doc.text(val, x + 2, y + 4, { width: cols[i].w - 4, ellipsis: true });
-      x += cols[i].w;
+    x = MARGIN;
+    doc.fontSize(7).font('Helvetica');
+    cols.forEach((c, ci) => {
+      const raw = c.key(r, idx);
+      const maxChars = Math.floor(c.w / 4.2);
+      const val = truncate(raw, maxChars);
+      if (ci === 6) {
+        doc.fillColor(val === 'Active' ? '#059669' : '#64748B').font('Helvetica-Bold');
+      } else {
+        doc.fillColor('#1E293B').font('Helvetica');
+      }
+      doc.text(val, x + 4, y + 5, { width: c.w - 8, align: c.align || 'left', ellipsis: true });
+      x += c.w;
     });
-    y += rowH;
+    y += ROW_H;
   });
 
   const range = doc.bufferedPageRange();
-  const totalPages = range.count;
-  for (let i = 0; i < totalPages; i += 1) {
+  for (let i = 0; i < range.count; i += 1) {
     doc.switchToPage(range.start + i);
-    drawFooter(i, totalPages);
+    drawFooter(i, range.count);
   }
   doc.end();
 }

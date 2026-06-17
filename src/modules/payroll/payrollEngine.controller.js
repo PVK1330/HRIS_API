@@ -132,6 +132,56 @@ const getPayslipDetail = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, 'Payslip fetched successfully');
 });
 
+// ── Export ────────────────────────────────────────────────────────────────────
+
+const exportRunsList = asyncHandler(async (req, res) => {
+  const { getBranding } = require('../../utils/exportBranding');
+  const exportLib = require('./payroll.export');
+  const { db_name } = req.user;
+  const type = (req.query.type || 'excel').toLowerCase();
+  const today = new Date().toISOString().slice(0, 10);
+
+  const [runs, branding] = await Promise.all([
+    payrollEngineService.listPayrollRuns(db_name, {
+      status: req.query.status || null,
+      pay_period_id: req.query.pay_period_id || null,
+    }),
+    getBranding({ db_name }),
+  ]);
+
+  if (type === 'pdf') {
+    res.setHeader('Content-Disposition', `attachment; filename="payroll_runs_${today}.pdf"`);
+    exportLib.buildRunsPDF(res, runs, branding);
+    return undefined;
+  }
+  res.setHeader('Content-Disposition', `attachment; filename="payroll_runs_${today}.xlsx"`);
+  await exportLib.buildRunsExcel(res, runs, branding);
+  res.end();
+});
+
+const exportRunDetail = asyncHandler(async (req, res) => {
+  const { getBranding } = require('../../utils/exportBranding');
+  const exportLib = require('./payroll.export');
+  const { db_name } = req.user;
+  const { id } = req.params;
+  const type = (req.query.type || 'excel').toLowerCase();
+  const today = new Date().toISOString().slice(0, 10);
+
+  const [run, branding] = await Promise.all([
+    payrollEngineService.getPayrollRun(db_name, id),
+    getBranding({ db_name }),
+  ]);
+
+  if (type === 'pdf') {
+    res.setHeader('Content-Disposition', `attachment; filename="payroll_run_${id}_${today}.pdf"`);
+    exportLib.buildRunDetailPDF(res, run, branding);
+    return undefined;
+  }
+  res.setHeader('Content-Disposition', `attachment; filename="payroll_run_${id}_${today}.xlsx"`);
+  await exportLib.buildRunDetailExcel(res, run, branding);
+  res.end();
+});
+
 module.exports = {
   listComponents,
   createComponent,
@@ -150,4 +200,6 @@ module.exports = {
   generatePayslips,
   getEmployeePayslips,
   getPayslipDetail,
+  exportRunsList,
+  exportRunDetail,
 };

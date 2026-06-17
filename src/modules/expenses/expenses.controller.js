@@ -119,8 +119,15 @@ const setApprovalLevels = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, levels, "Approval levels updated successfully");
 });
 
-// Excel export (EXP-10)
+// Excel / PDF export (EXP-10)
 const exportExpenses = asyncHandler(async (req, res) => {
+  const type = (req.query.type || 'excel').toLowerCase();
+  if (type === 'pdf') {
+    const today = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Disposition', `attachment; filename="expenses_${today}.pdf"`);
+    await service.exportExpensesPdf(req.tenant, scopedQuery(req), res);
+    return undefined;
+  }
   const workbook = await service.exportExpenses(req.tenant, scopedQuery(req));
   res.setHeader(
     "Content-Type",

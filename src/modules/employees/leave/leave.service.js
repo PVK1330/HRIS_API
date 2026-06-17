@@ -235,7 +235,11 @@ async function applyLeave(user, auth, data) {
   const canApplyForOthers = hasPermission(auth, P.LEAVE_APPROVE)
     || auth?.scope === 'ALL'
     || auth?.isTenantAdmin;
-  if (!canApplyForOthers && auth?.employeeId) {
+  if (!canApplyForOthers) {
+    if (!auth?.employeeId) {
+      // Authenticated user has no linked employee record and cannot apply for others
+      throw ApiError.forbidden('You do not have permission to submit leave for another employee');
+    }
     data.employeeId = auth.employeeId;
   }
 
@@ -619,7 +623,7 @@ async function processLeave(user, auth, id, { action, reason }) {
     updated = await repo.updateRequestStatus(client, id, {
       status:          newStatus,
       stage,
-      actorId:         user.employeeId || user.id,
+      actorId:         user.employeeId || null,
       rejectionReason: reason || null,
       remarks:         reason || null,
     });

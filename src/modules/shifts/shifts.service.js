@@ -325,6 +325,13 @@ class ShiftsService {
 
   async listChangeRequests(dbName, filters = {}, auth = null) {
     const pool = getTenantPool(dbName);
+
+    // Non-admin/HR callers can only see their own requests.
+    const canManage = auth?.role === 'admin' || auth?.role === 'hr';
+    if (!canManage && auth?.employeeId) {
+      filters = { ...filters, employeeId: auth.employeeId };
+    }
+
     const conditions = [];
     const params = [];
     let i = 1;
@@ -397,6 +404,12 @@ class ShiftsService {
     // Determine employee_id: HR/admin may pass it; employees use their own id.
     const employeeId = data.employee_id || user.employeeId;
     if (!employeeId) throw ApiError.badRequest('employee_id is required');
+
+    // Only admins / users with shift.manage may submit on behalf of another employee.
+    if (data.employee_id && Number(data.employee_id) !== Number(user.employeeId)) {
+      const canManage = user.role === 'admin' || (Array.isArray(user.permissions) && user.permissions.includes('shift.manage'));
+      if (!canManage) throw ApiError.forbidden('You can only submit shift change requests for yourself');
+    }
     if (!data.requested_shift_id) throw ApiError.badRequest('requested_shift_id is required');
     if (!data.effective_date) throw ApiError.badRequest('effective_date is required');
 

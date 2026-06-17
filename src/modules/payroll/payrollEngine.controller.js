@@ -128,7 +128,7 @@ const getEmployeePayslips = asyncHandler(async (req, res) => {
 const getPayslipDetail = asyncHandler(async (req, res) => {
   const { db_name, employeeId } = req.user;
   const { id } = req.params;
-  const data = await payrollEngineService.getPayslipDetail(db_name, id, employeeId);
+  const data = await payrollEngineService.getPayslipDetail(db_name, id, employeeId, req.auth);
   return ApiResponse.ok(res, data, 'Payslip fetched successfully');
 });
 

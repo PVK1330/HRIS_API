@@ -47,7 +47,24 @@ class PayrollService {
     async upsertSalary(dbName, data) {
         const pool = await getTenantPool(dbName);
         const { employee_id, net_salary, earnings, deductions } = data;
-        
+
+        // Validate required fields
+        if (!employee_id || isNaN(Number(employee_id))) {
+            throw new (require('../../utils/ApiError'))(400, 'employee_id is required and must be a number');
+        }
+        if (net_salary === undefined || net_salary === null || isNaN(Number(net_salary))) {
+            throw new (require('../../utils/ApiError'))(400, 'net_salary is required and must be a number');
+        }
+
+        // Verify employee exists in this tenant and is not soft-deleted
+        const { rows: empRows } = await pool.query(
+            `SELECT id FROM employees WHERE id = $1 AND deleted_at IS NULL`,
+            [Number(employee_id)]
+        );
+        if (!empRows[0]) {
+            throw new (require('../../utils/ApiError'))(404, 'Employee not found');
+        }
+
         const query = `
             INSERT INTO employee_salaries (employee_id, net_salary, earnings, deductions)
             VALUES ($1, $2, $3, $4)
@@ -77,6 +94,19 @@ class PayrollService {
         }
 
         return result.rows[0];
+    }
+
+    /**
+     * Delete a salary record by ID
+     */
+    async deleteSalary(dbName, id) {
+        const pool = await getTenantPool(dbName);
+        const { rows } = await pool.query(
+            `DELETE FROM employee_salaries WHERE id = $1 RETURNING id, employee_id`,
+            [Number(id)],
+        );
+        if (!rows[0]) throw new (require('../../utils/ApiError'))(404, 'Salary record not found');
+        return rows[0];
     }
 
     /**
@@ -120,6 +150,100 @@ class PayrollService {
         }).catch(() => null);
 
         return result.rows[0];
+    }
+
+    /**
+     * Monthly payroll summary: cross-references attendance + leave data with salaries.
+     * month = 'YYYY-MM'
+     */
+    async getMonthlySummary(dbName, { month }) {
+        const pool = await getTenantPool(dbName);
+        const [year, mon] = (month || new Date().toISOString().slice(0, 7)).split('-');
+        const y = parseInt(year, 10);
+        const m = parseInt(mon, 10);
+        const startDate = `${y}-${String(m).padStart(2, '0')}-01`;
+        const endDate   = new Date(y, m, 0).toISOString().slice(0, 10);
+
+        const { rows } = await pool.query(`
+            WITH
+            working_days AS (
+                SELECT COUNT(*)::int AS total
+                FROM generate_series($1::date, $2::date, '1 day'::interval) d
+                WHERE EXTRACT(DOW FROM d) BETWEEN 1 AND 5
+            ),
+            emp_att AS (
+                SELECT
+                    a.employee_id,
+                    COUNT(CASE WHEN a.status IN ('Present','Late','WFH','Regularization Approved') THEN 1 END)::int AS present_days,
+                    COUNT(CASE WHEN a.status = 'Half Day' THEN 1 END)::int                                          AS half_days,
+                    COALESCE(SUM(CASE WHEN a.overtime_status = 'Approved' THEN a.overtime_hours ELSE 0 END),0)::numeric AS ot_hours
+                FROM attendance a
+                WHERE a.date BETWEEN $1::date AND $2::date
+                GROUP BY a.employee_id
+            ),
+            emp_leave AS (
+                SELECT
+                    lr.employee_id,
+                    COALESCE(SUM(
+                        LEAST(lr.to_date, $2::date) - GREATEST(lr.from_date, $1::date) + 1
+                    ), 0)::int AS paid_leave_days
+                FROM leave_requests lr
+                JOIN leave_types lt ON lt.id = lr.leave_type_id
+                WHERE lr.status = 'Approved'
+                  AND lt.paid_or_unpaid = 'Paid'
+                  AND lr.from_date <= $2::date AND lr.to_date >= $1::date
+                GROUP BY lr.employee_id
+            )
+            SELECT
+                e.id                                          AS employee_id,
+                e.first_name,
+                e.last_name,
+                e.emp_id                                      AS emp_code,
+                e.job_title                                   AS designation_name,
+                dep.name                                      AS department_name,
+                es.net_salary,
+                (SELECT total FROM working_days)              AS working_days,
+                COALESCE(ea.present_days, 0)                 AS present_days,
+                COALESCE(ea.half_days,   0)                  AS half_days,
+                COALESCE(el.paid_leave_days, 0)              AS paid_leave_days,
+                ROUND(COALESCE(ea.ot_hours, 0), 2)           AS ot_hours,
+                -- effective days = present + half*0.5 + paid leaves (capped at working_days)
+                LEAST(
+                    (SELECT total FROM working_days),
+                    COALESCE(ea.present_days,0) + COALESCE(ea.half_days,0)*0.5 + COALESCE(el.paid_leave_days,0)
+                )                                             AS effective_days,
+                -- LOP = working_days − effective_days (≥ 0)
+                GREATEST(0,
+                    (SELECT total FROM working_days) -
+                    COALESCE(ea.present_days,0) - COALESCE(ea.half_days,0)*0.5 - COALESCE(el.paid_leave_days,0)
+                )                                             AS lop_days,
+                -- per-day rate
+                ROUND(es.net_salary / NULLIF((SELECT total FROM working_days),0), 2) AS per_day_salary,
+                -- calculated net pay (LOP-adjusted, no OT premium for simplicity)
+                ROUND(
+                    es.net_salary / NULLIF((SELECT total FROM working_days),0) *
+                    LEAST(
+                        (SELECT total FROM working_days),
+                        COALESCE(ea.present_days,0) + COALESCE(ea.half_days,0)*0.5 + COALESCE(el.paid_leave_days,0)
+                    ),
+                    2
+                )                                             AS net_pay_calculated
+            FROM employees e
+            JOIN employee_salaries es  ON es.employee_id = e.id
+            LEFT JOIN departments dep  ON dep.id = e.department_id
+            LEFT JOIN emp_att ea       ON ea.employee_id = e.id
+            LEFT JOIN emp_leave el     ON el.employee_id = e.id
+            WHERE e.deleted_at IS NULL
+            ORDER BY e.first_name, e.last_name
+        `, [startDate, endDate]);
+
+        return {
+            month,
+            start_date: startDate,
+            end_date:   endDate,
+            working_days: rows[0]?.working_days ?? 0,
+            employees: rows,
+        };
     }
 }
 

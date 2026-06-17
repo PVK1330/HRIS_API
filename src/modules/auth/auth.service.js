@@ -565,16 +565,7 @@ async function findTenantAdminForLogin(tenantPool, loginId, tenantAdminEmail) {
   const registryEmail = normalizeLoginId(tenantAdminEmail);
   if (!registryEmail || registryEmail !== loginId) return null;
 
-  const fallback = await tenantPool.query(
-    `
-      SELECT id, email, password_hash, name, status
-      FROM admin_users
-      WHERE status = 'active'
-      ORDER BY id ASC
-      LIMIT 1
-    `,
-  );
-  return fallback.rows[0] || null;
+  return null;
 }
 
 // ─── Refresh-token store ──────────────────────────────────────────────────────
@@ -819,6 +810,22 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
   const allowedModules = await adminModulesForJwt(tenantPool);
   const permissions = ['*']; // Admins have all permissions by default
 
+  // MFA check FIRST — before any side effects like employee provisioning.
+  if (!options.mfaVerified) {
+    const { rows: mfaRows } = await tenantPool.query(
+      'SELECT mfa_enabled FROM admin_users WHERE id = $1',
+      [adminUser.id],
+    );
+    if (mfaRows[0]?.mfa_enabled) {
+      return issueMfaChallenge({
+        userType: 'admin',
+        tenant,
+        userId: adminUser.id,
+        email: adminUser.email,
+      });
+    }
+  }
+
   // Try to find a matching employee record by email
   const { rows: empRows } = await tenantPool.query(
     `SELECT id, profile_image_url FROM employees WHERE deleted_at IS NULL AND LOWER(work_email) = LOWER($1) LIMIT 1`,
@@ -858,21 +865,6 @@ async function buildAdminLoginResult(adminUser, tenant, tenantPool, tenantFeatur
       logger.info(`[auth] auto-provisioned employee record id ${employeeId} for admin user ${adminUser.email}`);
     } catch (err) {
       logger.error(`[auth] failed to auto-provision employee record for admin user:`, err);
-    }
-  }
-
-  if (!options.mfaVerified) {
-    const { rows: mfaRows } = await tenantPool.query(
-      'SELECT mfa_enabled FROM admin_users WHERE id = $1',
-      [adminUser.id],
-    );
-    if (mfaRows[0]?.mfa_enabled) {
-      return issueMfaChallenge({
-        userType: 'admin',
-        tenant,
-        userId: adminUser.id,
-        email: adminUser.email,
-      });
     }
   }
 

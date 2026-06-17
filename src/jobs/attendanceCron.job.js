@@ -78,10 +78,14 @@ async function processTenant(tenant) {
   const yday = tenantYesterdayStr(timezone);
 
   const absentResult = await cronService.processDailyAbsent(pool, yday);
-  if (absentResult.marked > 0) {
-    logger.info(`[attendanceCron] Marked ${absentResult.marked} absent for ${yday}`);
+  if (absentResult.weeklyOff) {
+    logger.info(`[attendanceCron] Weekly Off marked: ${absentResult.marked} employees for ${yday}`);
+  } else if (absentResult.holiday) {
+    logger.info(`[attendanceCron] Holiday "${absentResult.holidayName}" marked: ${absentResult.marked} employees for ${yday}`);
   } else if (absentResult.skipped) {
-    logger.debug(`[attendanceCron] Skipped absent marking for ${yday} (${absentResult.reason})`);
+    logger.debug(`[attendanceCron] Skipped for ${yday} (${absentResult.reason})`);
+  } else if (absentResult.marked > 0) {
+    logger.info(`[attendanceCron] Absent marked: ${absentResult.marked} employees for ${yday}`);
   }
 
   const lateResult = await cronService.processLateRecalc(pool, yday);

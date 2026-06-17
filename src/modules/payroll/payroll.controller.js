@@ -33,6 +33,20 @@ class PayrollController {
     }
 
     /**
+     * Delete salary record
+     */
+    async deleteSalary(req, res, next) {
+        try {
+            const { db_name } = req.user;
+            const { id } = req.params;
+            await payrollService.deleteSalary(db_name, id);
+            return ApiResponse.ok(res, null, 'Salary record deleted successfully');
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    /**
      * Get payroll items
      */
     async getItems(req, res, next) {
@@ -54,6 +68,17 @@ class PayrollController {
             const { db_name } = req.user;
             const item = await payrollService.createPayrollItem(db_name, req.body);
             return ApiResponse.created(res, item, 'Payroll item created successfully');
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    async getMonthlySummary(req, res, next) {
+        try {
+            const { db_name } = req.user;
+            const { month } = req.query;
+            const data = await payrollService.getMonthlySummary(db_name, { month });
+            return ApiResponse.ok(res, data, 'Monthly payroll summary fetched');
         } catch (error) {
             next(error);
         }

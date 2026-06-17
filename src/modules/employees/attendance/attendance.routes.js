@@ -157,6 +157,11 @@ adminRouter.post('/regularization', requirePermission(P.ATTENDANCE_REGULARIZATIO
   v.optionalNotes,
 ], validate, ctrl.submitRegularization);
 
+adminRouter.post('/remind-checkout', requirePermission(P.ATTENDANCE_MANAGE), [
+  body('employeeId').isInt({ min: 1 }),
+  body('date').isDate(),
+], validate, ctrl.remindCheckout);
+
 adminRouter.post('/override', requirePermission(P.ATTENDANCE_MANAGE), v.overrideBody, validate, ctrl.mark);
 adminRouter.post('/', requirePermission(P.ATTENDANCE_MANAGE), v.overrideBody, validate, ctrl.mark);
 

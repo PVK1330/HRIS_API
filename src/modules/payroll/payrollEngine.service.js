@@ -2,6 +2,8 @@
 
 const { getTenantPool } = require('../../config/db');
 const ApiError = require('../../utils/ApiError');
+const { hasPermission } = require('../../services/authz.service');
+const { P } = require('../../constants/permissions');
 
 class PayrollEngineService {
   // ── Salary Components ──────────────────────────────────────────────────────
@@ -398,7 +400,8 @@ class PayrollEngineService {
         `SELECT e.id, e.first_name, e.last_name, es.net_salary, es.earnings, es.deductions
          FROM employees e
          LEFT JOIN employee_salaries es ON es.employee_id = e.id
-         WHERE e.employment_status NOT IN ('Terminated', 'Resigned')`,
+         WHERE e.employment_status NOT IN ('Terminated', 'Resigned')
+           AND e.deleted_at IS NULL`,
       );
 
       // Calculate working days in period from start_date to end_date
@@ -428,20 +431,30 @@ class PayrollEngineService {
         const payDays = Math.max(0, workingDays - lopDays);
 
         const grossSalary = parseFloat(emp.net_salary || 0);
-        const netSalary = grossSalary; // placeholder; deductions applied separately
+
+        // Sum all deduction component values from the deductions JSON object
+        let totalDeductionsAmt = 0;
+        if (emp.deductions && typeof emp.deductions === 'object') {
+          totalDeductionsAmt = Object.values(emp.deductions).reduce((sum, val) => {
+            const n = parseFloat(val);
+            return sum + (isNaN(n) ? 0 : n);
+          }, 0);
+        }
+        const netSalary = Math.max(0, grossSalary - totalDeductionsAmt);
 
         await client.query(
           `INSERT INTO payroll_run_employees
              (run_id, employee_id, pay_days, lop_days, ot_hours,
               gross_salary, total_earnings, total_deductions, net_salary,
               earnings, deductions, status)
-           VALUES ($1, $2, $3, $4, 0, $5, $5, 0, $6, $7, $8, 'PENDING')`,
+           VALUES ($1, $2, $3, $4, 0, $5, $5, $6, $7, $8, $9, 'PENDING')`,
           [
             run.id,
             emp.id,
             payDays,
             lopDays,
             grossSalary,
+            totalDeductionsAmt,
             netSalary,
             emp.earnings ? JSON.stringify(emp.earnings) : '{}',
             emp.deductions ? JSON.stringify(emp.deductions) : '{}',
@@ -554,7 +567,7 @@ class PayrollEngineService {
     if (!existing[0]) throw new ApiError(404, 'Payroll run not found');
 
     const run = existing[0];
-    if (!['DRAFT', 'PROCESSING', 'COMPLETED'].includes(run.status)) {
+    if (!['DRAFT', 'PROCESSING'].includes(run.status)) {
       throw new ApiError(400, `Cannot approve a run in status: ${run.status}`);
     }
 
@@ -648,7 +661,7 @@ class PayrollEngineService {
     return rows;
   }
 
-  async getPayslipDetail(dbName, payslipId, employeeId) {
+  async getPayslipDetail(dbName, payslipId, employeeId, auth) {
     const pool = await getTenantPool(dbName);
 
     const { rows } = await pool.query(
@@ -673,12 +686,16 @@ class PayrollEngineService {
 
     if (!rows[0]) throw new ApiError(404, 'Payslip not found');
 
-    // Assert access: employees can only see their own payslips
-    if (
-      employeeId &&
-      parseInt(String(rows[0].employee_id), 10) !== parseInt(String(employeeId), 10)
-    ) {
-      throw new ApiError(403, 'Access denied: you can only view your own payslips');
+    // Assert access: only users with PAYROLL_MANAGE (HR/admin) may view any payslip.
+    // Everyone else — including admins with no linked employee record — must own the payslip.
+    const canManagePayroll = auth && (hasPermission(auth, P.PAYROLL_MANAGE) || auth.isTenantAdmin);
+    if (!canManagePayroll) {
+      if (
+        !employeeId ||
+        parseInt(String(rows[0].employee_id), 10) !== parseInt(String(employeeId), 10)
+      ) {
+        throw new ApiError(403, 'Access denied: you can only view your own payslips');
+      }
     }
 
     return rows[0];

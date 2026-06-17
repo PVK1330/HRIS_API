@@ -59,7 +59,7 @@ async function processTenant(tenant) {
             <div style="font-family: sans-serif;">
               <h2>Performance Review Reminder</h2>
               <p>Hi ${emp.full_name},</p>
-              <p>This is an automated reminder that your performance review for <strong>\${cycle.cycle_name}</strong> is due on <strong>\${deadlineStr}</strong>.</p>
+              <p>This is an automated reminder that your performance review for <strong>${cycle.cycle_name}</strong> is due on <strong>${deadlineStr}</strong>.</p>
               <p>Please log in to the HRIS portal to complete any pending actions.</p>
               <br/>
               <p>Thank you,</p>

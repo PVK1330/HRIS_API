@@ -30,12 +30,37 @@ async function logCron(pool, {
   });
 }
 
-async function listActiveEmployeesWithoutAttendance(pool, dateStr) {
+/**
+ * Base query: active, joined, onboarding-complete employees with no record yet.
+ * Used by all three marking paths (weekly-off, holiday, absent).
+ * The leave check is only added for the absent path.
+ */
+async function listEligibleEmployees(pool, dateStr, { excludeWithApprovedLeave = false } = {}) {
+  const leaveClause = excludeWithApprovedLeave
+    ? `AND NOT EXISTS (
+         SELECT 1 FROM leave_requests lr
+         WHERE lr.employee_id = e.id
+           AND lr.status = 'Approved'
+           AND lr.from_date <= $1::date
+           AND lr.to_date   >= $1::date
+       )`
+    : '';
+
   const { rows } = await pool.query(
-    `SELECT e.id AS employee_id
+    `SELECT
+       e.id                          AS employee_id,
+       e.join_date,
+       e.onboarding_workflow_status,
+       e.shift_id
      FROM employees e
      WHERE e.deleted_at IS NULL
        AND e.employment_status IN ('Active', 'Probation')
+       AND (e.join_date IS NULL OR e.join_date <= $1::date)
+       AND (
+         e.onboarding_workflow_status IS NULL
+         OR e.onboarding_workflow_status = 'onboarding_complete'
+       )
+       ${leaveClause}
        AND NOT EXISTS (
          SELECT 1 FROM attendance a
          WHERE a.employee_id = e.id AND a.date = $1::date
@@ -45,22 +70,102 @@ async function listActiveEmployeesWithoutAttendance(pool, dateStr) {
   return rows;
 }
 
+// Convenience aliases used by the three marking paths
+const listAbsentCandidates  = (pool, dateStr) => listEligibleEmployees(pool, dateStr, { excludeWithApprovedLeave: true });
+const listWeeklyOffCandidates = (pool, dateStr) => listEligibleEmployees(pool, dateStr);
+const listHolidayCandidates   = (pool, dateStr) => listEligibleEmployees(pool, dateStr);
+
 /**
- * Mark absent only when not leave, holiday, weekend, or company closure.
+ * Bulk-upsert a fixed status for all employees in the list.
+ * Used for Weekly Off and Holiday passes (no shift stamp needed — they didn't miss a shift).
+ */
+async function bulkMarkStatus(pool, employees, dateStr, { status, paidDay, auditAction }) {
+  let marked = 0;
+  for (const emp of employees) {
+    const record = await repo.upsert(pool, {
+      employeeId: emp.employee_id,
+      date: dateStr,
+      status,
+      paidDay,
+      workMode: 'In Office',
+    });
+    await logCron(pool, {
+      action: auditAction,
+      attendanceId: record.id,
+      employeeId: emp.employee_id,
+      newValue: { status, date: dateStr },
+    });
+    marked += 1;
+  }
+  return marked;
+}
+
+/**
+ * Auto-mark attendance for ALL active employees for a given date.
+ *
+ * Priority:
+ *   1. Weekend  → status = 'Weekend'   (Weekly Off, paid_day = false)
+ *   2. Holiday  → status = 'Holiday'   (paid_day = true)
+ *   3. Working day, no punch → status = 'Absent' (paid_day = false)
+ *      • Skip if employee has an Approved leave (those become 'On Leave' via the leave flow)
+ *      • Skip if it's a company closure day
+ *
+ * Employees are only eligible when:
+ *   - Active / Probation
+ *   - join_date <= date
+ *   - onboarding_workflow_status is null or 'onboarding_complete'
+ *   - No existing attendance record for the date
  */
 async function processDailyAbsent(pool, dateStr) {
   const settings = await calc.loadSettings(pool);
 
-  if (await calendar.isTenantNonWorkingDay(pool, dateStr, settings)) {
-    return { marked: 0, skipped: true, reason: 'tenant_non_working_day' };
+  // ── 1. WEEKEND → mark Weekly Off ─────────────────────────────────────────
+  if (calc.isWeekend(dateStr, settings)) {
+    const candidates = await listWeeklyOffCandidates(pool, dateStr);
+    const marked = await bulkMarkStatus(pool, candidates, dateStr, {
+      status: 'Weekend',
+      paidDay: false,
+      auditAction: 'attendance.cron.weekly_off',
+    });
+    logger.info(`[attendanceCron] Weekly Off marked: ${marked} for ${dateStr}`);
+    return { marked, weeklyOff: true };
   }
 
-  const candidates = await listActiveEmployeesWithoutAttendance(pool, dateStr);
+  // ── 2. HOLIDAY → mark Holiday ────────────────────────────────────────────
+  const holiday = await calc.findHolidayForDate(pool, dateStr, settings?.uk_holiday_region);
+  if (holiday) {
+    const candidates = await listHolidayCandidates(pool, dateStr);
+    const marked = await bulkMarkStatus(pool, candidates, dateStr, {
+      status: 'Holiday',
+      paidDay: true,
+      auditAction: 'attendance.cron.holiday',
+    });
+    logger.info(`[attendanceCron] Holiday "${holiday.name}" marked: ${marked} for ${dateStr}`);
+    return { marked, holiday: true, holidayName: holiday.name };
+  }
+
+  // ── 3. COMPANY CLOSURE → skip (no absent records on closure days) ────────
+  const closure = await calendar.findCompanyClosure(pool, dateStr);
+  if (closure) {
+    return { marked: 0, skipped: true, reason: 'company_closure', closureName: closure.name };
+  }
+
+  // ── 4. WORKING DAY → mark Absent for employees who didn't punch ──────────
+  //    Approved-leave employees are excluded (their 'On Leave' record is created
+  //    by the leave-approval flow, not the cron).
+  const candidates = await listAbsentCandidates(pool, dateStr);
   let marked = 0;
 
-  for (const { employee_id: employeeId } of candidates) {
-    const skip = await calendar.shouldSkipAbsentMarking(pool, employeeId, dateStr, settings);
-    if (skip.skip) continue;
+  for (const emp of candidates) {
+    const { employee_id: employeeId } = emp;
+
+    // Resolve scheduled shift (date-specific → employees.shift_id → default active).
+    let resolvedShift = null;
+    try {
+      resolvedShift = await calc.getEmployeeShift(pool, employeeId, dateStr);
+    } catch (shiftErr) {
+      logger.warn('[attendanceCron] shift lookup failed', { employeeId, date: dateStr, err: shiftErr.message });
+    }
 
     const record = await repo.upsert(pool, {
       employeeId,
@@ -70,18 +175,32 @@ async function processDailyAbsent(pool, dateStr) {
       workMode: 'In Office',
     });
 
+    // Stamp shift_id so reports know which shift was missed.
+    if (resolvedShift?.id && record?.id) {
+      try {
+        await pool.query(
+          `UPDATE attendance SET shift_id = $1 WHERE id = $2 AND shift_id IS NULL`,
+          [resolvedShift.id, record.id],
+        );
+      } catch (e) {
+        logger.warn('[attendanceCron] shift_id stamp failed', { recordId: record.id, err: e.message });
+      }
+    }
+
     await logCron(pool, {
       action: 'attendance.cron.absent',
       attendanceId: record.id,
       employeeId,
-      newValue: record,
+      newValue: {
+        ...record,
+        shift_id:   resolvedShift?.id   ?? null,
+        shift_name: resolvedShift?.name ?? null,
+        join_date:  emp.join_date,
+      },
     });
-    
+
     try {
-      await notify.notifyAbsent(pool, null, {
-        employeeId,
-        date: dateStr
-      });
+      await notify.notifyAbsent(pool, null, { employeeId, date: dateStr });
     } catch (notifyErr) {
       logger.error('[attendanceCron] notifyAbsent failed', { employeeId, date: dateStr, err: notifyErr.message });
     }
@@ -365,5 +484,8 @@ module.exports = {
   processAutoReject,
   processAutoApprove,
   processMissingCheckoutNotifications,
-  listActiveEmployeesWithoutAttendance,
+  listAbsentCandidates,
+  listEligibleEmployees,
+  // legacy alias
+  listActiveEmployeesWithoutAttendance: listAbsentCandidates,
 };

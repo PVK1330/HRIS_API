@@ -420,7 +420,8 @@ async function checkIn(auth, user, body, req) {
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
   const employeeId = await resolveEmployeeId(pool, user, body.employeeId);
-  if (employeeId) await assertActiveForPunch(pool, Number(employeeId));
+  if (!employeeId) throw ApiError.badRequest('Unable to identify employee');
+  await assertActiveForPunch(pool, Number(employeeId));
   await authz.assertCanModifyEmployee(auth, pool, Number(employeeId));
 
   if (!canManageOverride(auth)) {
@@ -492,7 +493,8 @@ async function checkOut(auth, user, body, req) {
   const pool = getPool(user);
   await ensureMigrated(user.db_name);
   const employeeId = await resolveEmployeeId(pool, user, body.employeeId);
-  if (employeeId) await assertActiveForPunch(pool, Number(employeeId));
+  if (!employeeId) throw ApiError.badRequest('Unable to identify employee');
+  await assertActiveForPunch(pool, Number(employeeId));
   await authz.assertCanModifyEmployee(auth, pool, Number(employeeId));
 
   if (!canManageOverride(auth)) {
@@ -509,6 +511,9 @@ async function checkOut(auth, user, body, req) {
 
   if (!existing?.check_in_time && !body.checkInTime) {
     throw ApiError.badRequest('Check-in is required before check-out');
+  }
+  if (existing?.check_out_time && !canManageOverride(auth)) {
+    throw ApiError.badRequest('You have already checked out for this date');
   }
 
   const record = await persistAttendance(pool, user, {

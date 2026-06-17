@@ -49,6 +49,34 @@ const pendingOvertime = asyncHandler(async (req, res) => {
   return ApiResponse.ok(res, data, 'Pending overtime retrieved');
 });
 
+const remindCheckout = asyncHandler(async (req, res) => {
+  const { getTenantPool } = require('../../../config/db');
+  const notify = require('./attendanceNotifications.service');
+  const pool = getTenantPool(req.user.db_name);
+  const { employeeId, date } = req.body;
+
+  const { rows } = await pool.query(
+    `SELECT a.id, a.employee_id FROM attendance a
+     WHERE a.employee_id = $1 AND a.date = $2::date
+       AND a.check_in_time IS NOT NULL AND a.check_out_time IS NULL
+       AND a.status NOT IN ('On Leave','Holiday','Weekend','Absent')
+     LIMIT 1`,
+    [employeeId, date],
+  );
+
+  if (!rows[0]) {
+    return ApiResponse.ok(res, null, 'No missing checkout found for this employee on this date');
+  }
+
+  await notify.notifyMissingCheckout(pool, req.user.db_name, {
+    employeeId: rows[0].employee_id,
+    date,
+    entityId: rows[0].id,
+  });
+
+  return ApiResponse.ok(res, null, 'Reminder sent');
+});
+
 const processOvertime = asyncHandler(async (req, res) => {
   const data = await service.processOvertime(req.auth, req.user, req.params.id, req.body, req);
   return ApiResponse.ok(res, { record: data }, 'Overtime processed');
@@ -153,4 +181,5 @@ module.exports = {
   regularizationHistory,
   exportPdf,
   exportExcel,
+  remindCheckout,
 };

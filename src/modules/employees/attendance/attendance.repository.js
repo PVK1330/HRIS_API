@@ -157,7 +157,7 @@ async function getDailySummary(pool, date) {
        COUNT(*) FILTER (WHERE a.status = 'On Leave')::int AS on_leave,
        COUNT(*) FILTER (WHERE a.work_mode = 'Remote')::int AS remote,
        COUNT(*) FILTER (WHERE a.work_mode = 'In Office')::int AS in_office,
-       COUNT(*) FILTER (WHERE a.regularization_status = 'Pending')::int AS pending_regularization,
+       COUNT(*) FILTER (WHERE a.regularization_status IN ('Pending','Manager_Approved','Dept_Approved'))::int AS pending_regularization,
        COUNT(*) FILTER (WHERE a.check_out_time IS NULL AND a.check_in_time IS NOT NULL)::int AS missing_checkout
      FROM attendance a
      JOIN employees e ON e.id = a.employee_id AND e.deleted_at IS NULL
@@ -321,6 +321,14 @@ const REG_STAGE_COLUMNS = Object.freeze({
   hr: 'hr',
 });
 
+// Maps stage key → the per-stage remarks column (migration 108).
+// Note: department → reg_dept_remarks (not reg_department_remarks).
+const REG_REMARK_COLUMNS = Object.freeze({
+  manager:    'reg_manager_remarks',
+  department: 'reg_dept_remarks',
+  hr:         'reg_hr_remarks',
+});
+
 /**
  * Initialize the column-based regularization stages on submit.
  * Active stages → 'Pending'; inactive → 'N/A'. Sets the first active stage as current.
@@ -356,6 +364,7 @@ async function applyRegularizationDecision(client, id, {
   stage, stageStatus, actorId, regularizationStatus, nextStage, attendanceStatus, remarks,
 }) {
   const col = REG_STAGE_COLUMNS[stage];
+  const remarkCol = REG_REMARK_COLUMNS[stage];
   if (!col) throw new Error(`Invalid regularization stage: ${stage}`);
 
   const { rows } = await client.query(
@@ -363,6 +372,7 @@ async function applyRegularizationDecision(client, id, {
        ${col}_approval_status = $1,
        ${col}_approved_by     = $2,
        ${col}_approved_at     = NOW(),
+       ${remarkCol}           = COALESCE($6, ${remarkCol}),
        regularization_status  = $3,
        reg_current_stage      = $4,
        status                 = $5,
@@ -391,7 +401,7 @@ async function getPendingRegularizations(pool, { limit = 50, offset = 0 }, auth)
             a.regularization_reason,
             a.reg_current_stage,
             CASE a.reg_current_stage
-              WHEN 'manager'    THEN 'Direct Manager'
+              WHEN 'manager'    THEN 'Reporting Manager'
               WHEN 'department' THEN 'Department Head'
               WHEN 'hr'         THEN 'HR'
               ELSE NULL END AS pending_approver_role

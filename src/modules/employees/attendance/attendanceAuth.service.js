@@ -283,7 +283,7 @@ async function assertCanActOnStage(auth, pool, record, stage, action = 'approve'
       }
       return;
     case 'department':
-      if (!isInManagedDepartment(auth, emp)) {
+      if (!isInManagedDepartment(auth, emp) && !hasHrApprovalScope(auth)) {
         throw ApiError.forbidden('You can only approve regularizations for employees in your department');
       }
       return;

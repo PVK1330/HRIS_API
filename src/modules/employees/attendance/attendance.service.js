@@ -539,7 +539,7 @@ async function checkOut(auth, user, body, req) {
   if (Number(record.overtime_hours) > 0) {
     try {
       const otSettings = await calc.loadSettings(pool);
-      if (otSettings?.overtime_approval_workflow === 'Auto-approve') {
+      if (['Auto-approve', 'Auto Approve'].includes(otSettings?.overtime_approval_workflow)) {
         const approved = await repo.markOvertimeAutoApproved(pool, record.id);
         if (approved) {
           await notify.notifyOtApproved(pool, user.db_name, {
@@ -638,22 +638,23 @@ async function submitRegularization(auth, user, body, req) {
     }
   }
 
-  // Escalation: if the employee has no reporting manager, skip directly to Manager_Approved
-  // so the Department Head becomes the first effective approver.
   const emp = await authz.loadEmployee(pool, Number(employeeId));
-  const hasManager = !!(emp?.reporting_manager_id);
-  const initialRegStatus = hasManager ? 'Pending' : 'Manager_Approved';
+
+  // Build the active approval stage chain first — it prunes unreachable stages based on
+  // both the configured workflow type AND the employee's org structure (manager/dept).
+  const stages = workflow.buildStageChain(settings, emp);
+
+  // Derive the initial overall status from the actual first active stage:
+  //   first=manager    → 'Pending'          (waiting for manager)
+  //   first=department → 'Manager_Approved' (manager stage skipped; dept is first)
+  //   first=hr         → 'Pending'          (Single Level or all others pruned; HR is first)
+  const initialRegStatus = stages[0] === 'department' ? 'Manager_Approved' : 'Pending';
 
   const computed = await buildComputedRecord(pool, employeeId, dateStr, {
     checkInTime: body.checkInTime,
     checkOutTime: body.checkOutTime,
     workMode: body.workMode,
   }, body.workMode);
-
-  // Build the active approval stage chain (column-based) from settings + the employee's
-  // reporting manager / department. Stages with no possible approver are pruned.
-  const targetEmp = await authz.loadEmployee(pool, Number(employeeId));
-  const stages = workflow.buildStageChain(settings, targetEmp);
 
   const client = await pool.connect();
   try {
@@ -684,11 +685,29 @@ async function submitRegularization(auth, user, body, req) {
       regularizationStatus: initialRegStatus,
       regularizationReason: body.reason,
       requestedBy: actorEmployeeId(user),
-      currentApprovalLevel: hasManager ? 1 : 2,
+      currentApprovalLevel: stages[0] === 'manager' ? 1 : stages[0] === 'department' ? 2 : 3,
       updatedBy: actorEmployeeId(user),
     }, client);
 
     await repo.initRegularizationStages(client, record.id, stages);
+
+    // Auto-approve: stamp every active stage Approved and close the request immediately.
+    if (settings?.regularization_auto_approve_enabled) {
+      await client.query(
+        `UPDATE attendance SET
+           manager_approval_status    = CASE WHEN manager_approval_status    = 'Pending' THEN 'Approved' ELSE manager_approval_status    END,
+           department_approval_status = CASE WHEN department_approval_status = 'Pending' THEN 'Approved' ELSE department_approval_status END,
+           hr_approval_status         = CASE WHEN hr_approval_status         = 'Pending' THEN 'Approved' ELSE hr_approval_status         END,
+           reg_current_stage          = 'done',
+           regularization_status      = 'Approved',
+           status                     = 'Regularization Approved',
+           regularized_at             = NOW(),
+           updated_at                 = NOW()
+         WHERE id = $1`,
+        [record.id],
+      );
+    }
+
     await client.query('COMMIT');
 
     const full = await repo.findById(pool, record.id);
@@ -703,11 +722,18 @@ async function submitRegularization(auth, user, body, req) {
     });
 
     try {
-      await notify.notifyRegSubmitted(pool, user.db_name, {
-        employeeId,
-        date: dateStr,
-        entityId: record.id,
-      });
+      if (settings?.regularization_auto_approve_enabled) {
+        await notify.notifyRegApproved(pool, user.db_name, {
+          employeeId, date: dateStr, entityId: record.id,
+        });
+      } else {
+        await notify.notifyRegSubmitted(pool, user.db_name, {
+          employeeId,
+          date: dateStr,
+          entityId: record.id,
+          firstStage: stages[0],
+        });
+      }
     } catch (_) { /* non-blocking */ }
 
     return integrity.mapRecordForResponse(full);
@@ -1119,7 +1145,11 @@ async function regularize(auth, user, id, { action, reason }, req) {
       const idx = chain.indexOf(stage);
       const next = idx >= 0 ? chain[idx + 1] : undefined;
       if (next) {
-        regStatus = 'Pending';
+        // Advance the overall status to reflect which stage just completed,
+        // mirroring how overtime advances Pending → Manager_Approved → Dept_Approved.
+        regStatus = stage === 'manager' ? 'Manager_Approved'
+          : stage === 'department' ? 'Dept_Approved'
+          : 'Pending';
         nextStage = next;
         attStatus = 'Regularization Pending';
       } else {
@@ -1185,7 +1215,7 @@ async function regularize(auth, user, id, { action, reason }, req) {
         date: record.date,
         entityId: record.id,
       });
-    } else if (action === 'approve' && regStatus === 'Pending' && nextStage && nextStage !== 'done') {
+    } else if (action === 'approve' && nextStage && nextStage !== 'done') {
       // Advanced to the next stage — notify that stage's approver.
       await notify.notifyRegForwarded(pool, user.db_name, {
         employeeId: record.employee_id,

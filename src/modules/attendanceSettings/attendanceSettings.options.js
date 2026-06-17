@@ -6,6 +6,14 @@ module.exports = {
   WHO_CAN_SUBMIT: ['All employees', 'Manager only', 'HR only'],
   APPROVERS: ['HR', 'Manager', 'Direct Manager', 'HR Manager'],
   OVERTIME_CALC_RULES: ['1.5x hourly', '2x hourly', 'Flat rate', 'Custom'],
-  OVERTIME_APPROVAL: ['Manager → HR', 'HR only', 'Manager only', 'Auto-approve'],
+  OVERTIME_APPROVAL: [
+    // Legacy short strings (kept for backward compatibility)
+    'Manager → HR', 'HR only', 'Manager only', 'Auto-approve',
+    // Full-label strings sent by the updated frontend
+    'Reporting Manager → HR',
+    'Reporting Manager → Dept Head → HR',
+    'HR Only',
+    'Auto Approve',
+  ],
   OVERTIME_APPROVERS: ['HR Department', 'Direct Manager', 'HOD', 'Manager + HR'],
 };

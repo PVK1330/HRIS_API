@@ -406,7 +406,6 @@ function extractPatch(body) {
 function validateEnums(patch) {
   const earlySet = new Set(EARLY_DEPARTURE_RULES);
   const whoSet = new Set(WHO_CAN_SUBMIT);
-  const approverSet = new Set(APPROVERS);
   const calcSet = new Set(OVERTIME_CALC_RULES);
   const apprSet = new Set(OVERTIME_APPROVAL);
   const otApproverSet = new Set(OVERTIME_APPROVERS);
@@ -421,11 +420,9 @@ function validateEnums(patch) {
       throw new ApiError(400, 'Invalid who_can_submit_request');
     }
   }
-  if (patch.approver !== undefined && patch.approver !== null) {
-    if (!approverSet.has(String(patch.approver))) {
-      throw new ApiError(400, 'Invalid approver');
-    }
-  }
+  // `approver` now stores either a legacy single-approver name ('HR', 'Direct Manager', …)
+  // or a full workflow string ('Reporting Manager → Dept Head → HR').
+  // No enum restriction — the value is just stored and used for display + approval_workflow_type derivation.
   if (patch.overtime_calculation_rule !== undefined && patch.overtime_calculation_rule !== null) {
     if (!calcSet.has(String(patch.overtime_calculation_rule))) {
       throw new ApiError(400, 'Invalid overtime_calculation_rule');

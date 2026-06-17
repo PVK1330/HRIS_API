@@ -20,8 +20,8 @@ function buildApprovalChain(settings) {
 
     case WORKFLOW_TYPES.TWO: {
       const chain = [];
-      if (approver !== 'Direct Manager') {
-        chain.push('Direct Manager');
+      if (approver !== 'Reporting Manager') {
+        chain.push('Reporting Manager');
       }
       if (!chain.includes(approver)) {
         chain.push(approver);
@@ -32,11 +32,11 @@ function buildApprovalChain(settings) {
     case WORKFLOW_TYPES.THREE:
     case WORKFLOW_TYPES.CUSTOM: {
       const chain = [];
-      if (approver !== 'Direct Manager') {
-        chain.push('Direct Manager');
+      if (approver !== 'Reporting Manager') {
+        chain.push('Reporting Manager');
       }
       if (
-        approver !== 'Direct Manager'
+        approver !== 'Reporting Manager'
         && approver !== 'Manager'
         && !chain.includes('Manager')
       ) {

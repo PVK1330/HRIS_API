@@ -8,6 +8,7 @@ const {
   authenticate,
   loadAuthContext,
   requirePermission,
+  requireAnyPermission,
 } = require('../../middlewares/auth.middleware');
 const { P } = require('../../constants/permissions');
 const ctrl = require('./employees.controller');
@@ -36,7 +37,7 @@ router.get('/export', requirePermission(P.EMPLOYEE_VIEW), validateWithJoi(empV.e
 
 router.get('/', requirePermission(P.EMPLOYEE_VIEW), validateWithJoi(empV.listingQuery, 'query'), ctrl.list);
 
-router.get('/dropdown', requirePermission(P.EMPLOYEE_VIEW), validateWithJoi(empV.dropdownQuery, 'query'), ctrl.dropdownList);
+router.get('/dropdown', requireAnyPermission(P.EMPLOYEE_VIEW, P.ATTENDANCE_MANAGE, P.ATTENDANCE_APPROVE), validateWithJoi(empV.dropdownQuery, 'query'), ctrl.dropdownList);
 
 router.get(
   '/designations-for-department',

@@ -189,7 +189,7 @@ async function runReport(pool, reportType, scoped, query) {
               a.regularization_status, a.regularization_reason,
               a.current_approval_level,
               CASE a.reg_current_stage
-                WHEN 'manager'    THEN 'Direct Manager'
+                WHEN 'manager'    THEN 'Reporting Manager'
                 WHEN 'department' THEN 'Department Head'
                 WHEN 'hr'         THEN 'HR'
                 ELSE NULL END AS pending_approver_role
@@ -290,7 +290,7 @@ async function getDashboard(pool, date, auth) {
          COUNT(*) FILTER (WHERE a.status = 'Half Day')::int AS half_day,
          COUNT(*) FILTER (WHERE COALESCE(a.overtime_hours, 0) > 0)::int AS overtime_employees,
          COUNT(*) FILTER (WHERE a.overtime_status = 'Pending')::int AS pending_overtime,
-         COUNT(*) FILTER (WHERE a.regularization_status = 'Pending')::int AS pending_regularizations
+         COUNT(*) FILTER (WHERE a.regularization_status IN ('Pending','Manager_Approved','Dept_Approved'))::int AS pending_regularizations
        FROM attendance a
        JOIN employees e ON e.id = a.employee_id
        WHERE ${where}`,
@@ -369,7 +369,7 @@ async function getDashboard(pool, date, auth) {
 
 async function getRegularizationHistory(pool, query, auth) {
   const conditions = [
-    `a.regularization_status IN ('Pending','Approved','Rejected')`,
+    `a.regularization_status IN ('Pending','Manager_Approved','Dept_Approved','Approved','Rejected')`,
     'e.deleted_at IS NULL',
   ];
   const params = [];
@@ -390,13 +390,14 @@ async function getRegularizationHistory(pool, query, auth) {
             a.current_approval_level,
             a.reg_current_stage AS pending_stage,
             CASE a.reg_current_stage
-              WHEN 'manager'    THEN 'Direct Manager'
+              WHEN 'manager'    THEN 'Reporting Manager'
               WHEN 'department' THEN 'Department Head'
               WHEN 'hr'         THEN 'HR'
               ELSE NULL END AS pending_approver_role,
             a.regularization_remarks,
             a.manager_approval_status, a.department_approval_status, a.hr_approval_status,
             a.manager_approved_at, a.department_approved_at, a.hr_approved_at,
+            a.reg_manager_remarks, a.reg_dept_remarks, a.reg_hr_remarks,
             mgrapp.full_name AS manager_approver_name,
             deptapp.full_name AS dept_approver_name,
             hrapp.full_name AS hr_approver_name,
@@ -415,9 +416,10 @@ async function getRegularizationHistory(pool, query, auth) {
   );
 
   // Per-record `can_act`: only the responsible approver for the CURRENT stage
-  // (reg_current_stage, while still Pending) sees Approve/Reject in the UI.
+  // sees Approve/Reject in the UI. Actionable while in any in-progress status.
+  const ACTIONABLE_STATUSES = new Set(['Pending', 'Manager_Approved', 'Dept_Approved']);
   const records = rows.map((r) => {
-    const stage = r.regularization_status === 'Pending' ? r.pending_stage : null;
+    const stage = ACTIONABLE_STATUSES.has(r.regularization_status) ? r.pending_stage : null;
     const emp = {
       id: r.employee_id,
       reporting_manager_id: r.reporting_manager_id,

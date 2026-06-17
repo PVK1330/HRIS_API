@@ -198,18 +198,35 @@ async function notifyMissingCheckout(pool, tenantDb, { employeeId, date, entityI
   }
 }
 
-// 5. Regularization Submitted
-async function notifyRegSubmitted(pool, tenantDb, { employeeId, date, entityId, approverId }) {
-  if (!(await checkAndLogHistory(pool, TYPES.REG_SUBMITTED, entityId, employeeId))) return;
+// 5. Regularization Submitted — notify the FIRST-STAGE approver, not always the reporting manager.
+// firstStage: 'manager' | 'department' | 'hr' (from buildStageChain). Falls back to manager when absent.
+async function notifyRegSubmitted(pool, tenantDb, { employeeId, date, entityId, approverId, firstStage }) {
   const tenant = tenantCtx(tenantDb);
   const { manager_id: defaultMgrId, name: employeeName } = await getEmployeeDetails(pool, employeeId);
-  
-  const mgrId = approverId || defaultMgrId;
-  if (mgrId) {
-    const mgrTpl = await getTemplate(pool, TYPES.REG_SUBMITTED, 'Regularization Request Submitted', `${employeeName} submitted an attendance regularization request for ${date}.`, { date, name: employeeName });
+  const tpl = await getTemplate(pool, TYPES.REG_SUBMITTED, 'Regularization Request Submitted', `${employeeName} submitted an attendance regularization request for ${date}.`, { date, name: employeeName });
+
+  // Determine recipients based on the actual first approval stage.
+  const recipients = new Set();
+  const stage = firstStage || 'manager';
+
+  if (approverId) {
+    recipients.add(approverId);
+  } else if (stage === 'manager') {
+    if (defaultMgrId) recipients.add(defaultMgrId);
+  } else if (stage === 'department') {
+    const deptMgrId = await getDepartmentManagerId(pool, employeeId);
+    if (deptMgrId) recipients.add(deptMgrId);
+  } else {
+    // stage === 'hr' — no reporting manager and no dept head; notify HR group
+    (await getHrAuditGroup(pool)).forEach((id) => recipients.add(id));
+  }
+
+  for (const rid of recipients) {
+    if (!(await checkAndLogHistory(pool, TYPES.REG_SUBMITTED, entityId, rid))) continue;
     await sendSystemNotification(tenant, {
-      recipientId: mgrId, recipientRole: 'employee', type: TYPES.REG_SUBMITTED,
-      title: mgrTpl.subject, message: mgrTpl.body, entityType: 'attendance', entityId: String(entityId), sendEmail: true, redirectUrl: '/admin/attendance/regularizations'
+      recipientId: rid, recipientRole: 'employee', type: TYPES.REG_SUBMITTED,
+      title: tpl.subject, message: tpl.body, entityType: 'attendance', entityId: String(entityId),
+      sendEmail: true, redirectUrl: '/admin/attendance/regularizations',
     });
   }
 }
